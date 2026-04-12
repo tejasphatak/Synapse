@@ -3,11 +3,12 @@
  */
 
 export class Topology {
-  constructor() {
+  constructor(expectedShardCount = 2) {
     // nodeId → { nodeId, ws, shardId, layerStart, layerEnd, status, lastPing, capabilities }
     this.nodes = new Map();
     // Ordered pipeline: array of nodeIds from first shard to last
     this.pipeline = [];
+    this.expectedShardCount = expectedShardCount;
   }
 
   /**
@@ -99,7 +100,7 @@ export class Topology {
    * Check if the pipeline is complete (all shards assigned and ready).
    */
   isPipelineReady() {
-    if (this.pipeline.length < 2) return false;
+    if (this.pipeline.length < this.expectedShardCount) return false;
     return this.pipeline.every((id) => {
       const node = this.nodes.get(id);
       return node && node.status === "ready";
