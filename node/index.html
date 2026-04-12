@@ -111,9 +111,17 @@
       <span class="info-label">Tensors Loaded</span>
       <span class="info-value" id="tensorCount">—</span>
     </div>
-    <div class="info-row" style="border-bottom: none;">
+    <div class="info-row">
       <span class="info-label">WebGPU</span>
       <span class="info-value" id="webgpuStatus">Checking...</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">GPU</span>
+      <span class="info-value" id="gpuVendor">—</span>
+    </div>
+    <div class="info-row" style="border-bottom: none;">
+      <span class="info-label">Device</span>
+      <span class="info-value" id="deviceType">—</span>
     </div>
   </div>
 
@@ -179,14 +187,28 @@
     const node = new SynapseNode(updateStatus);
     document.getElementById("nodeId").textContent = node.nodeId;
 
-    // Check WebGPU
+    // Check WebGPU and device info
     if (navigator.gpu) {
       document.getElementById("webgpuStatus").textContent = "Available";
       document.getElementById("webgpuStatus").style.color = "#00ff88";
+
+      // Detect GPU details
+      navigator.gpu.requestAdapter().then(adapter => {
+        if (adapter) {
+          const vendor = adapter.info?.vendor || "unknown";
+          const maxBuf = Math.round(adapter.limits.maxBufferSize / 1024 / 1024);
+          document.getElementById("gpuVendor").textContent = `${vendor} (max ${maxBuf}MB buffer)`;
+        }
+      });
     } else {
       document.getElementById("webgpuStatus").textContent = "Not Available";
       document.getElementById("webgpuStatus").style.color = "#ff4444";
     }
+
+    // Device type
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    document.getElementById("deviceType").textContent = isMobile ? "Mobile" : "Desktop";
+    document.getElementById("deviceType").style.color = isMobile ? "#ffaa00" : "#00ff88";
 
     log("Starting Synapse compute node...", "info");
     node.start(wsUrl).then((connected) => {

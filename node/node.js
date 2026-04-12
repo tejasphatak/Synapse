@@ -54,11 +54,26 @@ export class SynapseNode {
       return false;
     }
 
-    const adapter = await navigator.gpu.requestAdapter();
+    const adapter = await navigator.gpu.requestAdapter({
+      powerPreference: this._isMobile() ? "low-power" : "high-performance",
+    });
     if (!adapter) {
       this._setStatus("error", "No WebGPU adapter found");
       return false;
     }
+
+    // Detect GPU capabilities
+    this.gpuInfo = {
+      maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      isMobile: this._isMobile(),
+      vendor: adapter.info?.vendor || "unknown",
+      architecture: adapter.info?.architecture || "unknown",
+    };
+
+    this._setStatus("checking_webgpu",
+      `GPU: ${this.gpuInfo.vendor} | Max buffer: ${Math.round(this.gpuInfo.maxBufferSize / 1024 / 1024)}MB | Mobile: ${this.gpuInfo.isMobile}`
+    );
 
     this.device = await adapter.requestDevice({
       requiredLimits: {
@@ -70,6 +85,11 @@ export class SynapseNode {
     this.device.lost.then((info) => {
       this._setStatus("error", `WebGPU device lost: ${info.message}`);
     });
+
+    // Mobile: keep screen awake and handle visibility changes
+    if (this.gpuInfo.isMobile) {
+      this._setupMobileHandlers();
+    }
 
     // Step 2: Connect to coordinator
     this._setStatus("connecting");
@@ -86,10 +106,13 @@ export class SynapseNode {
       this.ws.onopen = () => {
         this._setStatus("connected");
 
-        // Send JOIN
+        // Send JOIN with device capabilities
         const msg = createJoinMessage(this.nodeId, {
           webgpu: true,
           maxLayers: 6,
+          mobile: this.gpuInfo?.isMobile || false,
+          gpuVendor: this.gpuInfo?.vendor || "unknown",
+          maxBufferMB: Math.round((this.gpuInfo?.maxBufferSize || 0) / 1024 / 1024),
           userAgent: navigator.userAgent,
         });
         this.ws.send(JSON.stringify(msg));
@@ -323,10 +346,66 @@ export class SynapseNode {
   }
 
   /**
+   * Detect if running on a mobile device.
+   */
+  _isMobile() {
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.userAgent));
+  }
+
+  /**
+   * Setup mobile-specific handlers for visibility, wake lock, and reconnection.
+   */
+  _setupMobileHandlers() {
+    // Request wake lock to prevent screen sleep during inference
+    this._requestWakeLock();
+
+    // Handle visibility changes — mobile browsers throttle/kill background tabs
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        // Tab became visible again — re-acquire wake lock and check connection
+        this._requestWakeLock();
+        if (this.ws?.readyState !== WebSocket.OPEN && this.status !== "destroyed") {
+          this._setStatus("reconnecting", "Tab resumed — reconnecting");
+        }
+      } else {
+        // Tab hidden — release wake lock to save battery
+        this._releaseWakeLock();
+        this._setStatus("ready", "Tab hidden — paused (switch back to resume)");
+      }
+    });
+
+    console.log("[node] Mobile mode enabled — wake lock + visibility handlers active");
+  }
+
+  async _requestWakeLock() {
+    try {
+      if ("wakeLock" in navigator) {
+        this._wakeLock = await navigator.wakeLock.request("screen");
+        this._wakeLock.addEventListener("release", () => {
+          console.log("[node] Wake lock released");
+        });
+        console.log("[node] Wake lock acquired — screen will stay on");
+      }
+    } catch (e) {
+      // Wake lock may fail if tab is not visible
+      console.log("[node] Wake lock unavailable:", e.message);
+    }
+  }
+
+  _releaseWakeLock() {
+    if (this._wakeLock) {
+      this._wakeLock.release();
+      this._wakeLock = null;
+    }
+  }
+
+  /**
    * Disconnect and clean up.
    */
   destroy() {
     clearInterval(this.pingInterval);
+    this._releaseWakeLock();
     if (this.ws) this.ws.close();
     if (this.loader) this.loader.destroy();
     this.status = "destroyed";
