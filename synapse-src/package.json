@@ -1,0 +1,14 @@
+{
+  "name": "synapse",
+  "version": "0.1.0",
+  "description": "Distributed Browser LLM Network - POC Phase 1",
+  "type": "module",
+  "scripts": {
+    "start": "node coordinator/index.js",
+    "split-model": "python3 model/split.py"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
+  }
+}

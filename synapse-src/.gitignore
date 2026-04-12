@@ -1,0 +1,4 @@
+node_modules/
+model/shards/*.bin
+model/shards/manifest.json
+.DS_Store
