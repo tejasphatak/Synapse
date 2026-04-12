@@ -15,6 +15,7 @@ export class Pipeline {
     this.pipelines = {};   // cached compute pipelines
     this.shaderModules = {}; // cached shader modules
     this._initialized = false;
+    this._tempBuffers = []; // track temporary buffers for cleanup
   }
 
   /**
@@ -23,6 +24,7 @@ export class Pipeline {
   async init() {
     const shaderNames = [
       "matmul", "attention", "layernorm", "gelu", "residual_add", "embed",
+      "bias_add", "head_slice", "head_concat",
     ];
 
     for (const name of shaderNames) {
@@ -174,12 +176,26 @@ export class Pipeline {
   }
 
   /**
-   * Run all assigned layers sequentially.
+   * Run all assigned layers sequentially, freeing temp buffers between layers.
    */
   async forwardLayers(hidden, layerStart, layerEnd) {
+    // Build a set of weight buffers once so we never destroy them
+    const weightBuffers = new Set(this.loader.buffers.values());
+
     let h = hidden;
     for (let l = layerStart; l <= layerEnd; l++) {
       h = await this.forwardLayer(h, l);
+      // Free all temp buffers except the output we just produced and weight buffers
+      const keep = h.buffer;
+      const surviving = [];
+      for (const buf of this._tempBuffers) {
+        if (buf === keep || weightBuffers.has(buf)) {
+          surviving.push(buf);
+        } else {
+          buf.destroy();
+        }
+      }
+      this._tempBuffers = surviving;
     }
     return h;
   }
@@ -536,72 +552,135 @@ export class Pipeline {
   }
 
   /**
-   * Add bias to a [rows, cols] matrix in-place via a simple compute pass.
+   * Add bias to a [rows, cols] matrix in-place on GPU.
    * bias is [cols], broadcast across rows.
    */
   async _addBias(matBuf, rows, cols, biasBuf) {
-    // Use residual_add pattern but we need a broadcast kernel.
-    // For simplicity, do this on CPU for the POC by reading, adding, writing back.
-    // TODO: Create a dedicated bias_add.wgsl kernel for GPU-side broadcast add
-    const totalBytes = rows * cols * 4;
-    const matData = new Float32Array(await this._readBuffer(matBuf, 0, totalBytes));
-    const biasData = new Float32Array(await this._readBuffer(biasBuf, 0, cols * 4));
+    const total = rows * cols;
+    const params = new Uint32Array([rows, cols, 0, 0]);
+    const paramBuf = this._createBuffer("bias_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, params);
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        matData[r * cols + c] += biasData[c];
-      }
-    }
+    const pipeline = this._getOrCreatePipeline("bias_add", "main", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+    ]);
 
-    this.device.queue.writeBuffer(matBuf, 0, matData);
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paramBuf } },
+        { binding: 1, resource: { buffer: matBuf } },
+        { binding: 2, resource: { buffer: biasBuf } },
+      ],
+    });
+
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(total / 256));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
   }
 
   /**
-   * Extract a single attention head's slice from the combined QKV buffer.
-   * QKV layout: [seq_len, 3*hidden_size]
-   * For Q: offset=0, for K: offset=hidden, for V: offset=2*hidden
-   * Head h occupies columns [sectionOffset + h*headDim : sectionOffset + (h+1)*headDim]
+   * Extract a single attention head's slice from the combined QKV buffer on GPU.
    */
   async _extractHeadSlice(qkvBuf, seqLen, qkvCols, sectionOffset, headIdx, headDim, numHeads) {
-    const totalBytes = qkvCols * seqLen * 4;
-    const qkv = new Float32Array(await this._readBuffer(qkvBuf, 0, totalBytes));
-    const slice = new Float32Array(seqLen * headDim);
-
-    for (let s = 0; s < seqLen; s++) {
-      for (let d = 0; d < headDim; d++) {
-        slice[s * headDim + d] = qkv[s * qkvCols + sectionOffset + headIdx * headDim + d];
-      }
-    }
-
-    const buf = this._createBuffer(`head_slice`, seqLen * headDim * 4,
+    const total = seqLen * headDim;
+    const outputBuf = this._createBuffer(`head_slice_h${headIdx}`, total * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(buf, 0, slice);
-    return buf;
+
+    const params1 = new Uint32Array([seqLen, qkvCols, sectionOffset, headIdx * headDim]);
+    const paramBuf1 = this._createBuffer(`hs_params1_h${headIdx}`, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf1, 0, params1);
+
+    const params2 = new Uint32Array([headDim, 0, 0, 0]);
+    const paramBuf2 = this._createBuffer(`hs_params2_h${headIdx}`, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf2, 0, params2);
+
+    const pipeline = this._getOrCreatePipeline("head_slice", "main", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ]);
+
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paramBuf1 } },
+        { binding: 1, resource: { buffer: paramBuf2 } },
+        { binding: 2, resource: { buffer: qkvBuf } },
+        { binding: 3, resource: { buffer: outputBuf } },
+      ],
+    });
+
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(total / 256));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+
+    return outputBuf;
   }
 
   /**
-   * Copy a head's output [seq, headDim] into the concatenated output [seq, hidden] at the correct position.
+   * Copy a head's output [seq, headDim] into the concatenated output [seq, hidden] on GPU.
    */
   async _copyHeadToOutput(headBuf, outputBuf, seqLen, headIdx, headDim, numHeads) {
     const hiddenSize = numHeads * headDim;
-    const headData = new Float32Array(await this._readBuffer(headBuf, 0, seqLen * headDim * 4));
+    const total = seqLen * headDim;
 
-    // Read existing output (may have partial data from other heads)
-    const outData = new Float32Array(await this._readBuffer(outputBuf, 0, seqLen * hiddenSize * 4));
+    const params = new Uint32Array([seqLen, headDim, hiddenSize, headIdx * headDim]);
+    const paramBuf = this._createBuffer(`hc_params_h${headIdx}`, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, params);
 
-    for (let s = 0; s < seqLen; s++) {
-      for (let d = 0; d < headDim; d++) {
-        outData[s * hiddenSize + headIdx * headDim + d] = headData[s * headDim + d];
-      }
-    }
+    const pipeline = this._getOrCreatePipeline("head_concat", "main", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ]);
 
-    this.device.queue.writeBuffer(outputBuf, 0, outData);
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paramBuf } },
+        { binding: 1, resource: { buffer: headBuf } },
+        { binding: 2, resource: { buffer: outputBuf } },
+      ],
+    });
+
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(total / 256));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
   }
 
   // ─── Buffer Utilities ─────────────────────────────────────
 
   _createBuffer(label, size, usage) {
-    return this.device.createBuffer({ label, size, usage });
+    const buf = this.device.createBuffer({ label, size, usage });
+    this._tempBuffers.push(buf);
+    return buf;
+  }
+
+  /**
+   * Destroy all temporary buffers created during inference.
+   * Keeps weight buffers (owned by ShardLoader) intact.
+   */
+  _cleanupTempBuffers() {
+    for (const buf of this._tempBuffers) {
+      buf.destroy();
+    }
+    this._tempBuffers = [];
   }
 
   async _readBuffer(buffer, offset, size) {

@@ -63,6 +63,10 @@ const dashboardClients = new Set();
 const promptClients = new Map(); // ws → { requestCallbacks }
 let requestCounter = 0;
 
+// ─── Generation State ────────────────────────────────────────────
+// generationId → { tokenIds, generatedTokens, maxTokens, promptWs, startTime }
+const activeGenerations = new Map();
+
 // ─── HTTP Server (serves static files + shard binaries) ───────────
 
 const MIME_TYPES = {
@@ -189,13 +193,24 @@ wss.on("connection", (ws, req) => {
       try { msg = JSON.parse(raw.toString()); } catch { return; }
 
       if (msg.type === "PROMPT_INFER") {
-        // Prompt client wants to run inference
-        const result = startInference(msg.tokenIds);
+        const maxTokens = msg.maxTokens || 30;
+        const genId = `gen-${++requestCounter}-${Date.now()}`;
+
+        // Start a generation session
+        activeGenerations.set(genId, {
+          tokenIds: [...msg.tokenIds],
+          generatedTokens: [],
+          maxTokens,
+          promptWs: ws,
+          startTime: Date.now(),
+        });
+
+        const result = startInference(msg.tokenIds, genId);
         if (result.ok) {
-          // Track which prompt client is waiting for this request
-          promptClients.get(ws)?.pendingRequests.set(result.requestId, true);
-          ws.send(JSON.stringify({ type: "INFER_STARTED", requestId: result.requestId }));
+          promptClients.get(ws)?.pendingRequests.set(genId, true);
+          ws.send(JSON.stringify({ type: "INFER_STARTED", requestId: genId }));
         } else {
+          activeGenerations.delete(genId);
           ws.send(JSON.stringify({ type: "INFER_ERROR", error: result.error }));
         }
       }
@@ -214,6 +229,7 @@ wss.on("connection", (ws, req) => {
   ws.on("message", (raw) => {
     const { msg, error } = parseMessage(raw.toString());
     if (error) {
+      console.error(`[coordinator] Parse error from node ${nodeId}: ${error}`);
       ws.send(JSON.stringify(createErrorMessage("PARSE_ERROR", error)));
       return;
     }
@@ -273,6 +289,8 @@ function handleJoin(ws, msg) {
 }
 
 function handleActivation(ws, msg) {
+  console.log(`[coordinator] Activation received from ${msg.fromNode} (layer ${msg.layer}, request ${msg.requestId})`);
+
   // Check if sender is the last node — should send OUTPUT instead
   if (topology.isLastNode(msg.fromNode)) {
     ws.send(
@@ -316,25 +334,90 @@ function handleNodeReady(msg) {
 }
 
 function handleOutput(ws, msg) {
+  const genId = msg.requestId;
+  const gen = activeGenerations.get(genId);
+
   console.log(
-    `[coordinator] Output received for request ${msg.requestId}: ${msg.tokens?.length} tokens`
+    `[coordinator] Output received for ${genId}: token ${msg.tokens?.[0]} (${gen ? gen.generatedTokens.length + 1 + "/" + gen.maxTokens : "no gen"})`
   );
 
   // Broadcast to dashboards
   router.broadcastOutput(msg, dashboardClients);
 
-  // Send to the prompt client that initiated this request
-  for (const [promptWs, state] of promptClients) {
-    if (state.pendingRequests.has(msg.requestId) && promptWs.readyState === 1) {
-      promptWs.send(JSON.stringify(msg));
-      state.pendingRequests.delete(msg.requestId);
+  if (!gen) {
+    // Legacy single-token mode — send directly to prompt client
+    for (const [promptWs, state] of promptClients) {
+      if (state.pendingRequests.has(genId) && promptWs.readyState === 1) {
+        promptWs.send(JSON.stringify(msg));
+        state.pendingRequests.delete(genId);
+      }
     }
+    return;
   }
 
-  // Log stats
-  const stats = router.getRequestStats(msg.requestId);
-  if (stats) {
-    console.log(`[coordinator] Request ${msg.requestId} completed in ${stats.latencyMs}ms`);
+  // ─── Autoregressive loop ─────────────────────────────
+  const newToken = msg.tokens[0];
+  gen.generatedTokens.push(newToken);
+  gen.tokenIds.push(newToken);
+
+  // Stream the token to the prompt client immediately
+  if (gen.promptWs && gen.promptWs.readyState === 1) {
+    gen.promptWs.send(JSON.stringify({
+      type: "TOKEN_GENERATED",
+      requestId: genId,
+      token: newToken,
+      tokenIndex: gen.generatedTokens.length,
+      totalGenerated: gen.generatedTokens.length,
+      maxTokens: gen.maxTokens,
+    }));
+  }
+
+  // Check if we should stop: max tokens, or EOS token (50256 for GPT-2)
+  const isEOS = newToken === 50256;
+  const isDone = gen.generatedTokens.length >= gen.maxTokens || isEOS;
+
+  if (isDone) {
+    const elapsed = Date.now() - gen.startTime;
+    const tokPerSec = (gen.generatedTokens.length / (elapsed / 1000)).toFixed(1);
+    console.log(
+      `[coordinator] Generation ${genId} complete: ${gen.generatedTokens.length} tokens in ${elapsed}ms (${tokPerSec} tok/s)`
+    );
+
+    // Send completion message
+    if (gen.promptWs && gen.promptWs.readyState === 1) {
+      gen.promptWs.send(JSON.stringify({
+        type: "GENERATION_DONE",
+        requestId: genId,
+        tokens: gen.generatedTokens,
+        totalTokens: gen.generatedTokens.length,
+        elapsedMs: elapsed,
+        tokensPerSecond: parseFloat(tokPerSec),
+      }));
+    }
+
+    activeGenerations.delete(genId);
+
+    // Clean up pending request tracking
+    for (const [, state] of promptClients) {
+      state.pendingRequests.delete(genId);
+    }
+  } else {
+    // Continue generating — send the full sequence back through the pipeline
+    const result = startInference(gen.tokenIds, genId);
+    if (!result.ok) {
+      console.error(`[coordinator] Generation ${genId} failed to continue: ${result.error}`);
+      if (gen.promptWs && gen.promptWs.readyState === 1) {
+        gen.promptWs.send(JSON.stringify({
+          type: "GENERATION_DONE",
+          requestId: genId,
+          tokens: gen.generatedTokens,
+          totalTokens: gen.generatedTokens.length,
+          elapsedMs: Date.now() - gen.startTime,
+          error: result.error,
+        }));
+      }
+      activeGenerations.delete(genId);
+    }
   }
 }
 
@@ -374,7 +457,7 @@ function tryAssignShards() {
 
 // ─── Inference Trigger ────────────────────────────────────────────
 
-function startInference(tokenIds) {
+function startInference(tokenIds, generationId) {
   if (!topology.isPipelineReady()) {
     return { ok: false, error: "Pipeline not ready — waiting for all nodes" };
   }
@@ -384,7 +467,7 @@ function startInference(tokenIds) {
     return { ok: false, error: "First pipeline node not available" };
   }
 
-  const requestId = `req-${++requestCounter}-${Date.now()}`;
+  const requestId = generationId || `req-${++requestCounter}-${Date.now()}`;
   const msg = createInferenceRequestMessage(requestId, tokenIds);
 
   firstNode.ws.send(JSON.stringify(msg));
@@ -395,7 +478,7 @@ function startInference(tokenIds) {
     hops: [],
   });
 
-  console.log(`[coordinator] Inference started: ${requestId} (${tokenIds.length} tokens)`);
+  console.log(`[coordinator] Inference step: ${requestId} (${tokenIds.length} tokens)`);
 
   // Notify dashboards
   broadcastToDashboards({

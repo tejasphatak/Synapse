@@ -76,14 +76,24 @@ export class ShardLoader {
     // Cache key includes model name + dtype so stale shards aren't reused
     const cachePrefix = `${this.manifest.model}:${this.manifest.dtype}`;
 
+    // Track combined download progress across both files
+    const progress = { shardLoaded: 0, shardTotal: 0, sharedLoaded: 0, sharedTotal: 0 };
+    const reportProgress = (phase) => {
+      const loaded = progress.shardLoaded + progress.sharedLoaded;
+      const total = progress.shardTotal + progress.sharedTotal;
+      if (total > 0) onProgress?.(loaded, total, phase);
+    };
+
     // Download both files (or load from cache)
     const [shardData, sharedData] = await Promise.all([
-      this._fetchWithCache(shardUrl, `${cachePrefix}:${shardUrl}`, (loaded, total) =>
-        onProgress?.(loaded, total, "shard")
-      ),
-      this._fetchWithCache(sharedUrl, `${cachePrefix}:${sharedUrl}`, (loaded, total) =>
-        onProgress?.(loaded, total, "shared")
-      ),
+      this._fetchWithCache(shardUrl, `${cachePrefix}:${shardUrl}`, (loaded, total) => {
+        progress.shardLoaded = loaded; progress.shardTotal = total;
+        reportProgress("downloading");
+      }),
+      this._fetchWithCache(sharedUrl, `${cachePrefix}:${sharedUrl}`, (loaded, total) => {
+        progress.sharedLoaded = loaded; progress.sharedTotal = total;
+        reportProgress("downloading");
+      }),
     ]);
 
     // Parse tensors from manifest and upload to GPU
