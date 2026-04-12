@@ -6,41 +6,8 @@ kind = "api"
 
   [[services]]
   localPort = 8080
-  name = "API Server"
-  paths = ["/api"]
-
-  [services.development]
-  run = "pnpm --filter @workspace/api-server run dev"
-
-  [services.production]
-
-  [services.production.build]
-  args = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
-
-  [services.production.build.env]
-  NODE_ENV = "production"
-
-  [services.production.run]
-  args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
-
-  [services.production.run.env]
-  PORT = "8080"
-  NODE_ENV = "production"
-
-  [services.production.health.startup]
-  path = "/api/healthz"
-
-  [[services]]
-  localPort = 3000
-  name = "Synapse Coordinator"
+  name = "Synapse"
   paths = ["/"]
 
   [services.development]
-  run = "cd /home/runner/workspace/synapse-src && PORT=3000 node coordinator/index.js"
-
-  [services.production.run]
-  args = ["node", "/home/runner/workspace/synapse-src/coordinator/index.js"]
-
-  [services.production.run.env]
-  PORT = "3000"
-  
+  run = "echo 'Synapse is user-managed on port 8080'"
