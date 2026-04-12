@@ -11,6 +11,27 @@ env = { "CI" = "true" }
 [workflows]
 runButton = "Project"
 
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Synapse Coordinator"
+
+[[workflows.workflow]]
+name = "Synapse Coordinator"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd /home/runner/workspace/synapse-src && PORT=5000 node coordinator/index.js"
+waitForPort = 5000
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true
@@ -24,6 +45,10 @@ localPort = 3000
 externalPort = 3000
 
 [[ports]]
+localPort = 5000
+externalPort = 5000
+
+[[ports]]
 localPort = 8080
 externalPort = 8080
 
@@ -34,3 +59,17 @@ externalPort = 80
 [[ports]]
 localPort = 8082
 externalPort = 3002
+
+[userenv]
+
+[userenv.shared]
+SYNAPSE_PUBLIC_KEY = """
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEANU0dJE4F5wmb8XSKdXZR0VGkxfvtULXjZDQ+srW7OFo=
+-----END PUBLIC KEY-----
+"""
+SYNAPSE_PRIVATE_KEY = """
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIFpN94N6S/XmoGs4Dj28mDLxWHnCyaRG7EjWLSVSnaQr
+-----END PRIVATE KEY-----
+"""
