@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synapse — Talk to the Network</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    .header h1 {
+      font-size: 2rem;
+      background: linear-gradient(135deg, #7c5cff, #00ff88);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .header .tagline {
+      color: #555;
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    .pipeline-status {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding: 0.75rem 1.5rem;
+      background: #12121a;
+      border: 1px solid #222;
+      border-radius: 8px;
+      font-size: 0.85rem;
+    }
+    .pipeline-status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff4444;
+    }
+    .pipeline-status .dot.ready { background: #00ff88; }
+    .pipeline-status .dot.partial { background: #ffaa00; }
+    .node-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #1a1a2a;
+      border: 1px solid #333;
+      font-size: 0.75rem;
+      color: #888;
+    }
+    .node-badge.active { border-color: #00ff88; color: #00ff88; }
+
+    .chat-container {
+      width: 100%;
+      max-width: 700px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .messages {
+      flex: 1;
+      min-height: 300px;
+      max-height: 60vh;
+      overflow-y: auto;
+      margin-bottom: 1rem;
+      padding: 1rem;
+      background: #0d0d14;
+      border: 1px solid #1a1a2a;
+      border-radius: 12px;
+    }
+
+    .message {
+      margin-bottom: 1rem;
+      line-height: 1.6;
+    }
+    .message .role {
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+    .message .role.user { color: #7c5cff; }
+    .message .role.assistant { color: #00ff88; }
+    .message .content {
+      color: #ccc;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .message .meta {
+      font-size: 0.7rem;
+      color: #444;
+      margin-top: 0.25rem;
+    }
+
+    .typing-indicator {
+      color: #555;
+      font-style: italic;
+      font-size: 0.85rem;
+      display: none;
+    }
+    .typing-indicator.active { display: block; }
+
+    .input-area {
+      display: flex;
+      gap: 0.5rem;
+    }
+    .input-area textarea {
+      flex: 1;
+      background: #12121a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-family: inherit;
+      font-size: 0.9rem;
+      padding: 0.75rem 1rem;
+      resize: none;
+      outline: none;
+      min-height: 48px;
+      max-height: 120px;
+    }
+    .input-area textarea:focus { border-color: #7c5cff; }
+    .input-area textarea::placeholder { color: #555; }
+
+    .input-area button {
+      background: #7c5cff;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 0 1.5rem;
+      font-family: inherit;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .input-area button:hover { background: #6a4de6; }
+    .input-area button:disabled { background: #333; cursor: not-allowed; }
+
+    .stats-bar {
+      display: flex;
+      gap: 2rem;
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      color: #444;
+      justify-content: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>SYNAPSE</h1>
+    <div class="tagline">Distributed intelligence across the browser network</div>
+  </div>
+
+  <div class="pipeline-status" id="pipelineStatus">
+    <span class="dot" id="pipelineDot"></span>
+    <span id="pipelineText">Connecting to network...</span>
+    <span id="nodeList"></span>
+  </div>
+
+  <div class="chat-container">
+    <div class="messages" id="messages">
+      <div class="message">
+        <div class="role assistant">synapse</div>
+        <div class="content">Waiting for the neural network to come online. Open browser tabs at <strong>/node/index.html</strong> to add compute nodes.</div>
+      </div>
+    </div>
+
+    <div class="typing-indicator" id="typingIndicator">
+      Thinking across the network...
+    </div>
+
+    <div class="input-area">
+      <textarea id="promptInput" placeholder="Type a message..." rows="1" disabled></textarea>
+      <button id="sendBtn" disabled>Send</button>
+    </div>
+
+    <div class="stats-bar">
+      <span>Nodes: <strong id="statNodes">0</strong></span>
+      <span>Pipeline: <strong id="statPipeline">offline</strong></span>
+      <span>Tokens generated: <strong id="statTokens">0</strong></span>
+      <span>Avg latency: <strong id="statLatency">—</strong></span>
+    </div>
+  </div>
+
+  <script type="module">
+    // ─── Simple GPT-2 BPE tokenizer (minimal, uses the Xenova tokenizer) ───
+    // For the POC, we use a simple whitespace tokenizer as fallback
+    // and try to load the proper tokenizer
+
+    let tokenizer = null;
+    let tokenizerReady = false;
+
+    // Fallback: character-level encoding (works without external deps)
+    const fallbackEncode = (text) => {
+      // Simple byte-level encoding
+      const encoder = new TextEncoder();
+      return Array.from(encoder.encode(text));
+    };
+
+    const fallbackDecode = (ids) => {
+      const decoder = new TextDecoder();
+      return decoder.decode(new Uint8Array(ids));
+    };
+
+    // Try loading the Xenova tokenizer
+    async function initTokenizer() {
+      try {
+        const { AutoTokenizer } = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js");
+        tokenizer = await AutoTokenizer.from_pretrained("Xenova/gpt2");
+        tokenizerReady = true;
+        console.log("[prompt] GPT-2 tokenizer loaded");
+      } catch (e) {
+        console.warn("[prompt] Could not load GPT-2 tokenizer, using byte-level fallback:", e.message);
+        tokenizer = { encode: (t) => ({ input_ids: fallbackEncode(t) }), decode: fallbackDecode };
+        tokenizerReady = true;
+      }
+    }
+
+    initTokenizer();
+
+    // ─── WebSocket Connection ─────────────────────────────────────────
+
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${location.host}?type=prompt`;
+    let ws = null;
+    let pipelineReady = false;
+    let totalTokens = 0;
+    let latencies = [];
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        updatePipelineStatus("connected", "Connected — waiting for nodes...");
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        handleMessage(msg);
+      };
+
+      ws.onclose = () => {
+        updatePipelineStatus("disconnected", "Disconnected — reconnecting...");
+        pipelineReady = false;
+        updateInputState();
+        setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+
+    // ─── Message Handling ─────────────────────────────────────────────
+
+    let currentRequestId = null;
+    let currentOutput = [];
+    let inferenceStartTime = null;
+
+    function handleMessage(msg) {
+      switch (msg.type) {
+        case "TOPOLOGY_UPDATE":
+          handleTopologyUpdate(msg);
+          break;
+
+        case "PIPELINE_READY":
+          pipelineReady = true;
+          updatePipelineStatus("ready", "Pipeline ready");
+          updateInputState();
+          addMessage("assistant", "The neural network is online. I'm running across distributed browser nodes. Ask me anything.");
+          break;
+
+        case "INFER_STARTED":
+          currentRequestId = msg.requestId;
+          inferenceStartTime = Date.now();
+          break;
+
+        case "INFER_ERROR":
+          hideTyping();
+          addMessage("assistant", `Error: ${msg.error}`);
+          updateInputState();
+          break;
+
+        case "OUTPUT":
+          handleOutputToken(msg);
+          break;
+      }
+    }
+
+    function handleTopologyUpdate(msg) {
+      const { nodes, pipeline } = msg;
+      const activeNodes = nodes.filter(n => n.status === "ready");
+      const totalNodes = nodes.length;
+
+      // Update node badges
+      const nodeList = document.getElementById("nodeList");
+      nodeList.innerHTML = nodes.map(n => {
+        const isActive = n.status === "ready";
+        return `<span class="node-badge ${isActive ? 'active' : ''}">${n.shardId !== null ? `L${n.layerStart}-${n.layerEnd}` : '...'}</span>`;
+      }).join(" ");
+
+      document.getElementById("statNodes").textContent = totalNodes;
+
+      if (pipeline.length >= 2 && activeNodes.length >= 2) {
+        updatePipelineStatus("ready", `Pipeline ready (${activeNodes.length} nodes)`);
+        document.getElementById("statPipeline").textContent = "online";
+        pipelineReady = true;
+      } else if (totalNodes > 0) {
+        updatePipelineStatus("partial", `${activeNodes.length}/${totalNodes} nodes ready`);
+        document.getElementById("statPipeline").textContent = "partial";
+      }
+
+      updateInputState();
+    }
+
+    function handleOutputToken(msg) {
+      hideTyping();
+      const latency = Date.now() - (inferenceStartTime || Date.now());
+      latencies.push(latency);
+      totalTokens += msg.tokens.length;
+
+      // Decode token(s)
+      let text;
+      if (tokenizer && tokenizerReady) {
+        try {
+          text = typeof tokenizer.decode === 'function'
+            ? tokenizer.decode(msg.tokens)
+            : fallbackDecode(msg.tokens);
+        } catch {
+          text = fallbackDecode(msg.tokens);
+        }
+      } else {
+        text = fallbackDecode(msg.tokens);
+      }
+
+      // Append to current assistant message or create new one
+      appendToLastAssistant(text, latency);
+
+      document.getElementById("statTokens").textContent = totalTokens;
+      const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
+      document.getElementById("statLatency").textContent = `${avgLatency}ms`;
+
+      updateInputState();
+      currentRequestId = null;
+    }
+
+    // ─── UI Helpers ───────────────────────────────────────────────────
+
+    function addMessage(role, content, meta = "") {
+      const messagesDiv = document.getElementById("messages");
+      const div = document.createElement("div");
+      div.className = "message";
+      div.innerHTML = `
+        <div class="role ${role}">${role === "user" ? "you" : "synapse"}</div>
+        <div class="content">${content}</div>
+        ${meta ? `<div class="meta">${meta}</div>` : ""}
+      `;
+      messagesDiv.appendChild(div);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      return div;
+    }
+
+    let currentAssistantDiv = null;
+
+    function appendToLastAssistant(text, latency) {
+      if (!currentAssistantDiv) {
+        currentAssistantDiv = addMessage("assistant", text, `${latency}ms`);
+      } else {
+        const contentEl = currentAssistantDiv.querySelector(".content");
+        contentEl.textContent += text;
+        const metaEl = currentAssistantDiv.querySelector(".meta");
+        if (metaEl) metaEl.textContent = `${latency}ms per token`;
+      }
+      const messagesDiv = document.getElementById("messages");
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function showTyping() {
+      document.getElementById("typingIndicator").classList.add("active");
+    }
+
+    function hideTyping() {
+      document.getElementById("typingIndicator").classList.remove("active");
+    }
+
+    function updatePipelineStatus(state, text) {
+      const dot = document.getElementById("pipelineDot");
+      dot.className = `dot ${state}`;
+      document.getElementById("pipelineText").textContent = text;
+    }
+
+    function updateInputState() {
+      const input = document.getElementById("promptInput");
+      const btn = document.getElementById("sendBtn");
+      const ready = pipelineReady && ws?.readyState === WebSocket.OPEN && !currentRequestId;
+      input.disabled = !ready;
+      btn.disabled = !ready;
+      if (ready) {
+        input.placeholder = "Type a message...";
+        input.focus();
+      } else if (currentRequestId) {
+        input.placeholder = "Generating...";
+      } else {
+        input.placeholder = "Waiting for network...";
+      }
+    }
+
+    // ─── Send Logic ───────────────────────────────────────────────────
+
+    async function sendPrompt() {
+      const input = document.getElementById("promptInput");
+      const text = input.value.trim();
+      if (!text || !pipelineReady) return;
+
+      addMessage("user", text);
+      input.value = "";
+      currentAssistantDiv = null;
+      showTyping();
+
+      // Tokenize
+      let tokenIds;
+      if (tokenizer && tokenizerReady) {
+        try {
+          const result = tokenizer.encode ? tokenizer.encode(text) : { input_ids: fallbackEncode(text) };
+          tokenIds = Array.from(result.input_ids || result);
+        } catch {
+          tokenIds = fallbackEncode(text);
+        }
+      } else {
+        tokenIds = fallbackEncode(text);
+      }
+
+      // Send to coordinator
+      ws.send(JSON.stringify({
+        type: "PROMPT_INFER",
+        tokenIds,
+      }));
+
+      updateInputState();
+    }
+
+    // ─── Event Listeners ──────────────────────────────────────────────
+
+    document.getElementById("sendBtn").addEventListener("click", sendPrompt);
+    document.getElementById("promptInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendPrompt();
+      }
+    });
+  </script>
+</body>
+</html>

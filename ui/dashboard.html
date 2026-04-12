@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synapse — Network Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+    }
+    .header h1 {
+      font-size: 1.5rem;
+      color: #7c5cff;
+    }
+    .header .status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+    }
+    .header .status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff4444;
+    }
+    .header .status .dot.connected { background: #00ff88; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: #12121a;
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .panel h2 {
+      font-size: 0.9rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 1rem;
+    }
+
+    /* Pipeline visualization */
+    .pipeline-viz {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 1.5rem 0;
+    }
+    .pipeline-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1rem;
+      background: #1a1a2a;
+      border: 2px solid #333;
+      border-radius: 12px;
+      min-width: 120px;
+      transition: all 0.3s;
+    }
+    .pipeline-node.ready { border-color: #00ff88; }
+    .pipeline-node.computing { border-color: #00aaff; animation: glow 1s infinite; }
+    .pipeline-node .name { font-size: 0.85rem; font-weight: 700; color: #ccc; }
+    .pipeline-node .layers { font-size: 0.75rem; color: #7c5cff; margin-top: 0.25rem; }
+    .pipeline-node .id { font-size: 0.65rem; color: #555; margin-top: 0.25rem; }
+
+    .pipeline-arrow {
+      font-size: 1.5rem;
+      color: #333;
+      transition: color 0.3s;
+    }
+    .pipeline-arrow.active { color: #00ff88; }
+
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 5px rgba(0, 170, 255, 0.3); }
+      50% { box-shadow: 0 0 20px rgba(0, 170, 255, 0.6); }
+    }
+
+    /* Stats */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    .stat {
+      text-align: center;
+      padding: 1rem;
+      background: #0d0d14;
+      border-radius: 8px;
+    }
+    .stat .value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #7c5cff;
+    }
+    .stat .label {
+      font-size: 0.7rem;
+      color: #555;
+      margin-top: 0.25rem;
+      text-transform: uppercase;
+    }
+
+    /* Activity log */
+    .activity-log {
+      max-height: 300px;
+      overflow-y: auto;
+      font-size: 0.8rem;
+    }
+    .activity-entry {
+      padding: 0.4rem 0;
+      border-bottom: 1px solid #1a1a2a;
+      display: flex;
+      gap: 0.5rem;
+    }
+    .activity-entry .time { color: #444; white-space: nowrap; }
+    .activity-entry .event { color: #888; }
+    .activity-entry.activation .event { color: #00aaff; }
+    .activity-entry.output .event { color: #00ff88; }
+    .activity-entry.join .event { color: #ffaa00; }
+    .activity-entry.disconnect .event { color: #ff4444; }
+
+    /* Node table */
+    .node-table {
+      width: 100%;
+      font-size: 0.8rem;
+    }
+    .node-table th {
+      text-align: left;
+      color: #555;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #222;
+      text-transform: uppercase;
+      font-size: 0.7rem;
+    }
+    .node-table td {
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #1a1a2a;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 0.7rem;
+    }
+    .status-badge.ready { background: #00ff8822; color: #00ff88; }
+    .status-badge.assigned { background: #ffaa0022; color: #ffaa00; }
+    .status-badge.connected { background: #00aaff22; color: #00aaff; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>SYNAPSE DASHBOARD</h1>
+    <div class="status">
+      <span class="dot" id="wsDot"></span>
+      <span id="wsStatus">Connecting...</span>
+    </div>
+  </div>
+
+  <!-- Pipeline Visualization -->
+  <div class="panel" style="margin-bottom: 1.5rem;">
+    <h2>Inference Pipeline</h2>
+    <div class="pipeline-viz" id="pipelineViz">
+      <div style="color: #555; font-style: italic;">No nodes connected</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Stats Panel -->
+    <div class="panel">
+      <h2>Network Stats</h2>
+      <div class="stat-grid">
+        <div class="stat">
+          <div class="value" id="statNodes">0</div>
+          <div class="label">Nodes</div>
+        </div>
+        <div class="stat">
+          <div class="value" id="statReady">0</div>
+          <div class="label">Ready</div>
+        </div>
+        <div class="stat">
+          <div class="value" id="statRequests">0</div>
+          <div class="label">Requests</div>
+        </div>
+        <div class="stat">
+          <div class="value" id="statAvgLatency">—</div>
+          <div class="label">Avg Latency</div>
+        </div>
+      </div>
+
+      <h2 style="margin-top: 1.5rem;">Node Registry</h2>
+      <table class="node-table">
+        <thead><tr><th>Node</th><th>Shard</th><th>Layers</th><th>Status</th></tr></thead>
+        <tbody id="nodeTableBody">
+          <tr><td colspan="4" style="color: #444;">No nodes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="panel">
+      <h2>Activity Stream</h2>
+      <div class="activity-log" id="activityLog">
+        <div class="activity-entry">
+          <span class="time">—</span>
+          <span class="event">Waiting for events...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${location.host}?type=dashboard`;
+    let ws = null;
+    let requestCount = 0;
+    let latencies = [];
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById("wsDot").className = "dot connected";
+        document.getElementById("wsStatus").textContent = "Connected";
+        logActivity("join", "Dashboard connected to coordinator");
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        handleMessage(msg);
+      };
+
+      ws.onclose = () => {
+        document.getElementById("wsDot").className = "dot";
+        document.getElementById("wsStatus").textContent = "Disconnected";
+        setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+
+    function handleMessage(msg) {
+      switch (msg.type) {
+        case "TOPOLOGY_UPDATE":
+          updateTopology(msg);
+          break;
+        case "ACTIVATION_ROUTED":
+          logActivity("activation", `Activation routed: ${msg.from?.slice(0, 8)} → ${msg.to?.slice(0, 8)} (layer ${msg.layer})`);
+          break;
+        case "INFERENCE_STARTED":
+          requestCount++;
+          document.getElementById("statRequests").textContent = requestCount;
+          logActivity("activation", `Inference started: ${msg.requestId} (${msg.tokenCount} tokens)`);
+          break;
+        case "OUTPUT":
+          const latency = msg.timestamp ? Date.now() - msg.timestamp : 0;
+          if (latency > 0) latencies.push(latency);
+          logActivity("output", `Output: ${msg.tokens?.length} tokens for ${msg.requestId}`);
+          updateLatencyStats();
+          break;
+      }
+    }
+
+    function updateTopology(msg) {
+      const { nodes, pipeline } = msg;
+
+      // Stats
+      document.getElementById("statNodes").textContent = nodes.length;
+      document.getElementById("statReady").textContent = nodes.filter(n => n.status === "ready").length;
+
+      // Pipeline viz
+      const viz = document.getElementById("pipelineViz");
+      if (pipeline.length === 0) {
+        viz.innerHTML = '<div style="color: #555; font-style: italic;">No pipeline — waiting for nodes</div>';
+      } else {
+        viz.innerHTML = "";
+        // Input arrow
+        const inputLabel = document.createElement("div");
+        inputLabel.style.cssText = "color: #555; font-size: 0.8rem; margin-right: 0.5rem;";
+        inputLabel.textContent = "Tokens →";
+        viz.appendChild(inputLabel);
+
+        pipeline.forEach((nodeId, i) => {
+          const nodeInfo = nodes.find(n => n.nodeId === nodeId);
+
+          const nodeDiv = document.createElement("div");
+          nodeDiv.className = `pipeline-node ${nodeInfo?.status || ""}`;
+          nodeDiv.innerHTML = `
+            <div class="name">${nodeInfo?.shardId !== null ? `Shard ${nodeInfo.shardId}` : "?"}</div>
+            <div class="layers">Layers ${nodeInfo?.layerStart ?? "?"} – ${nodeInfo?.layerEnd ?? "?"}</div>
+            <div class="id">${nodeId.slice(0, 12)}</div>
+          `;
+          viz.appendChild(nodeDiv);
+
+          if (i < pipeline.length - 1) {
+            const arrow = document.createElement("div");
+            arrow.className = `pipeline-arrow ${nodeInfo?.status === "ready" ? "active" : ""}`;
+            arrow.textContent = "→";
+            viz.appendChild(arrow);
+          }
+        });
+
+        // Output arrow
+        const outputLabel = document.createElement("div");
+        outputLabel.style.cssText = "color: #555; font-size: 0.8rem; margin-left: 0.5rem;";
+        outputLabel.textContent = "→ Output";
+        viz.appendChild(outputLabel);
+      }
+
+      // Node table
+      const tbody = document.getElementById("nodeTableBody");
+      if (nodes.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color: #444;">No nodes</td></tr>';
+      } else {
+        tbody.innerHTML = nodes.map(n => `
+          <tr>
+            <td>${n.nodeId.slice(0, 12)}</td>
+            <td>${n.shardId !== null ? `Shard ${n.shardId}` : "—"}</td>
+            <td>${n.layerStart !== null ? `${n.layerStart}–${n.layerEnd}` : "—"}</td>
+            <td><span class="status-badge ${n.status}">${n.status}</span></td>
+          </tr>
+        `).join("");
+      }
+    }
+
+    function logActivity(type, message) {
+      const log = document.getElementById("activityLog");
+      const time = new Date().toLocaleTimeString();
+      const entry = document.createElement("div");
+      entry.className = `activity-entry ${type}`;
+      entry.innerHTML = `<span class="time">${time}</span><span class="event">${message}</span>`;
+
+      // Remove placeholder
+      if (log.children.length === 1 && log.children[0].querySelector(".event")?.textContent === "Waiting for events...") {
+        log.innerHTML = "";
+      }
+
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+
+      // Keep last 100 entries
+      while (log.children.length > 100) {
+        log.removeChild(log.firstChild);
+      }
+    }
+
+    function updateLatencyStats() {
+      if (latencies.length > 0) {
+        const avg = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
+        document.getElementById("statAvgLatency").textContent = `${avg}ms`;
+      }
+    }
+  </script>
+</body>
+</html>
