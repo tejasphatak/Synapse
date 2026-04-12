@@ -160,7 +160,7 @@ export function createErrorMessage(code, message, details = null) {
 const REQUIRED_FIELDS = {
   [MessageType.JOIN]: ["nodeId", "capabilities"],
   [MessageType.ASSIGN_SHARD]: ["shardId", "layerStart", "layerEnd", "shardUrl", "sharedUrl"],
-  [MessageType.ACTIVATION]: ["fromNode", "toNode", "layer", "requestId", "tensor"],
+  [MessageType.ACTIVATION]: ["fromNode", "layer", "requestId", "tensor"],
   [MessageType.OUTPUT]: ["requestId", "tokens"],
   [MessageType.TOPOLOGY_UPDATE]: ["nodes", "pipeline"],
   [MessageType.INFERENCE_REQUEST]: ["requestId", "tokenIds"],

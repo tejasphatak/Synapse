@@ -268,6 +268,7 @@
     let currentRequestId = null;
     let currentOutput = [];
     let inferenceStartTime = null;
+    let lastTokenTime = null;
 
     function handleMessage(msg) {
       switch (msg.type) {
@@ -285,12 +286,22 @@
         case "INFER_STARTED":
           currentRequestId = msg.requestId;
           inferenceStartTime = Date.now();
+          lastTokenTime = Date.now();
           break;
 
         case "INFER_ERROR":
           hideTyping();
           addMessage("assistant", `Error: ${msg.error}`);
+          currentRequestId = null;
           updateInputState();
+          break;
+
+        case "TOKEN_GENERATED":
+          handleStreamToken(msg);
+          break;
+
+        case "GENERATION_DONE":
+          handleGenerationDone(msg);
           break;
 
         case "OUTPUT":
@@ -354,6 +365,55 @@
 
       updateInputState();
       currentRequestId = null;
+    }
+
+    function handleStreamToken(msg) {
+      hideTyping();
+      const now = Date.now();
+      const tokenLatency = now - (lastTokenTime || inferenceStartTime);
+      lastTokenTime = now;
+
+      totalTokens++;
+
+      // Decode the single token
+      let text;
+      try {
+        text = (tokenizer && tokenizerReady)
+          ? (typeof tokenizer.decode === 'function' ? tokenizer.decode([msg.token]) : fallbackDecode([msg.token]))
+          : fallbackDecode([msg.token]);
+      } catch {
+        text = fallbackDecode([msg.token]);
+      }
+
+      appendToLastAssistant(text, `${msg.totalGenerated}/${msg.maxTokens} tokens | ${tokenLatency}ms/tok`);
+
+      document.getElementById("statTokens").textContent = totalTokens;
+      document.getElementById("typingIndicator").textContent =
+        `Generating token ${msg.totalGenerated}/${msg.maxTokens}...`;
+      document.getElementById("typingIndicator").classList.add("active");
+    }
+
+    function handleGenerationDone(msg) {
+      hideTyping();
+      currentRequestId = null;
+
+      const meta = `${msg.totalTokens} tokens in ${(msg.elapsedMs / 1000).toFixed(1)}s (${msg.tokensPerSecond} tok/s)`;
+      if (currentAssistantDiv) {
+        const metaEl = currentAssistantDiv.querySelector(".meta");
+        if (metaEl) metaEl.textContent = meta;
+        else {
+          const m = document.createElement("div");
+          m.className = "meta";
+          m.textContent = meta;
+          currentAssistantDiv.appendChild(m);
+        }
+      }
+
+      latencies.push(msg.elapsedMs);
+      const avgLatency = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
+      document.getElementById("statLatency").textContent = `${avgLatency}ms`;
+
+      updateInputState();
     }
 
     // ─── UI Helpers ───────────────────────────────────────────────────
@@ -446,6 +506,7 @@
       ws.send(JSON.stringify({
         type: "PROMPT_INFER",
         tokenIds,
+        maxTokens: 30,
       }));
 
       updateInputState();

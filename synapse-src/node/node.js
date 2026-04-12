@@ -254,10 +254,12 @@ export class SynapseNode {
       }
 
       const elapsed = performance.now() - startTime;
+      this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Last inference: ${elapsed.toFixed(0)}ms`);
 
     } catch (err) {
       console.error("[node] Inference error:", err);
+      this.pipeline?._cleanupTempBuffers();
       this._setStatus("error", `Inference failed: ${err.message}`);
     }
   }
@@ -285,10 +287,12 @@ export class SynapseNode {
       }
 
       const elapsed = performance.now() - startTime;
+      this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Processed in ${elapsed.toFixed(0)}ms`);
 
     } catch (err) {
       console.error("[node] Activation processing error:", err);
+      this.pipeline?._cleanupTempBuffers();
       this._setStatus("error", `Processing failed: ${err.message}`);
     }
   }
