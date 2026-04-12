@@ -1,16 +1,36 @@
-run = "bash start.sh"
-entrypoint = "coordinator/index.js"
-
-[nix]
-channel = "stable-24_05"
-
-[env]
-PORT = "3000"
+modules = ["nodejs-24", "python-3.11"]
 
 [deployment]
-run = ["bash", "start.sh"]
-deploymentTarget = "cloudrun"
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
 
 [[ports]]
 localPort = 3000
+externalPort = 3000
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
 externalPort = 80
+
+[[ports]]
+localPort = 8082
+externalPort = 3002
