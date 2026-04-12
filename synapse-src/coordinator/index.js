@@ -33,10 +33,27 @@ const PORT = parseInt(process.env.PORT || "8080", 10);
 
 // ─── Shard Configuration ──────────────────────────────────────────
 
-const SHARD_CONFIG = [
-  { shardId: 0, layerStart: 0, layerEnd: 5, file: "shard_0.bin" },
-  { shardId: 1, layerStart: 6, layerEnd: 11, file: "shard_1.bin" },
-];
+// Auto-read shard config from manifest if available, else fall back to defaults
+function loadShardConfig() {
+  const manifestPath = join(SHARDS_DIR, "manifest.json");
+  if (existsSync(manifestPath)) {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const layout = manifest.shard_layout;
+    return Object.entries(layout).map(([id, cfg]) => ({
+      shardId: parseInt(id),
+      layerStart: cfg.layer_start,
+      layerEnd: cfg.layer_end,
+      file: cfg.file,
+    })).sort((a, b) => a.shardId - b.shardId);
+  }
+  // Default: GPT-2 small (12 layers, 2 shards)
+  return [
+    { shardId: 0, layerStart: 0, layerEnd: 5, file: "shard_0.bin" },
+    { shardId: 1, layerStart: 6, layerEnd: 11, file: "shard_1.bin" },
+  ];
+}
+
+const SHARD_CONFIG = loadShardConfig();
 
 // ─── State ────────────────────────────────────────────────────────
 
