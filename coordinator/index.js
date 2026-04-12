@@ -436,10 +436,10 @@ setInterval(() => {
 
 // ─── Start ────────────────────────────────────────────────────────
 
-httpServer.listen(PORT, () => {
-  console.log(`[coordinator] Synapse coordinator running on http://localhost:${PORT}`);
-  console.log(`[coordinator] WebSocket: ws://localhost:${PORT}`);
-  console.log(`[coordinator] Shard files: http://localhost:${PORT}/shards/`);
-  console.log(`[coordinator] Dashboard:   http://localhost:${PORT}/ui/dashboard.html`);
-  console.log(`[coordinator] Prompt UI:   http://localhost:${PORT}/`);
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`[coordinator] Synapse coordinator running on http://0.0.0.0:${PORT}`);
+  console.log(`[coordinator] WebSocket: ws://0.0.0.0:${PORT}`);
+  console.log(`[coordinator] Shard files: http://0.0.0.0:${PORT}/shards/`);
+  console.log(`[coordinator] Dashboard:   http://0.0.0.0:${PORT}/ui/dashboard.html`);
+  console.log(`[coordinator] Prompt UI:   http://0.0.0.0:${PORT}/`);
 });
