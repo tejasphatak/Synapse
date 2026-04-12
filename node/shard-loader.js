@@ -65,17 +65,15 @@ export class ShardLoader {
         continue; // Skip tensors from other shards
       }
 
-      const tensorData = new Float32Array(
-        sourceData,
-        entry.offset,
-        entry.size / 4 // float32 = 4 bytes
-      );
+      // Dequantize to float32 for GPU upload based on dtype
+      const tensorData = this._dequantizeTensor(sourceData, entry);
 
       const gpuBuffer = this._createGPUBuffer(entry.name, tensorData, entry.shape);
       this.buffers.set(entry.name, gpuBuffer);
       this.metadata.set(entry.name, {
         shape: entry.shape,
         dtype: entry.dtype,
+        originalDtype: entry.dtype,
         offset: entry.offset,
         size: entry.size,
       });
@@ -125,12 +123,16 @@ export class ShardLoader {
   getModelConfig() {
     if (!this.manifest) return null;
     return {
+      model: this.manifest.model,
+      arch: this.manifest.arch || "gpt2",
       numLayers: this.manifest.num_layers,
       hiddenSize: this.manifest.hidden_size,
       numHeads: this.manifest.num_heads,
       headDim: this.manifest.head_dim,
       vocabSize: this.manifest.vocab_size,
       maxSeqLen: this.manifest.max_seq_len,
+      dtype: this.manifest.dtype || "float32",
+      numShards: this.manifest.num_shards || 2,
     };
   }
 
@@ -164,6 +166,109 @@ export class ShardLoader {
     }
 
     return result;
+  }
+
+  /**
+   * Dequantize a tensor from its stored format to Float32Array for GPU upload.
+   * Handles float32, float16, int8, and int4 formats.
+   */
+  _dequantizeTensor(sourceData, entry) {
+    const dtype = entry.dtype;
+    const raw = new Uint8Array(sourceData, entry.offset, entry.size);
+
+    if (dtype === "float32") {
+      return new Float32Array(sourceData, entry.offset, entry.size / 4);
+    }
+
+    if (dtype === "float16") {
+      // Dequantize float16 → float32
+      const numElements = entry.size / 2;
+      const f16 = new Uint16Array(sourceData, entry.offset, numElements);
+      const f32 = new Float32Array(numElements);
+      for (let i = 0; i < numElements; i++) {
+        f32[i] = this._float16ToFloat32(f16[i]);
+      }
+      return f32;
+    }
+
+    if (dtype === "int8") {
+      // Dequantize int8 → float32 using per-tensor scale
+      const quant = entry.quant;
+      const dataBytes = new Int8Array(sourceData, entry.offset, quant.scale_offset);
+      const scaleView = new DataView(sourceData, entry.offset + quant.scale_offset, 4);
+      const scale = scaleView.getFloat32(0, true);
+
+      const f32 = new Float32Array(dataBytes.length);
+      for (let i = 0; i < dataBytes.length; i++) {
+        f32[i] = dataBytes[i] * scale;
+      }
+      return f32;
+    }
+
+    if (dtype === "int4") {
+      // Dequantize int4 → float32 using per-group scales
+      const quant = entry.quant;
+      const packedData = new Uint8Array(sourceData, entry.offset, quant.packed_size);
+      const scalesData = new Float32Array(
+        sourceData, entry.offset + quant.scales_offset, quant.scales_size / 4
+      );
+
+      const numElements = quant.original_numel;
+      const groupSize = quant.group_size;
+      const f32 = new Float32Array(numElements);
+
+      // Unpack: each byte holds two int4 values
+      let elemIdx = 0;
+      for (let i = 0; i < packedData.length && elemIdx < numElements; i++) {
+        const byte = packedData[i];
+        // Low nibble (even index)
+        let val0 = byte & 0x0F;
+        if (val0 > 7) val0 -= 16; // sign-extend from 4-bit
+        // High nibble (odd index)
+        let val1 = (byte >> 4) & 0x0F;
+        if (val1 > 7) val1 -= 16;
+
+        const groupIdx0 = Math.floor(elemIdx / groupSize);
+        const scale0 = scalesData[groupIdx0] || 1.0;
+        f32[elemIdx] = val0 * scale0;
+        elemIdx++;
+
+        if (elemIdx < numElements) {
+          const groupIdx1 = Math.floor(elemIdx / groupSize);
+          const scale1 = scalesData[groupIdx1] || 1.0;
+          f32[elemIdx] = val1 * scale1;
+          elemIdx++;
+        }
+      }
+      return f32;
+    }
+
+    // Fallback: treat as float32
+    console.warn(`[shard-loader] Unknown dtype "${dtype}", treating as float32`);
+    return new Float32Array(sourceData, entry.offset, entry.size / 4);
+  }
+
+  /**
+   * Convert a float16 (stored as uint16) to float32.
+   */
+  _float16ToFloat32(h) {
+    const sign = (h >> 15) & 0x1;
+    const exponent = (h >> 10) & 0x1F;
+    const mantissa = h & 0x3FF;
+
+    if (exponent === 0) {
+      if (mantissa === 0) return sign ? -0 : 0;
+      // Subnormal
+      const val = (mantissa / 1024) * Math.pow(2, -14);
+      return sign ? -val : val;
+    }
+
+    if (exponent === 31) {
+      return mantissa ? NaN : (sign ? -Infinity : Infinity);
+    }
+
+    const val = Math.pow(2, exponent - 15) * (1 + mantissa / 1024);
+    return sign ? -val : val;
   }
 
   /**
