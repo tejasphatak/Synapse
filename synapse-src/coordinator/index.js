@@ -57,7 +57,7 @@ const SHARD_CONFIG = loadShardConfig();
 
 // ─── State ────────────────────────────────────────────────────────
 
-const topology = new Topology();
+const topology = new Topology(SHARD_CONFIG.length);
 const router = new Router(topology);
 const dashboardClients = new Set();
 const promptClients = new Map(); // ws → { requestCallbacks }
@@ -237,7 +237,7 @@ wss.on("connection", (ws, req) => {
         handleOutput(ws, msg);
         break;
 
-      case "NODE_READY":
+      case MessageType.NODE_READY:
         handleNodeReady(msg);
         break;
 

@@ -19,6 +19,7 @@ import {
   createPingMessage,
   createActivationMessage,
   createOutputMessage,
+  createNodeReadyMessage,
 } from "../protocol/messages.js";
 
 export class SynapseNode {
@@ -218,11 +219,7 @@ export class SynapseNode {
       this._setStatus("ready", `Loaded ${result.tensorCount} tensors`);
 
       // Tell coordinator we're ready
-      this.ws.send(JSON.stringify({
-        type: "NODE_READY",
-        nodeId: this.nodeId,
-        shardId: this.shardId,
-      }));
+      this.ws.send(JSON.stringify(createNodeReadyMessage(this.nodeId, this.shardId)));
 
     } catch (err) {
       this._setStatus("error", `Failed to load shard: ${err.message}`);
@@ -367,6 +364,7 @@ export class SynapseNode {
         this._requestWakeLock();
         if (this.ws?.readyState !== WebSocket.OPEN && this.status !== "destroyed") {
           this._setStatus("reconnecting", "Tab resumed — reconnecting");
+          this._connect(`${this.baseUrl.replace(/^http/, "ws")}`);
         }
       } else {
         // Tab hidden — release wake lock to save battery
@@ -380,9 +378,10 @@ export class SynapseNode {
 
   async _requestWakeLock() {
     try {
-      if ("wakeLock" in navigator) {
+      if ("wakeLock" in navigator && !this._wakeLock) {
         this._wakeLock = await navigator.wakeLock.request("screen");
         this._wakeLock.addEventListener("release", () => {
+          this._wakeLock = null;
           console.log("[node] Wake lock released");
         });
         console.log("[node] Wake lock acquired — screen will stay on");

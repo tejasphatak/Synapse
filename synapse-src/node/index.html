@@ -2,15 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Synapse — Compute Node</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      overscroll-behavior: none;
+      touch-action: manipulation;
+    }
     body {
       font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
       background: #0a0a0f;
       color: #e0e0e0;
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -79,11 +87,27 @@
     .log-entry.warn { color: #ffaa00; }
     .log-entry.error { color: #ff4444; }
     .log-entry .timestamp { color: #444; margin-right: 8px; }
+
+    #fullscreenBtn {
+      background: #7c5cff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.6rem 1.4rem;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 1.5rem;
+      display: none;
+    }
+    #fullscreenBtn:active { opacity: 0.8; }
   </style>
 </head>
 <body>
   <h1>SYNAPSE</h1>
   <p class="subtitle">Distributed Neural Compute Node</p>
+  <button id="fullscreenBtn">Go Fullscreen</button>
 
   <div class="status-card">
     <div style="display: flex; align-items: center; margin-bottom: 1.5rem;">
@@ -221,6 +245,28 @@
 
     // Expose node globally for debugging
     window.synapseNode = node;
+
+    // ─── Mobile protections ───────────��───────────────────
+    // Prevent accidental refresh/navigation once shard is loading
+    window.addEventListener("beforeunload", (e) => {
+      if (node.status === "loading_shard" || node.status === "ready" || node.status === "computing") {
+        e.preventDefault();
+      }
+    });
+
+    // Fullscreen button (hides browser chrome, prevents swipe-to-refresh)
+    const fsBtn = document.getElementById("fullscreenBtn");
+    if (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen) {
+      fsBtn.style.display = "block";
+      fsBtn.addEventListener("click", () => {
+        const el = document.documentElement;
+        (el.requestFullscreen || el.webkitRequestFullscreen).call(el).catch(() => {});
+        fsBtn.style.display = "none";
+      });
+      document.addEventListener("fullscreenchange", () => {
+        if (!document.fullscreenElement) fsBtn.style.display = "block";
+      });
+    }
   </script>
 </body>
 </html>

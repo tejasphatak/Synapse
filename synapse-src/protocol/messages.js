@@ -21,6 +21,9 @@ export const MessageType = {
   // Node ↔ Coordinator (routed)
   ACTIVATION: "ACTIVATION",
 
+  // Node → Coordinator (shard loaded)
+  NODE_READY: "NODE_READY",
+
   // Node → Coordinator → Dashboard
   OUTPUT: "OUTPUT",
 
@@ -128,6 +131,18 @@ export function createPongMessage() {
 }
 
 /**
+ * Node reports that its shard is loaded and ready for inference.
+ */
+export function createNodeReadyMessage(nodeId, shardId) {
+  return {
+    type: MessageType.NODE_READY,
+    nodeId,
+    shardId,
+    timestamp: Date.now(),
+  };
+}
+
+/**
  * Error message.
  */
 export function createErrorMessage(code, message, details = null) {
@@ -149,6 +164,7 @@ const REQUIRED_FIELDS = {
   [MessageType.OUTPUT]: ["requestId", "tokens"],
   [MessageType.TOPOLOGY_UPDATE]: ["nodes", "pipeline"],
   [MessageType.INFERENCE_REQUEST]: ["requestId", "tokenIds"],
+  [MessageType.NODE_READY]: ["nodeId", "shardId"],
   [MessageType.PING]: [],
   [MessageType.PONG]: [],
   [MessageType.ERROR]: ["code", "message"],

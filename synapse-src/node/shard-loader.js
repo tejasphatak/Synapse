@@ -3,12 +3,44 @@
  * and uploads weight tensors into WebGPU buffers.
  */
 
+const DB_NAME = "synapse-shard-cache";
+const DB_VERSION = 1;
+const STORE_NAME = "blobs";
+
+function openCacheDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function cacheGet(db, key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const req = tx.objectStore(STORE_NAME).get(key);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function cachePut(db, key, value) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const req = tx.objectStore(STORE_NAME).put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
 export class ShardLoader {
   constructor(device) {
     this.device = device;
     this.manifest = null;
     this.buffers = new Map(); // tensor name → GPUBuffer
     this.metadata = new Map(); // tensor name → { shape, dtype, offset, size }
+    this._cacheDB = null;
   }
 
   /**
@@ -38,12 +70,18 @@ export class ShardLoader {
     const shardConfig = this.manifest.shard_layout[String(shardId)];
     if (!shardConfig) throw new Error(`Unknown shard ID: ${shardId}`);
 
-    // Download both files in parallel
+    // Open IndexedDB cache
+    try { this._cacheDB = await openCacheDB(); } catch { this._cacheDB = null; }
+
+    // Cache key includes model name + dtype so stale shards aren't reused
+    const cachePrefix = `${this.manifest.model}:${this.manifest.dtype}`;
+
+    // Download both files (or load from cache)
     const [shardData, sharedData] = await Promise.all([
-      this._fetchBinary(shardUrl, (loaded, total) =>
+      this._fetchWithCache(shardUrl, `${cachePrefix}:${shardUrl}`, (loaded, total) =>
         onProgress?.(loaded, total, "shard")
       ),
-      this._fetchBinary(sharedUrl, (loaded, total) =>
+      this._fetchWithCache(sharedUrl, `${cachePrefix}:${sharedUrl}`, (loaded, total) =>
         onProgress?.(loaded, total, "shared")
       ),
     ]);
@@ -134,6 +172,35 @@ export class ShardLoader {
       dtype: this.manifest.dtype || "float32",
       numShards: this.manifest.num_shards || 2,
     };
+  }
+
+  /**
+   * Try IndexedDB cache first, fall back to network fetch. Caches on success.
+   */
+  async _fetchWithCache(url, cacheKey, onProgress = null) {
+    if (this._cacheDB) {
+      try {
+        const cached = await cacheGet(this._cacheDB, cacheKey);
+        if (cached) {
+          console.log(`[shard-loader] Cache hit: ${cacheKey} (${(cached.byteLength / 1024 / 1024).toFixed(1)} MB)`);
+          onProgress?.(cached.byteLength, cached.byteLength, "cached");
+          return cached;
+        }
+      } catch (e) {
+        console.warn("[shard-loader] Cache read failed:", e.message);
+      }
+    }
+
+    const data = await this._fetchBinary(url, onProgress);
+
+    // Store in cache (fire-and-forget)
+    if (this._cacheDB) {
+      cachePut(this._cacheDB, cacheKey, data).catch((e) =>
+        console.warn("[shard-loader] Cache write failed:", e.message)
+      );
+    }
+
+    return data;
   }
 
   /**
