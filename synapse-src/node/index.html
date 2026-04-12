@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synapse — Compute Node</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+    h1 {
+      font-size: 1.5rem;
+      color: #7c5cff;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 2rem; }
+
+    .status-card {
+      background: #12121a;
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 2rem;
+      width: 100%;
+      max-width: 600px;
+      margin-bottom: 1.5rem;
+    }
+    .status-indicator {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+      animation: pulse 2s infinite;
+    }
+    .status-indicator.ready { background: #00ff88; }
+    .status-indicator.loading { background: #ffaa00; }
+    .status-indicator.error { background: #ff4444; }
+    .status-indicator.computing { background: #00aaff; animation: pulse 0.5s infinite; }
+    .status-indicator.disconnected { background: #444; animation: none; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #1a1a2a;
+    }
+    .info-label { color: #888; }
+    .info-value { color: #ccc; font-weight: 600; }
+    .info-value.highlight { color: #7c5cff; }
+
+    .log-panel {
+      background: #0d0d14;
+      border: 1px solid #1a1a2a;
+      border-radius: 8px;
+      padding: 1rem;
+      width: 100%;
+      max-width: 600px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-size: 0.8rem;
+      line-height: 1.6;
+    }
+    .log-entry { color: #555; }
+    .log-entry.info { color: #888; }
+    .log-entry.success { color: #00ff88; }
+    .log-entry.warn { color: #ffaa00; }
+    .log-entry.error { color: #ff4444; }
+    .log-entry .timestamp { color: #444; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <h1>SYNAPSE</h1>
+  <p class="subtitle">Distributed Neural Compute Node</p>
+
+  <div class="status-card">
+    <div style="display: flex; align-items: center; margin-bottom: 1.5rem;">
+      <span id="statusDot" class="status-indicator loading"></span>
+      <span id="statusText" style="font-size: 1.1rem;">Initializing...</span>
+    </div>
+
+    <div class="info-row">
+      <span class="info-label">Node ID</span>
+      <span class="info-value" id="nodeId">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Shard</span>
+      <span class="info-value highlight" id="shardInfo">Waiting for assignment...</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Layers</span>
+      <span class="info-value highlight" id="layerInfo">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Pipeline Position</span>
+      <span class="info-value" id="pipelinePos">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Tensors Loaded</span>
+      <span class="info-value" id="tensorCount">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">WebGPU</span>
+      <span class="info-value" id="webgpuStatus">Checking...</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">GPU</span>
+      <span class="info-value" id="gpuVendor">—</span>
+    </div>
+    <div class="info-row" style="border-bottom: none;">
+      <span class="info-label">Device</span>
+      <span class="info-value" id="deviceType">—</span>
+    </div>
+  </div>
+
+  <div class="log-panel" id="logPanel"></div>
+
+  <script type="module">
+    import { SynapseNode } from "./node.js";
+
+    const logPanel = document.getElementById("logPanel");
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+
+    function log(message, level = "info") {
+      const time = new Date().toLocaleTimeString();
+      const entry = document.createElement("div");
+      entry.className = `log-entry ${level}`;
+      entry.innerHTML = `<span class="timestamp">${time}</span>${message}`;
+      logPanel.appendChild(entry);
+      logPanel.scrollTop = logPanel.scrollHeight;
+    }
+
+    function updateStatus(status, detail, node) {
+      const statusMap = {
+        initializing: { dot: "loading", text: "Initializing..." },
+        checking_webgpu: { dot: "loading", text: "Checking WebGPU..." },
+        connecting: { dot: "loading", text: "Connecting to coordinator..." },
+        connected: { dot: "loading", text: "Connected — waiting for shard assignment" },
+        loading_shard: { dot: "loading", text: `Loading shard: ${detail}` },
+        ready: { dot: "ready", text: `Ready ${detail ? "— " + detail : ""}` },
+        computing: { dot: "computing", text: `Computing: ${detail}` },
+        disconnected: { dot: "disconnected", text: "Disconnected" },
+        reconnecting: { dot: "loading", text: "Reconnecting..." },
+        error: { dot: "error", text: `Error: ${detail}` },
+      };
+
+      const s = statusMap[status] || { dot: "loading", text: status };
+      statusDot.className = `status-indicator ${s.dot}`;
+      statusText.textContent = s.text;
+
+      if (node) {
+        document.getElementById("nodeId").textContent = node.nodeId;
+        if (node.shardId !== null) {
+          document.getElementById("shardInfo").textContent = `Shard ${node.shardId}`;
+          document.getElementById("layerInfo").textContent = `${node.layerStart} — ${node.layerEnd}`;
+        }
+        if (node.isFirstNode) {
+          document.getElementById("pipelinePos").textContent = "First (input)";
+        } else if (node.isLastNode) {
+          document.getElementById("pipelinePos").textContent = "Last (output)";
+        } else if (node.topology?.pipeline?.length) {
+          const idx = node.topology.pipeline.indexOf(node.nodeId);
+          document.getElementById("pipelinePos").textContent = `${idx + 1} of ${node.topology.pipeline.length}`;
+        }
+      }
+
+      log(`[${status}] ${detail || ""}`, status === "error" ? "error" : status === "ready" ? "success" : "info");
+    }
+
+    // Start the node
+    const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${location.host}`;
+
+    const node = new SynapseNode(updateStatus);
+    document.getElementById("nodeId").textContent = node.nodeId;
+
+    // Check WebGPU and device info
+    if (navigator.gpu) {
+      document.getElementById("webgpuStatus").textContent = "Available";
+      document.getElementById("webgpuStatus").style.color = "#00ff88";
+
+      // Detect GPU details
+      navigator.gpu.requestAdapter().then(adapter => {
+        if (adapter) {
+          const vendor = adapter.info?.vendor || "unknown";
+          const maxBuf = Math.round(adapter.limits.maxBufferSize / 1024 / 1024);
+          document.getElementById("gpuVendor").textContent = `${vendor} (max ${maxBuf}MB buffer)`;
+        }
+      });
+    } else {
+      document.getElementById("webgpuStatus").textContent = "Not Available";
+      document.getElementById("webgpuStatus").style.color = "#ff4444";
+    }
+
+    // Device type
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    document.getElementById("deviceType").textContent = isMobile ? "Mobile" : "Desktop";
+    document.getElementById("deviceType").style.color = isMobile ? "#ffaa00" : "#00ff88";
+
+    log("Starting Synapse compute node...", "info");
+    node.start(wsUrl).then((connected) => {
+      if (connected) {
+        log("Connected to coordinator", "success");
+      } else {
+        log("Failed to connect", "error");
+      }
+    });
+
+    // Expose node globally for debugging
+    window.synapseNode = node;
+  </script>
+</body>
+</html>

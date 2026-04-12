@@ -1,0 +1,16 @@
+run = "bash start.sh"
+entrypoint = "coordinator/index.js"
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+PORT = "3000"
+
+[deployment]
+run = ["bash", "start.sh"]
+deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 3000
+externalPort = 80
