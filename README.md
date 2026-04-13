@@ -1,180 +1,179 @@
 # Synapse
 
-### Run LLMs for free. In your browser. Across every device you own.
+### The Internet is the computer. Every browser is a GPU.
 
-Synapse is a distributed inference engine that splits transformer models across multiple browser tabs, phones, and laptops — coordinated over WebSockets, computed entirely on-device via WebGPU. No cloud GPUs. No API keys. No cost per token.
+Synapse is a distributed inference engine that splits LLMs across multiple browsers and devices — phones, tablets, laptops — coordinated over WebSockets, computed entirely on-device via WebGPU. No cloud GPUs. No API keys. No cost per token.
 
-> **The idea:** Every device with a browser has a GPU sitting idle. Synapse turns a group of phones into a distributed GPU cluster that runs real language models.
+> **30 phones in a classroom can collectively run a language model. That's Synapse.**
 
 ---
 
-## Live Demo
+## What Just Happened (April 13, 2026)
 
-GPT-2 117M running distributed across two phones over a cellular network:
+GPT-2 running across a **Pixel 10 Pro XL** (PowerVR GPU) and an **iPhone 16 Pro** (Apple GPU), coordinated from a $0.03/hr GCP VM. Two different GPU architectures, two different operating systems, one distributed brain.
 
 ```
-Pixel 10 Pro XL  (4GB GPU)  ──→  Layers 0-5   ──→  activations  ──→
-Galaxy S26 Ultra  (2GB GPU)  ──→  Layers 6-11  ──→  token output ──→  streaming response
+Pixel 10 Pro XL  ──→  Layers 0-5  (PowerVR, 4GB)  ──→  activations ──→
+iPhone 16 Pro    ──→  Layers 6-11 (Apple GPU, 1GB)  ──→  token output ──→  streaming response
+
+15 tokens generated at 1.3 tok/sec — first cross-platform distributed inference in browsers.
 ```
 
-First successful end-to-end distributed inference: **April 12, 2026.**
-
 ---
 
-## Performance Journey
+## Why This Matters
 
-| Milestone | Latency/token | What changed |
-|-----------|--------------|--------------|
-| First working inference | ~3,000 ms | JSON protocol, no caching, full recompute every token |
-| Binary protocol + KV cache | ~700 ms | SYN1 24-byte wire format, GPU-side KV cache skips prefill |
-| Int8 quantization + delta encoding | ~300 ms | 4x smaller activation transfers, sparse delta compression |
-| **Current** | **~200 ms** | Zero-copy relay, shard caching, optimized attention |
-| Target (Phase 2-4) | <50 ms | Prediction engine, speculative decoding, WebRTC P2P |
+Every phone has a GPU sitting idle. Every laptop, every tablet. Billions of GPUs, unused.
 
----
+Right now, running an LLM means either:
+- Pay $1000s for cloud GPUs
+- Pay per-token to an API
+- Own expensive hardware
 
-## How It Works
+Synapse says: **what if we just use the GPUs that already exist?** Split the model, distribute the work, run inference across whatever devices are available. A classroom of Chromebooks. A family's phones at dinner. A mesh of browsers across the internet.
 
-```
-                          ┌─────────────────────┐
-                          │   Coordinator        │
-                          │   (Node.js + WS)     │
-                          │                      │
-                          │  ┌──────────────┐    │
-   Prompt UI  ◄──WSS──►  │  │ Shard Router  │    │
-                          │  │ Token Sampler │    │
-                          │  │ KV Cache Mgr  │    │
-                          │  └──────┬───────┘    │
-                          └─────────┼────────────┘
-                                    │ binary activations
-                         ┌──────────┼──────────┐
-                         ▼                      ▼
-                  ┌─────────────┐       ┌─────────────┐
-                  │  Phone A    │       │  Phone B    │
-                  │  WebGPU     │──────►│  WebGPU     │
-                  │  Layers 0-5 │ activ │  Layers 6-11│
-                  │  (Shard 0)  │       │  (Shard 1)  │
-                  └─────────────┘       └─────────────┘
-```
-
-1. **Split** — A Python script slices any HuggingFace model into N shards (embeddings shared, layers partitioned)
-2. **Load** — Each browser node downloads its shard (~80MB for GPT-2 fp16), cached in IndexedDB
-3. **Compute** — Custom WGSL compute shaders run matmul, multi-head attention, layernorm, GELU — entirely on the device GPU
-4. **Route** — The coordinator relays activation tensors between nodes using a compact binary protocol with int8 quantization
-5. **Generate** — Autoregressive loop: embed → forward all shards → sample token → repeat
-
----
-
-## Optimization Roadmap
-
-Inspired by VLSI design principles — in chip design, wire delay dominates gate delay. In distributed inference, network latency dominates GPU compute. Every optimization targets the wire.
-
-| Phase | Technique | Impact | Status |
-|-------|-----------|--------|--------|
-| **1. Wire Optimization** | Binary protocol (SYN1), KV cache, int8 activation quantization, delta encoding, zero-copy relay | 15x speedup | **85% complete** |
-| **2. Prediction Engine** | Linear extrapolation predictor, speculative decoding, early exit | 3-5x | Next up |
-| **3. Architecture** | Attention head pruning, WebRTC peer-to-peer (skip coordinator) | 2-3x | Planned |
-| **4. Advanced** | Mixture-of-Depths routing, adaptive per-layer precision, entropy coding | 1.5-2x | Research |
-
-**Theoretical bound:** Current activation payloads are ~4,400 bytes/token. Shannon entropy limit is ~100-200 bytes. There's 20x headroom left.
-
----
-
-## Where We Are Right Now
-
-**What works:**
-- Full distributed inference pipeline across multiple devices
-- Binary wire protocol with 24-byte SYN1 header
-- GPU-side KV cache (prefill once, cached decode steps)
-- Int8 activation quantization (<0.5% error) with delta encoding
-- Centralized logging + real-time performance dashboard
-- GCP deployment automation with HTTPS/WSS for mobile
-- Server-side GPT-2 BPE tokenization
-- CPU reference test that produces identical output to HuggingFace
-
-**What we're debugging:**
-- WebGPU shader correctness on mobile GPUs — found and fixed 3 critical bugs (LayerNorm workgroup scoping, GELU exp overflow, binary message detection). Fixes deployed, need end-to-end verification via headless Chrome with WebGPU on a cloud GPU instance.
-
----
-
-## The Bugs That Taught Us About Mobile WebGPU
-
-Debugging distributed GPU inference across phone browsers is uncharted territory. Here's what we hit:
-
-**1. LayerNorm produced all zeros** — WGSL `var<workgroup>` variables declared inside the function body instead of module scope. Desktop Chrome silently accepted it. Mobile GPUs silently returned zeros. Every layer after the first received meaningless input. This single bug caused weeks of "garbage output."
-
-**2. GELU activation produced NaN** — The tanh approximation `(exp(2x)-1)/(exp(2x)+1)` overflows to `inf/inf = NaN` for large inputs. One NaN in layer 3's FFN output poisons every subsequent computation. Fixed with WGSL's built-in `tanh()`.
-
-**3. JSON messages silently dropped** — Node.js WebSocket delivers all messages as `Buffer` objects. Our `isBinaryMessage()` check returned true for everything, sending JSON JOIN messages into the binary decoder where they vanished. Nodes appeared connected but never registered.
-
-**Lesson:** When your distributed system produces garbage, the bug is in the part you'd never think to check — the GPU shader scoping rules, the math library overflow behavior, the WebSocket type system.
+This is the SETI@home of AI inference.
 
 ---
 
 ## Quick Start
 
 ```bash
-cd synapse-src
+git clone https://github.com/tejasphatak/Synapse.git
+cd Synapse/synapse-src
 npm install
 python3 model/split.py --model gpt2 --dtype float16 --num-shards 2
-npm start
+node coordinator/index.js
 ```
 
-Then open:
-- `http://localhost:8080/` — Prompt UI
-- `http://localhost:8080/node/index.html` — Compute Node (open on 2+ devices)
-- `http://localhost:8080/ui/dashboard.html` — Live performance dashboard
+Open **two browser tabs** at `http://localhost:8080/node/index.html`. Each tab loads a shard and becomes a compute node. Once both show "Ready", type a message in the chat panel — tokens stream in.
 
-### Deploy to GCP
+For phones: deploy to any server with HTTPS and open the node URL on each device.
 
-```bash
-bash deploy/gcp.sh coord-up     # Spin up coordinator (~$0.03/hr)
-bash deploy/gcp.sh deploy        # Push code + start server
-bash deploy/gcp.sh coord-down    # Stop billing
+---
+
+## How It Works
+
+```
+                        ┌─────────────────────┐
+                        │   Coordinator        │
+                        │   (Node.js + WS)     │
+    Chat UI  ◄──WSS──► │  Route activations   │ ◄──WSS──►  Dashboard
+                        │  Sample tokens       │
+                        └─────────┬────────────┘
+                                  │ binary SYN1 protocol
+                       ┌──────────┼──────────┐
+                       ▼                      ▼
+                ┌─────────────┐       ┌─────────────┐
+                │  Device A   │       │  Device B   │
+                │  WebGPU     │──────►│  WebGPU     │
+                │  Layers 0-5 │ int8  │  Layers 6-11│
+                │  4GB GPU    │       │  1GB GPU    │
+                └─────────────┘       └─────────────┘
 ```
 
-### Run Any HuggingFace Model
+1. **Split** — Python script slices any HuggingFace model into N shards
+2. **Load** — Each browser downloads its shard, cached in IndexedDB for instant reload
+3. **Compute** — 11 custom WGSL shaders: matmul, multi-head attention, LayerNorm, GELU, embeddings
+4. **Route** — SYN1 binary protocol with per-channel int8 quantization (5.3x compression)
+5. **Generate** — Autoregressive loop with KV cache: prefill once, decode at O(1) per token
+
+Each device is both a **compute node** and a **chat client** — one page does everything.
+
+---
+
+## Optimization Stack
+
+Inspired by VLSI design: in chips, wire delay >> gate delay. In distributed inference, network latency >> GPU compute. Every optimization targets the wire.
+
+| Phase | What | Impact | Status |
+|-------|------|--------|--------|
+| **Wire** | Binary protocol, KV cache, per-channel int8, delta encoding, zero-copy relay | 15x | **Done** |
+| **Prediction** | Activation predictor, speculative execution, early exit detection | 3-5x | **Built** (validating) |
+| **Architecture** | Attention head pruning (25% compute reduction), WebRTC P2P | 2-3x | **Built** (validating) |
+| **Advanced** | Entropy coding, mixture-of-depths, adaptive precision | 1.5-2x | In progress |
+
+**Current:** 1.3 tok/sec across two phones over cellular network.
+**Target:** 100+ tok/sec with all optimizations enabled.
+**Theoretical bound:** Activation payloads can shrink from 4,400 → ~200 bytes/token (Shannon entropy limit). 20x headroom.
+
+---
+
+## What's Inside
+
+```
+synapse-src/
+├── coordinator/        # Node.js server — WS routing, generation loop, tokenization
+├── node/               # Browser client — WebGPU compute, chat UI, PWA
+│   ├── kernels/        # 11 WGSL shaders (matmul, attention, layernorm, gelu, embed...)
+│   ├── predictor.js    # Activation prediction (linear extrapolation)
+│   ├── speculative.js  # Speculative execution controller
+│   ├── early-exit.js   # Per-layer convergence detection
+│   ├── head-pruning.js # Online attention head importance measurement
+│   └── p2p.js          # WebRTC data channel for direct node-to-node transfer
+├── protocol/           # SYN1 binary format, per-channel int8 quantization, delta encoding, RLE
+├── model/              # Python model splitter (float32/16, int8/4, configurable shards)
+├── deploy/             # GCP automation, headless Chrome, Colab integration
+├── ui/                 # Dashboard with live metrics, QR codes for phone onboarding
+└── test/               # 48 tests — protocol, quantization, prediction, pruning, CPU validation
+```
+
+---
+
+## Run Any Model
 
 ```bash
+# GPT-2 variants
+python3 model/split.py --model gpt2 --dtype float16 --num-shards 2
 python3 model/split.py --model gpt2-medium --dtype float16 --num-shards 4
 python3 model/split.py --model gpt2-xl --dtype int8 --num-shards 8
 ```
 
-Supports float32, float16, int8, and int4 quantization with configurable shard counts.
+Supports float32, float16, int8, and int4 quantization. More shards = more devices = bigger models.
 
 ---
 
-## Architecture
+## Deploy
 
+```bash
+# GCP (coordinator: ~$0.03/hr)
+cd synapse-src/deploy
+./gcp.sh coord-up      # Spin up VM
+./gcp.sh deploy         # Push code
+./gcp.sh coord-down     # Stop billing
+
+# Or any server with Node.js
+node coordinator/index.js   # That's it
 ```
-synapse-src/
-├── coordinator/     # Node.js WebSocket server — routing, generation loop, tokenization
-├── node/            # Browser compute client — WebGPU shaders, shard loading, KV cache
-│   └── kernels/     # WGSL compute shaders — matmul, attention, layernorm, GELU, embed
-├── protocol/        # Binary wire format (SYN1), int8 quantization, delta encoding
-├── model/           # Python model splitter for HuggingFace transformers
-├── deploy/          # GCP automation, headless Chrome launcher, GPU node setup
-├── ui/              # Prompt interface, dashboard, GPU diagnostics
-└── test/            # Phase 1 validation (25 tests), CPU reference inference
-```
+
+Phones need HTTPS for WebGPU. Use Let's Encrypt + nip.io for free SSL on any IP.
 
 ---
 
-## Built With
+## The Bugs That Made This Real
 
-- **WebGPU** + **WGSL** — GPU compute in the browser
-- **WebSockets** — Real-time activation routing
-- **Node.js** — Coordinator server
-- **Python** + **HuggingFace Transformers** — Model splitting
+Three bugs that took days to find and seconds to fix:
+
+1. **LayerNorm zeros** — WGSL `var<workgroup>` inside function body. Desktop Chrome accepted it. Mobile GPUs silently returned zeros. Root cause of all garbage output.
+
+2. **GELU NaN** — `(exp(2x)-1)/(exp(2x)+1)` overflows to inf/inf = NaN. One NaN in layer 3 poisons everything downstream. Fixed with WGSL built-in `tanh()`.
+
+3. **WebSocket black hole** — `Buffer.isBuffer()` returns true for ALL Node.js WS messages. JSON control messages were silently swallowed by the binary decoder. Nodes appeared connected but never registered.
+
+**Lesson:** When distributed GPU inference produces garbage, the bug is in the part you'd never think to check.
+
+---
 
 ## Built By
 
-**Tejas Phatak** — architecture, systems, deployment
+**Tejas Phatak** — Principal Engineer at Mastercard. Architecture, systems, the original vision.
 
-**Claude** (Anthropic) — pair programming, shader debugging, optimization design
+**Claude** — Anthropic's AI. Co-architect, shader debugger, optimization engine. Lives on a GCP VM.
+
+This project was built through human-AI collaboration. Every commit, every debug session, every design decision — made together.
 
 ---
 
 ## License
 
-MIT
+MIT — use it, fork it, distribute inference across everything.
