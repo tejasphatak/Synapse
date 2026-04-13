@@ -1,0 +1,331 @@
+{
+  "reference_scores": {
+    "model": "gpt2-117M",
+    "benchmarks": {
+      "hellaswag": {
+        "acc_norm": 28.9,
+        "metric": "acc_norm",
+        "unit": "%"
+      },
+      "lambada_openai": {
+        "acc": 32.6,
+        "metric": "acc",
+        "unit": "%"
+      },
+      "wikitext2": {
+        "perplexity": 29.41,
+        "metric": "word_perplexity",
+        "unit": "ppl"
+      },
+      "arc_easy": {
+        "acc": 43.8,
+        "metric": "acc",
+        "unit": "%"
+      },
+      "piqa": {
+        "acc": 62.9,
+        "metric": "acc",
+        "unit": "%"
+      }
+    },
+    "note": "Synapse must reproduce these scores within tolerance when running the same model weights.",
+    "tolerance": {
+      "greedy_decode": "exact token match (deterministic)",
+      "perplexity": "within 5% of reference",
+      "accuracy": "within 2% of reference"
+    }
+  },
+  "generated_at": "2026-04-13T03:13:35Z",
+  "greedy_decode": [
+    {
+      "prompt": "The meaning of life is",
+      "prompt_ids": [
+        464,
+        3616,
+        286,
+        1204,
+        318
+      ],
+      "generated_ids": [
+        407,
+        262,
+        976,
+        355,
+        262,
+        3616,
+        286,
+        1918,
+        13,
+        198,
+        198,
+        464,
+        3616,
+        286,
+        1204,
+        318,
+        407,
+        262,
+        976,
+        355
+      ],
+      "generated_text": " not the same as the meaning of death.\n\nThe meaning of life is not the same as"
+    },
+    {
+      "prompt": "In a galaxy far far away",
+      "prompt_ids": [
+        818,
+        257,
+        16161,
+        1290,
+        1290,
+        1497
+      ],
+      "generated_ids": [
+        11,
+        262,
+        16161,
+        318,
+        257,
+        5909,
+        11,
+        5909,
+        11,
+        5909,
+        11,
+        5909,
+        11,
+        5909,
+        11,
+        5909,
+        11,
+        5909,
+        11,
+        5909
+      ],
+      "generated_text": ", the galaxy is a vast, vast, vast, vast, vast, vast, vast, vast"
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "prompt_ids": [
+        4299,
+        12900,
+        261,
+        44456,
+        7,
+        77,
+        2599
+      ],
+      "generated_ids": [
+        198,
+        198,
+        7783,
+        299,
+        198,
+        198,
+        4299,
+        12900,
+        261,
+        44456,
+        7,
+        77,
+        2599,
+        198,
+        198,
+        7783,
+        299,
+        198,
+        198,
+        4299
+      ],
+      "generated_text": "\n\nreturn n\n\ndef fibonacci(n):\n\nreturn n\n\ndef"
+    },
+    {
+      "prompt": "The quick brown fox",
+      "prompt_ids": [
+        464,
+        2068,
+        7586,
+        21831
+      ],
+      "generated_ids": [
+        274,
+        389,
+        257,
+        1049,
+        835,
+        284,
+        651,
+        257,
+        1310,
+        1643,
+        286,
+        257,
+        4829,
+        503,
+        286,
+        534,
+        3290,
+        13,
+        198,
+        198
+      ],
+      "generated_text": "es are a great way to get a little bit of a kick out of your dog.\n\n"
+    },
+    {
+      "prompt": "Scientists recently discovered that",
+      "prompt_ids": [
+        29193,
+        2904,
+        5071,
+        326
+      ],
+      "generated_ids": [
+        262,
+        3632,
+        286,
+        257,
+        582,
+        508,
+        550,
+        587,
+        14641,
+        351,
+        22434,
+        338,
+        4369,
+        550,
+        257,
+        1180,
+        4645,
+        621,
+        326,
+        286
+      ],
+      "generated_text": " the brain of a man who had been diagnosed with Alzheimer's disease had a different structure than that of"
+    },
+    {
+      "prompt": "Once upon a time there was",
+      "prompt_ids": [
+        7454,
+        2402,
+        257,
+        640,
+        612,
+        373
+      ],
+      "generated_ids": [
+        257,
+        1049,
+        1730,
+        286,
+        10802,
+        546,
+        262,
+        3616,
+        286,
+        262,
+        1573,
+        366,
+        69,
+        970,
+        526,
+        383,
+        1573,
+        366,
+        69,
+        970
+      ],
+      "generated_text": " a great deal of confusion about the meaning of the word \"fool.\" The word \"fool"
+    },
+    {
+      "prompt": "The capital of France is",
+      "prompt_ids": [
+        464,
+        3139,
+        286,
+        4881,
+        318
+      ],
+      "generated_ids": [
+        262,
+        3139,
+        286,
+        262,
+        4141,
+        2066,
+        11,
+        290,
+        262,
+        3139,
+        286,
+        262,
+        4141,
+        2066,
+        318,
+        262,
+        3139,
+        286,
+        262,
+        4141
+      ],
+      "generated_text": " the capital of the French Republic, and the capital of the French Republic is the capital of the French"
+    },
+    {
+      "prompt": "import numpy as np\n",
+      "prompt_ids": [
+        11748,
+        299,
+        32152,
+        355,
+        45941,
+        198
+      ],
+      "generated_ids": [
+        198,
+        4299,
+        651,
+        62,
+        77,
+        32152,
+        357,
+        2116,
+        837,
+        299,
+        15179,
+        198,
+        198,
+        37811,
+        16409,
+        262,
+        299,
+        32152,
+        7177,
+        286
+      ],
+      "generated_text": "\ndef get_numpy ( self , n ):\n\n\"\"\" Returns the numpy array of"
+    }
+  ],
+  "kv_cache_proof": [
+    {
+      "prompt": "The meaning of life is",
+      "top1_full": 407,
+      "top1_cached": 407,
+      "match": true,
+      "max_logit_diff": 8.392333984375e-05
+    },
+    {
+      "prompt": "In a galaxy far far away",
+      "top1_full": 11,
+      "top1_cached": 11,
+      "match": true,
+      "max_logit_diff": 4.57763671875e-05
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "top1_full": 198,
+      "top1_cached": 198,
+      "match": true,
+      "max_logit_diff": 9.1552734375e-05
+    }
+  ]
+}
