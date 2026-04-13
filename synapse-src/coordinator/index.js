@@ -276,7 +276,7 @@ function requestHandler(req, res) {
 
   // Serve static files from project root (strip query string)
   const urlPath = req.url.split("?")[0];
-  let filePath = urlPath === "/" ? "/ui/prompt.html" : urlPath;
+  let filePath = urlPath === "/" ? "/ui/home.html" : urlPath === "/chat" ? "/ui/prompt.html" : urlPath;
   const fullPath = join(ROOT_DIR, filePath);
 
   if (existsSync(fullPath)) {
