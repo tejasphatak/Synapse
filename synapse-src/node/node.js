@@ -303,12 +303,14 @@ export class SynapseNode {
       this.pipeline = new Pipeline(this.device, this.loader);
       await this.pipeline.init();
 
-      // Initialize speculative execution (prediction + verification, no KV cache risk)
+      // Initialize speculative execution
       if (this.useSpeculation) {
         this.speculative = new SpeculativeController(this.pipeline);
-        this.speculative.enabled = false; // start with prediction-only mode (no speculative compute)
-        // Speculative compute is risky (KV cache corruption on wrong predictions)
-        // For now, just track prediction accuracy — enable compute once accuracy is proven
+        // Start in prediction-only mode for the first few steps.
+        // Auto-enables after warmup if prediction accuracy is high enough.
+        this.speculative.enabled = false;
+        this.speculative.warmupSteps = 5;
+        this.speculative.enableThreshold = 0.99; // require 99%+ hit rate to auto-enable
       }
 
       this._setStatus("ready", `Loaded ${result.tensorCount} tensors`);
@@ -463,36 +465,103 @@ export class SynapseNode {
         hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);
       }
 
-      // Feed predictor with incoming activation (track accuracy before enabling speculation)
-      if (!isPrefill && this.speculative) {
-        // Read float32 from the hidden buffer for prediction tracking
-        const hiddenSize = hidden.shape.reduce((a, b) => a * b, 1) * 4;
-        const hiddenFloat32 = new Float32Array(
-          await this.pipeline._readBuffer(hidden.buffer, 0, hiddenSize)
-        );
-        // Check if we had a prediction for this step
-        const pred = this.speculative.predictor.predict(requestId);
-        if (pred) {
-          const v = this.speculative.predictor.verify(pred.prediction, hiddenFloat32);
-          this._sendLog("perf", "prediction_accuracy", {
-            requestId, seqLen, cosine: +v.cosine.toFixed(6), accept: v.accept,
-            confidence: +pred.confidence.toFixed(4),
-          });
-        }
-        this.speculative.predictor.observe(requestId, hiddenFloat32);
-      }
-
       if (isPrefill) {
-        // Prefill: full sequence, populate KV cache
+        // Prefill: full sequence, populate KV cache — no speculation on prefill
         hidden = await this.pipeline.forwardLayersPrefill(
           hidden, this.layerStart, this.layerEnd, requestId
         );
+        // Seed the predictor with the prefill output if speculation is active
+        if (this.speculative) {
+          const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+          const f32 = new Float32Array(await this.pipeline._readBuffer(hidden.buffer, 0, sz));
+          this.speculative.predictor.observe(requestId, f32);
+        }
       } else {
-        // Cached step: single token
-        const seqPos = seqLen - 1; // 0-indexed position of the new token
-        hidden = await this.pipeline.forwardLayersCached(
-          hidden, this.layerStart, this.layerEnd, requestId, seqPos
-        );
+        // Cached step: single token — speculation possible
+        const seqPos = seqLen - 1;
+        let usedSpeculative = false;
+
+        if (this.speculative) {
+          const hiddenSize = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+          const hiddenFloat32 = new Float32Array(
+            await this.pipeline._readBuffer(hidden.buffer, 0, hiddenSize)
+          );
+
+          // Check pending speculation from the previous step
+          const pending = this.speculative.pending.get(requestId);
+          if (pending && pending.seqPos === seqPos) {
+            const verification = this.speculative.predictor.verify(pending.prediction, hiddenFloat32);
+            this._sendLog("perf", "prediction_accuracy", {
+              requestId, seqLen, cosine: +verification.cosine.toFixed(6),
+              accept: verification.accept,
+            });
+
+            if (this.speculative.enabled && verification.accept) {
+              // Prediction was good — use speculative result, skip real compute
+              try {
+                hidden = await pending.promise;
+                usedSpeculative = true;
+                this.speculative.stats.accepted++;
+                this._sendLog("perf", "speculation_accepted", { requestId, seqLen });
+              } catch (_) {
+                usedSpeculative = false;
+              }
+            }
+
+            if (!usedSpeculative && this.speculative.enabled && pending.promise) {
+              // Rejected — roll back KV cache to before the speculative step
+              const kvCache = this.pipeline.kvCaches.get(requestId);
+              if (kvCache) kvCache.rollback(seqPos);
+              this.speculative.stats.rejected++;
+              this._sendLog("perf", "speculation_rejected", {
+                requestId, seqLen, cosine: +verification.cosine.toFixed(6),
+              });
+            }
+            this.speculative.pending.delete(requestId);
+          } else {
+            // No pending speculation — just track prediction accuracy
+            const pred = this.speculative.predictor.predict(requestId);
+            if (pred) {
+              const v = this.speculative.predictor.verify(pred.prediction, hiddenFloat32);
+              this._sendLog("perf", "prediction_accuracy", {
+                requestId, seqLen, cosine: +v.cosine.toFixed(6), accept: v.accept,
+                confidence: +pred.confidence.toFixed(4),
+              });
+            }
+          }
+
+          // Observe the real activation for future predictions
+          this.speculative.predictor.observe(requestId, hiddenFloat32);
+
+          // Auto-enable speculation after warmup if accuracy is high enough
+          if (!this.speculative.enabled && this.speculative.warmupSteps > 0) {
+            const stats = this.speculative.predictor.getStats();
+            const verified = stats.hits + stats.misses;
+            if (verified >= this.speculative.warmupSteps) {
+              if (stats.hitRate >= this.speculative.enableThreshold) {
+                this.speculative.enabled = true;
+                this._sendLog("perf", "speculation_auto_enabled", {
+                  hitRate: +stats.hitRate.toFixed(4),
+                  avgCosine: +stats.avgCosine.toFixed(6),
+                  afterSteps: verified,
+                });
+                console.log(`[node] Speculative execution auto-enabled (hitRate=${stats.hitRate.toFixed(3)}, avgCosine=${stats.avgCosine.toFixed(4)})`);
+              }
+            }
+          }
+        }
+
+        if (!usedSpeculative) {
+          // Real compute — either no speculation or speculation was rejected
+          hidden = await this.pipeline.forwardLayersCached(
+            hidden, this.layerStart, this.layerEnd, requestId, seqPos
+          );
+        }
+
+        // Kick off speculation for the NEXT step (runs in background during network transfer)
+        if (this.speculative && this.speculative.enabled) {
+          this.speculative._speculateNext(requestId, seqPos + 1, this.layerStart, this.layerEnd);
+        }
       }
 
       if (this.isLastNode) {

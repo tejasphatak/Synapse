@@ -113,6 +113,19 @@ export class KVCache {
   }
 
   /**
+   * Roll back the cache to a previous sequence position.
+   * Used when a speculative computation is rejected — the speculative
+   * step appended KV entries that need to be discarded.
+   *
+   * @param {number} seqPos - The position to roll back to (exclusive upper bound)
+   */
+  rollback(seqPos) {
+    if (seqPos < this.seqLen) {
+      this.seqLen = seqPos;
+    }
+  }
+
+  /**
    * Reset the cache (new generation or generation complete).
    */
   reset() {
