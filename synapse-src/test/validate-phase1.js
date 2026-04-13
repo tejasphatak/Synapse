@@ -947,3 +947,67 @@ describe("Per-Channel Int8 Quantization", () => {
     assert.ok(cos > 0.9999, `Per-channel relay cosine too low: ${cos}`);
   });
 });
+
+// ─── Phase 3: Head Pruning ────────────────────────────────────────
+
+import { HeadPruner } from "../node/head-pruning.js";
+
+describe("Attention Head Pruning", () => {
+  it("returns all-true mask when disabled", () => {
+    const pruner = new HeadPruner(12, 6);
+    pruner.enabled = false;
+    const mask = pruner.getHeadMask(0);
+    assert.equal(mask.length, 12);
+    assert.ok(mask.every(v => v === true));
+  });
+
+  it("prunes low-importance heads when enabled", () => {
+    const pruner = new HeadPruner(12, 6);
+    pruner.enabled = true;
+
+    // Simulate: heads 0-7 have high norms, heads 8-11 have near-zero
+    const norms = new Float32Array(12);
+    for (let i = 0; i < 8; i++) norms[i] = 1.0 + Math.random();
+    for (let i = 8; i < 12; i++) norms[i] = 0.01;
+
+    // Record multiple times to stabilize EMA
+    for (let t = 0; t < 20; t++) pruner.recordHeadNorms(0, norms);
+
+    const mask = pruner.getHeadMask(0);
+    const activeCount = mask.filter(v => v).length;
+    console.log(`    Active heads: ${activeCount}/12, mask: [${mask.map(v=>v?1:0)}]`);
+    assert.ok(activeCount >= 6 && activeCount <= 10, `Expected 6-10 active, got ${activeCount}`);
+    // Low-importance heads should be pruned
+    assert.ok(!mask[8] || !mask[9] || !mask[10] || !mask[11], "At least one low head should be pruned");
+  });
+
+  it("never prunes below minimum heads", () => {
+    const pruner = new HeadPruner(12, 6);
+    pruner.enabled = true;
+    pruner.minHeads = 8;
+
+    // All heads equally unimportant
+    const norms = new Float32Array(12).fill(0.001);
+    for (let t = 0; t < 20; t++) pruner.recordHeadNorms(0, norms);
+
+    const mask = pruner.getHeadMask(0);
+    const activeCount = mask.filter(v => v).length;
+    assert.ok(activeCount >= 8, `Should keep at least 8 heads, got ${activeCount}`);
+  });
+
+  it("tracks stats correctly", () => {
+    const pruner = new HeadPruner(12, 6);
+    pruner.enabled = true;
+    const norms = new Float32Array(12);
+    for (let i = 0; i < 12; i++) norms[i] = i < 6 ? 2.0 : 0.01;
+    for (let t = 0; t < 20; t++) pruner.recordHeadNorms(0, norms);
+
+    pruner.getHeadMask(0);
+    pruner.getHeadMask(0);
+
+    const stats = pruner.getStats();
+    console.log(`    Prune rate: ${(stats.pruneRate * 100).toFixed(1)}%`);
+    assert.ok(stats.totalHeadOps > 0);
+    assert.ok(stats.skippedHeadOps > 0);
+  });
+});
