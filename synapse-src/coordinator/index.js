@@ -441,6 +441,16 @@ function wsConnectionHandler(ws, req) {
         handleNodeLog(msg);
         break;
 
+      case "P2P_SIGNAL":
+        // Relay WebRTC signaling between nodes
+        if (msg.to) {
+          const targetNode = topology.getNode(msg.to);
+          if (targetNode && targetNode.ws && targetNode.ws.readyState === 1) {
+            targetNode.ws.send(JSON.stringify(msg));
+          }
+        }
+        break;
+
       default:
         ws.send(
           JSON.stringify(createErrorMessage("UNKNOWN_TYPE", `Unhandled message type: ${msg.type}`))
