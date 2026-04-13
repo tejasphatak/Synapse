@@ -15,12 +15,28 @@ import { ShardLoader } from "./shard-loader.js";
 import { Pipeline } from "./pipeline.js";
 import {
   MessageType,
+  PROTOCOL_V2,
   createJoinMessage,
   createPingMessage,
   createActivationMessage,
   createOutputMessage,
   createNodeReadyMessage,
 } from "../protocol/messages.js";
+import {
+  isBinaryMessage,
+  decodeBinaryMessage,
+  encodeBinaryMessage,
+  encodeBinaryOutput,
+  decodeOutputTokens,
+  BinaryMsgType,
+  QuantMode,
+  Flags,
+  getQuantMode,
+  setQuantFlags,
+  requestIdToUint32,
+  uint32ToRequestId,
+  registerRequestId,
+} from "../protocol/binary.js";
 
 export class SynapseNode {
   constructor(statusCallback = null) {
@@ -40,6 +56,9 @@ export class SynapseNode {
     this.onOutput = null;
     this.pingInterval = null;
     this.baseUrl = "";
+    this.useBinaryProtocol = false;
+    this.useQuantization = true; // int8 quantization for activation transfer
+    this._binaryRequestIds = new Map(); // string -> uint32
   }
 
   /**
@@ -104,10 +123,12 @@ export class SynapseNode {
     return new Promise((resolve) => {
       this.ws = new WebSocket(`${url}?type=node`);
 
+      this.ws.binaryType = "arraybuffer";
+
       this.ws.onopen = () => {
         this._setStatus("connected");
 
-        // Send JOIN with device capabilities
+        // Send JOIN with device capabilities (advertise binary protocol support)
         const msg = createJoinMessage(this.nodeId, {
           webgpu: true,
           maxLayers: 6,
@@ -115,6 +136,7 @@ export class SynapseNode {
           gpuVendor: this.gpuInfo?.vendor || "unknown",
           maxBufferMB: Math.round((this.gpuInfo?.maxBufferSize || 0) / 1024 / 1024),
           userAgent: navigator.userAgent,
+          protocolV2: true,
         });
         this.ws.send(JSON.stringify(msg));
 
@@ -150,9 +172,27 @@ export class SynapseNode {
   }
 
   /**
-   * Handle incoming WebSocket messages.
+   * Handle incoming WebSocket messages (binary or JSON).
    */
   async _handleMessage(raw) {
+    // Binary protocol path — activation/output messages
+    if (isBinaryMessage(raw)) {
+      try {
+        const decoded = decodeBinaryMessage(raw);
+        if (decoded.type === BinaryMsgType.ACTIVATION) {
+          const requestId = uint32ToRequestId(decoded.requestId);
+          await this._handleActivationBinary(decoded, requestId);
+        } else if (decoded.type === BinaryMsgType.OUTPUT) {
+          // Nodes don't typically receive OUTPUT, but handle for completeness
+          console.log("[node] Received binary OUTPUT");
+        }
+      } catch (err) {
+        console.error("[node] Binary decode error:", err);
+      }
+      return;
+    }
+
+    // JSON protocol path — control messages + legacy activations
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -167,7 +207,24 @@ export class SynapseNode {
         break;
 
       case MessageType.INFERENCE_REQUEST:
+        // Register the binary request ID mapping if provided
+        if (msg.binaryRequestId != null) {
+          registerRequestId(msg.requestId, msg.binaryRequestId);
+          this.useBinaryProtocol = true;
+        }
         await this._handleInferenceRequest(msg);
+        break;
+
+      case MessageType.INFERENCE_STEP:
+        // KV-cached single-token step
+        if (msg.binaryRequestId != null) {
+          registerRequestId(msg.requestId, msg.binaryRequestId);
+        }
+        await this._handleInferenceStep(msg);
+        break;
+
+      case MessageType.KV_RESET:
+        this.pipeline?.clearCache(msg.requestId);
         break;
 
       case MessageType.ACTIVATION:
@@ -228,34 +285,36 @@ export class SynapseNode {
   }
 
   /**
-   * Handle an inference request (only received by the first node).
+   * Handle an inference request — prefill (only received by the first node).
+   * Processes the full token sequence and populates the KV cache.
    */
   async _handleInferenceRequest(msg) {
     if (!this.pipeline) return;
 
-    this._setStatus("computing", `Inference ${msg.requestId}`);
+    this._setStatus("computing", `Prefill ${msg.requestId} (${msg.tokenIds.length} tokens)`);
     const startTime = performance.now();
 
     try {
       const tokenIds = msg.tokenIds;
 
-      // Embed tokens
+      // Embed all tokens
       let hidden = await this.pipeline.embed(tokenIds);
 
-      // Run assigned layers
-      hidden = await this.pipeline.forwardLayers(hidden, this.layerStart, this.layerEnd);
+      // Run assigned layers with KV cache prefill
+      hidden = await this.pipeline.forwardLayersPrefill(
+        hidden, this.layerStart, this.layerEnd, msg.requestId
+      );
 
       if (this.isLastNode) {
-        // This node holds the final layers — produce output
         await this._produceOutput(hidden, msg.requestId);
       } else {
-        // Send activation to next node via coordinator
-        await this._sendActivation(hidden, msg.requestId);
+        // Include seqPos so downstream nodes know the sequence length
+        await this._sendActivation(hidden, msg.requestId, tokenIds.length);
       }
 
       const elapsed = performance.now() - startTime;
       this.pipeline._cleanupTempBuffers();
-      this._setStatus("ready", `Last inference: ${elapsed.toFixed(0)}ms`);
+      this._setStatus("ready", `Prefill: ${elapsed.toFixed(0)}ms`);
 
     } catch (err) {
       console.error("[node] Inference error:", err);
@@ -265,25 +324,124 @@ export class SynapseNode {
   }
 
   /**
-   * Handle an activation message from the previous node.
+   * Handle a single-token inference step (KV-cached path).
+   * Only processes one new token using cached K,V from previous tokens.
+   */
+  async _handleInferenceStep(msg) {
+    if (!this.pipeline) return;
+
+    this._setStatus("computing", `Step ${msg.seqPos} for ${msg.requestId}`);
+    const startTime = performance.now();
+
+    try {
+      // Embed single token at the given position
+      let hidden = await this.pipeline.embedSingle(msg.tokenId, msg.seqPos);
+
+      // Run layers with KV cache
+      hidden = await this.pipeline.forwardLayersCached(
+        hidden, this.layerStart, this.layerEnd, msg.requestId, msg.seqPos
+      );
+
+      if (this.isLastNode) {
+        await this._produceOutput(hidden, msg.requestId);
+      } else {
+        await this._sendActivation(hidden, msg.requestId, msg.seqPos + 1);
+      }
+
+      const elapsed = performance.now() - startTime;
+      this.pipeline._cleanupTempBuffers();
+      this._setStatus("ready", `Step ${msg.seqPos}: ${elapsed.toFixed(0)}ms`);
+
+    } catch (err) {
+      console.error("[node] Inference step error:", err);
+      this.pipeline?._cleanupTempBuffers();
+      this._setStatus("error", `Step failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Handle a binary-encoded activation from the previous node.
+   * Uses KV cache: if shape is [1, hidden] it's a single-token step,
+   * if shape is [N, hidden] it's a prefill.
+   */
+  async _handleActivationBinary(decoded, requestId) {
+    if (!this.pipeline) return;
+
+    const seqLen = decoded.seqPos; // total sequence length from upstream
+    const isPrefill = decoded.shape[0] > 1;
+
+    this._setStatus("computing", `Processing ${isPrefill ? "prefill" : "step"} activation for ${requestId}`);
+    const startTime = performance.now();
+
+    try {
+      // Detect quantized payload and dequantize if needed
+      const quantMode = getQuantMode(decoded.flags);
+      let hidden;
+      if (quantMode === QuantMode.INT8) {
+        hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
+      } else {
+        hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);
+      }
+
+      if (isPrefill) {
+        // Prefill: full sequence, populate KV cache
+        hidden = await this.pipeline.forwardLayersPrefill(
+          hidden, this.layerStart, this.layerEnd, requestId
+        );
+      } else {
+        // Cached step: single token
+        const seqPos = seqLen - 1; // 0-indexed position of the new token
+        hidden = await this.pipeline.forwardLayersCached(
+          hidden, this.layerStart, this.layerEnd, requestId, seqPos
+        );
+      }
+
+      if (this.isLastNode) {
+        await this._produceOutput(hidden, requestId);
+      } else {
+        await this._sendActivation(hidden, requestId, seqLen);
+      }
+
+      const elapsed = performance.now() - startTime;
+      this.pipeline._cleanupTempBuffers();
+      this._setStatus("ready", `Processed in ${elapsed.toFixed(0)}ms`);
+    } catch (err) {
+      console.error("[node] Binary activation processing error:", err);
+      this.pipeline?._cleanupTempBuffers();
+      this._setStatus("error", `Processing failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Handle a JSON-encoded activation message from the previous node.
    */
   async _handleActivation(msg) {
     if (!this.pipeline) return;
+
+    const seqLen = msg.seqLen || msg.tensor?.shape?.[0] || 1;
+    const isPrefill = msg.tensor?.shape?.[0] > 1;
 
     this._setStatus("computing", `Processing activation for ${msg.requestId}`);
     const startTime = performance.now();
 
     try {
-      // Deserialize the incoming tensor
       let hidden = this.pipeline.deserializeTensor(msg.tensor);
 
-      // Run assigned layers
-      hidden = await this.pipeline.forwardLayers(hidden, this.layerStart, this.layerEnd);
+      if (isPrefill) {
+        hidden = await this.pipeline.forwardLayersPrefill(
+          hidden, this.layerStart, this.layerEnd, msg.requestId
+        );
+      } else {
+        const seqPos = seqLen - 1;
+        hidden = await this.pipeline.forwardLayersCached(
+          hidden, this.layerStart, this.layerEnd, msg.requestId, seqPos
+        );
+      }
 
       if (this.isLastNode) {
         await this._produceOutput(hidden, msg.requestId);
       } else {
-        await this._sendActivation(hidden, msg.requestId);
+        await this._sendActivation(hidden, msg.requestId, seqLen);
       }
 
       const elapsed = performance.now() - startTime;
@@ -304,8 +462,14 @@ export class SynapseNode {
     const logitsTensor = await this.pipeline.outputHead(hidden);
     const tokenId = await this.pipeline.sampleToken(logitsTensor, 0.8);
 
-    const outputMsg = createOutputMessage(requestId, [tokenId], "");
-    this.ws.send(JSON.stringify(outputMsg));
+    if (this.useBinaryProtocol) {
+      const numericId = requestIdToUint32(requestId);
+      const binaryMsg = encodeBinaryOutput(numericId, [tokenId]);
+      this.ws.send(binaryMsg);
+    } else {
+      const outputMsg = createOutputMessage(requestId, [tokenId], "");
+      this.ws.send(JSON.stringify(outputMsg));
+    }
 
     if (this.onOutput) {
       this.onOutput(tokenId, requestId);
@@ -314,20 +478,43 @@ export class SynapseNode {
 
   /**
    * Send activation to the next node via coordinator.
+   * @param {number} seqLen - Current sequence length (for KV cache coordination)
    */
-  async _sendActivation(hidden, requestId) {
-    const serialized = await this.pipeline.serializeTensor(hidden);
+  async _sendActivation(hidden, requestId, seqLen = 0) {
+    if (this.useBinaryProtocol) {
+      let flags = 0;
+      let serialized;
 
-    const msg = createActivationMessage(
-      this.nodeId,
-      null, // coordinator will fill in the destination
-      this.layerEnd + 1,
-      requestId,
-      serialized.data,
-      serialized.shape
-    );
+      if (this.useQuantization) {
+        serialized = await this.pipeline.serializeTensorQuantized(hidden);
+        flags = setQuantFlags(flags, QuantMode.INT8);
+      } else {
+        serialized = await this.pipeline.serializeTensorBinary(hidden);
+      }
 
-    this.ws.send(JSON.stringify(msg));
+      const numericId = requestIdToUint32(requestId);
+      const binaryMsg = encodeBinaryMessage(
+        BinaryMsgType.ACTIVATION,
+        flags,
+        seqLen,          // seqPos: downstream nodes use this for KV cache
+        numericId,
+        serialized.shape,
+        serialized.data
+      );
+      this.ws.send(binaryMsg);
+    } else {
+      const serialized = await this.pipeline.serializeTensor(hidden);
+      const msg = createActivationMessage(
+        this.nodeId,
+        null, // coordinator will fill in the destination
+        this.layerEnd + 1,
+        requestId,
+        serialized.data,
+        serialized.shape
+      );
+      msg.seqLen = seqLen; // include for KV cache coordination
+      this.ws.send(JSON.stringify(msg));
+    }
   }
 
   /**

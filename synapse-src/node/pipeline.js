@@ -7,6 +7,9 @@
  * Each browser node runs a subset of layers (e.g., layers 0-5 or 6-11).
  */
 
+import { KVCache } from "./kv-cache.js";
+import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized } from "../protocol/quantize.js";
+
 export class Pipeline {
   constructor(device, shardLoader) {
     this.device = device;
@@ -16,6 +19,7 @@ export class Pipeline {
     this.shaderModules = {}; // cached shader modules
     this._initialized = false;
     this._tempBuffers = []; // track temporary buffers for cleanup
+    this.kvCaches = new Map(); // requestId -> KVCache
   }
 
   /**
@@ -23,8 +27,8 @@ export class Pipeline {
    */
   async init() {
     const shaderNames = [
-      "matmul", "attention", "layernorm", "gelu", "residual_add", "embed",
-      "bias_add", "head_slice", "head_concat",
+      "matmul", "attention", "attention_cached", "layernorm", "gelu",
+      "residual_add", "embed", "bias_add", "head_slice", "head_concat",
     ];
 
     for (const name of shaderNames) {
@@ -265,6 +269,453 @@ export class Pipeline {
       if (r < cumulative) return i;
     }
     return probs.length - 1;
+  }
+
+  // ─── KV Cache Methods ────────────────────────────────────────
+
+  /**
+   * Get or create a KV cache for a generation request.
+   */
+  getOrCreateKVCache(requestId, layerStart, numLayers) {
+    if (!this.kvCaches.has(requestId)) {
+      const { hiddenSize, maxSeqLen } = this.config;
+      this.kvCaches.set(requestId, new KVCache(
+        this.device, numLayers, layerStart, hiddenSize, maxSeqLen
+      ));
+    }
+    return this.kvCaches.get(requestId);
+  }
+
+  /**
+   * Clear KV cache for a completed generation.
+   */
+  clearCache(requestId) {
+    const cache = this.kvCaches.get(requestId);
+    if (cache) {
+      cache.destroy();
+      this.kvCaches.delete(requestId);
+    }
+  }
+
+  /**
+   * Embed a single token at a specific sequence position.
+   * Used during KV-cached autoregressive decoding.
+   */
+  async embedSingle(tokenId, seqPos) {
+    const { hiddenSize } = this.config;
+
+    // Upload single token ID
+    const tokenBuf = this._createBuffer("token_single", 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(tokenBuf, 0, new Uint32Array([tokenId]));
+
+    const wte = this.loader.getBuffer("transformer.wte.weight");
+    const wpe = this.loader.getBuffer("transformer.wpe.weight");
+
+    const outputBuf = this._createBuffer("embed_single_out", hiddenSize * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+    // Use seqPos for positional embedding
+    const params = new Uint32Array([1, hiddenSize, seqPos, 0]);
+    const paramBuf = this._createBuffer("embed_single_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, params);
+
+    const pipeline = this._getOrCreatePipeline("embed", "main", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ]);
+
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paramBuf } },
+        { binding: 1, resource: { buffer: tokenBuf } },
+        { binding: 2, resource: { buffer: wte } },
+        { binding: 3, resource: { buffer: wpe } },
+        { binding: 4, resource: { buffer: outputBuf } },
+      ],
+    });
+
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(hiddenSize / 256));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+
+    return { buffer: outputBuf, shape: [1, hiddenSize] };
+  }
+
+  /**
+   * Run a single transformer layer with KV cache (single-token forward).
+   * Only processes the NEW token — K,V from previous tokens are cached.
+   */
+  async forwardLayerCached(hidden, layerIdx, kvCache, seqPos) {
+    const { hiddenSize, numHeads, headDim } = this.config;
+    const seqLen = 1; // always 1 token in cached mode
+    const prefix = `transformer.h.${layerIdx}`;
+
+    // ─── Pre-Attention LayerNorm ─────────────────────
+    const ln1Out = await this._layerNorm(
+      hidden.buffer, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.ln_1.weight`),
+      this.loader.getBuffer(`${prefix}.ln_1.bias`)
+    );
+
+    // ─── QKV Projection for single token ─────────────
+    const qkvOut = await this._matmul(
+      ln1Out, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.attn.c_attn.weight`), hiddenSize, 3 * hiddenSize
+    );
+    await this._addBias(qkvOut, seqLen, 3 * hiddenSize,
+      this.loader.getBuffer(`${prefix}.attn.c_attn.bias`)
+    );
+
+    // Extract K_new and V_new (full hidden size) and append to KV cache
+    // K is at offset [hiddenSize..2*hiddenSize], V at [2*hiddenSize..3*hiddenSize]
+    const kNewBuf = this._createBuffer("k_new", hiddenSize * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    const vNewBuf = this._createBuffer("v_new", hiddenSize * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+    // Copy K and V slices from QKV buffer
+    const enc = this.device.createCommandEncoder();
+    enc.copyBufferToBuffer(qkvOut, hiddenSize * 4, kNewBuf, 0, hiddenSize * 4);
+    enc.copyBufferToBuffer(qkvOut, 2 * hiddenSize * 4, vNewBuf, 0, hiddenSize * 4);
+    this.device.queue.submit([enc.finish()]);
+
+    // Append new K,V to cache
+    kvCache.append(layerIdx, kNewBuf, vNewBuf, seqPos);
+
+    // ─── Cached Multi-Head Attention ─────────────────
+    const cacheLen = seqPos + 1; // includes current token
+    const attnOut = await this._multiHeadAttentionCached(
+      qkvOut, numHeads, headDim, kvCache, layerIdx, cacheLen
+    );
+
+    // c_proj: project attention output back to hidden_size
+    const projOut = await this._matmul(
+      attnOut, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.attn.c_proj.weight`), hiddenSize, hiddenSize
+    );
+    await this._addBias(projOut, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.attn.c_proj.bias`)
+    );
+
+    // Residual connection
+    const residual1 = await this._residualAdd(hidden.buffer, projOut, seqLen * hiddenSize);
+
+    // ─── Pre-FFN LayerNorm ───────────────────────────
+    const ln2Out = await this._layerNorm(
+      residual1, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.ln_2.weight`),
+      this.loader.getBuffer(`${prefix}.ln_2.bias`)
+    );
+
+    // ─── Feed-Forward Network ────────────────────────
+    const ffnInnerDim = 4 * hiddenSize;
+    const fcOut = await this._matmul(
+      ln2Out, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.mlp.c_fc.weight`), hiddenSize, ffnInnerDim
+    );
+    await this._addBias(fcOut, seqLen, ffnInnerDim,
+      this.loader.getBuffer(`${prefix}.mlp.c_fc.bias`)
+    );
+
+    const geluOut = await this._gelu(fcOut, seqLen * ffnInnerDim);
+
+    const ffnOut = await this._matmul(
+      geluOut, seqLen, ffnInnerDim,
+      this.loader.getBuffer(`${prefix}.mlp.c_proj.weight`), ffnInnerDim, hiddenSize
+    );
+    await this._addBias(ffnOut, seqLen, hiddenSize,
+      this.loader.getBuffer(`${prefix}.mlp.c_proj.bias`)
+    );
+
+    const residual2 = await this._residualAdd(residual1, ffnOut, seqLen * hiddenSize);
+
+    return { buffer: residual2, shape: [seqLen, hiddenSize] };
+  }
+
+  /**
+   * Run all assigned layers with KV cache (single-token path).
+   */
+  async forwardLayersCached(hidden, layerStart, layerEnd, requestId, seqPos) {
+    const numLayers = layerEnd - layerStart + 1;
+    const kvCache = this.getOrCreateKVCache(requestId, layerStart, numLayers);
+    const weightBuffers = new Set(this.loader.buffers.values());
+
+    let h = hidden;
+    for (let l = layerStart; l <= layerEnd; l++) {
+      h = await this.forwardLayerCached(h, l, kvCache, seqPos);
+
+      // Free temp buffers between layers (same as non-cached path)
+      const keep = h.buffer;
+      const surviving = [];
+      for (const buf of this._tempBuffers) {
+        if (buf === keep || weightBuffers.has(buf)) {
+          surviving.push(buf);
+        } else {
+          buf.destroy();
+        }
+      }
+      this._tempBuffers = surviving;
+    }
+    return h;
+  }
+
+  /**
+   * Run full-sequence forward and populate the KV cache (prefill).
+   * This runs the standard forwardLayers but stores K,V at each layer.
+   */
+  async forwardLayersPrefill(hidden, layerStart, layerEnd, requestId) {
+    const { hiddenSize, numHeads, headDim } = this.config;
+    const seqLen = hidden.shape[0];
+    const numLayers = layerEnd - layerStart + 1;
+    const kvCache = this.getOrCreateKVCache(requestId, layerStart, numLayers);
+    const weightBuffers = new Set(this.loader.buffers.values());
+
+    let h = hidden;
+    for (let l = layerStart; l <= layerEnd; l++) {
+      const prefix = `transformer.h.${l}`;
+
+      // Standard forward layer computation
+      const ln1Out = await this._layerNorm(
+        h.buffer, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.ln_1.weight`),
+        this.loader.getBuffer(`${prefix}.ln_1.bias`)
+      );
+
+      const qkvOut = await this._matmul(
+        ln1Out, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.attn.c_attn.weight`), hiddenSize, 3 * hiddenSize
+      );
+      await this._addBias(qkvOut, seqLen, 3 * hiddenSize,
+        this.loader.getBuffer(`${prefix}.attn.c_attn.bias`)
+      );
+
+      // Extract full K and V for caching: [seqLen, hiddenSize]
+      const kBuf = this._createBuffer(`prefill_k_l${l}`, seqLen * hiddenSize * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+      const vBuf = this._createBuffer(`prefill_v_l${l}`, seqLen * hiddenSize * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+      // K is rows of qkvOut at columns [hiddenSize..2*hiddenSize]
+      // V is rows of qkvOut at columns [2*hiddenSize..3*hiddenSize]
+      // Since QKV is [seqLen, 3*hiddenSize] contiguous, we need per-row extraction
+      // Use head_slice kernel to extract full K and V sections
+      for (let h_idx = 0; h_idx < numHeads; h_idx++) {
+        const kSlice = await this._extractHeadSlice(qkvOut, seqLen, 3 * hiddenSize, hiddenSize, h_idx, headDim, numHeads);
+        const vSlice = await this._extractHeadSlice(qkvOut, seqLen, 3 * hiddenSize, 2 * hiddenSize, h_idx, headDim, numHeads);
+
+        // Copy head slices into contiguous K and V buffers
+        await this._copyHeadToOutput(kSlice, kBuf, seqLen, h_idx, headDim, numHeads);
+        await this._copyHeadToOutput(vSlice, vBuf, seqLen, h_idx, headDim, numHeads);
+      }
+
+      // Store K,V in cache for all positions
+      kvCache.appendBatch(l, kBuf, vBuf, 0, seqLen);
+
+      // Standard attention (full sequence)
+      const attnOut = await this._multiHeadAttention(qkvOut, seqLen, numHeads, headDim);
+
+      const projOut = await this._matmul(
+        attnOut, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.attn.c_proj.weight`), hiddenSize, hiddenSize
+      );
+      await this._addBias(projOut, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.attn.c_proj.bias`)
+      );
+
+      const residual1 = await this._residualAdd(h.buffer, projOut, seqLen * hiddenSize);
+
+      const ln2Out = await this._layerNorm(
+        residual1, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.ln_2.weight`),
+        this.loader.getBuffer(`${prefix}.ln_2.bias`)
+      );
+
+      const ffnInnerDim = 4 * hiddenSize;
+      const fcOut = await this._matmul(
+        ln2Out, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.mlp.c_fc.weight`), hiddenSize, ffnInnerDim
+      );
+      await this._addBias(fcOut, seqLen, ffnInnerDim,
+        this.loader.getBuffer(`${prefix}.mlp.c_fc.bias`)
+      );
+
+      const geluOut = await this._gelu(fcOut, seqLen * ffnInnerDim);
+
+      const ffnOut = await this._matmul(
+        geluOut, seqLen, ffnInnerDim,
+        this.loader.getBuffer(`${prefix}.mlp.c_proj.weight`), ffnInnerDim, hiddenSize
+      );
+      await this._addBias(ffnOut, seqLen, hiddenSize,
+        this.loader.getBuffer(`${prefix}.mlp.c_proj.bias`)
+      );
+
+      const residual2 = await this._residualAdd(residual1, ffnOut, seqLen * hiddenSize);
+      h = { buffer: residual2, shape: [seqLen, hiddenSize] };
+
+      // Cleanup temp buffers
+      const keep = h.buffer;
+      const surviving = [];
+      for (const buf of this._tempBuffers) {
+        if (buf === keep || weightBuffers.has(buf)) {
+          surviving.push(buf);
+        } else {
+          buf.destroy();
+        }
+      }
+      this._tempBuffers = surviving;
+    }
+
+    return h;
+  }
+
+  // ─── Cached Attention Kernel ────────────────────────────────
+
+  /**
+   * Multi-head attention using KV cache for single query token.
+   * Q is from the new token's QKV, K and V come from the cache.
+   */
+  async _multiHeadAttentionCached(qkvBuf, numHeads, headDim, kvCache, layerIdx, cacheLen) {
+    const hiddenSize = numHeads * headDim;
+    const outputBuf = this._createBuffer("mha_cached_out", hiddenSize * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+    const { kBuffer: fullKBuf, vBuffer: fullVBuf } = kvCache.getKV(layerIdx);
+    const scale = 1.0 / Math.sqrt(headDim);
+
+    for (let h = 0; h < numHeads; h++) {
+      // Extract Q for this head from QKV [1, 3*hiddenSize]
+      // Q is at columns [0..hiddenSize], head h at [h*headDim..(h+1)*headDim]
+      const qBuf = await this._extractHeadSlice(qkvBuf, 1, 3 * hiddenSize, 0, h, headDim, numHeads);
+
+      // Extract K_cache and V_cache for this head from the full cache buffer
+      // Cache is [maxSeqLen, hiddenSize], head h at columns [h*headDim..(h+1)*headDim]
+      // We need [cacheLen, headDim] slice
+      const kCacheBuf = await this._extractHeadSlice(fullKBuf, cacheLen, hiddenSize, 0, h, headDim, numHeads);
+      const vCacheBuf = await this._extractHeadSlice(fullVBuf, cacheLen, hiddenSize, 0, h, headDim, numHeads);
+
+      // Pass 1: Compute scores = Q·K_cache^T / sqrt(d)
+      const scoresBuf = this._createBuffer(`cached_scores_h${h}`, cacheLen * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+      const scoreParams = new ArrayBuffer(16);
+      const sv = new DataView(scoreParams);
+      sv.setUint32(0, cacheLen, true);
+      sv.setUint32(4, headDim, true);
+      sv.setFloat32(8, scale, true);
+      sv.setUint32(12, 0, true);
+      const scoreParamBuf = this._createBuffer(`cached_score_params_h${h}`, 16,
+        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      this.device.queue.writeBuffer(scoreParamBuf, 0, new Uint8Array(scoreParams));
+
+      const scoresPipeline = this._getOrCreatePipeline("attention_cached", "compute_scores_cached", [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ]);
+
+      let bg = this.device.createBindGroup({
+        layout: scoresPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: scoreParamBuf } },
+          { binding: 1, resource: { buffer: qBuf } },
+          { binding: 2, resource: { buffer: kCacheBuf } },
+          { binding: 3, resource: { buffer: scoresBuf } },
+        ],
+      });
+
+      let encoder = this.device.createCommandEncoder();
+      let pass = encoder.beginComputePass();
+      pass.setPipeline(scoresPipeline);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(Math.ceil(cacheLen / 256));
+      pass.end();
+      this.device.queue.submit([encoder.finish()]);
+
+      // Pass 2: Softmax over single row
+      const softmaxParams = new ArrayBuffer(16);
+      const smv = new DataView(softmaxParams);
+      smv.setUint32(0, cacheLen, true);
+      smv.setUint32(4, headDim, true);
+      smv.setFloat32(8, scale, true);
+      smv.setUint32(12, 0, true);
+      const softmaxParamBuf = this._createBuffer(`cached_sm_params_h${h}`, 16,
+        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      this.device.queue.writeBuffer(softmaxParamBuf, 0, new Uint8Array(softmaxParams));
+
+      const softmaxPipeline = this._getOrCreatePipeline("attention_cached_softmax", "softmax_cached", [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ]);
+
+      bg = this.device.createBindGroup({
+        layout: softmaxPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: softmaxParamBuf } },
+          { binding: 1, resource: { buffer: scoresBuf } },
+        ],
+      });
+
+      encoder = this.device.createCommandEncoder();
+      pass = encoder.beginComputePass();
+      pass.setPipeline(softmaxPipeline);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(1); // single row
+      pass.end();
+      this.device.queue.submit([encoder.finish()]);
+
+      // Pass 3: Weighted sum = scores · V_cache -> [1, headDim]
+      const headOutBuf = this._createBuffer(`cached_head_out_h${h}`, headDim * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+      const wsParams = new ArrayBuffer(16);
+      const wsv = new DataView(wsParams);
+      wsv.setUint32(0, cacheLen, true);
+      wsv.setUint32(4, headDim, true);
+      wsv.setFloat32(8, scale, true);
+      wsv.setUint32(12, 0, true);
+      const wsParamBuf = this._createBuffer(`cached_ws_params_h${h}`, 16,
+        GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      this.device.queue.writeBuffer(wsParamBuf, 0, new Uint8Array(wsParams));
+
+      const wsPipeline = this._getOrCreatePipeline("attention_cached_ws", "weighted_sum_cached", [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ]);
+
+      bg = this.device.createBindGroup({
+        layout: wsPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: wsParamBuf } },
+          { binding: 1, resource: { buffer: scoresBuf } },
+          { binding: 2, resource: { buffer: vCacheBuf } },
+          { binding: 3, resource: { buffer: headOutBuf } },
+        ],
+      });
+
+      encoder = this.device.createCommandEncoder();
+      pass = encoder.beginComputePass();
+      pass.setPipeline(wsPipeline);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(Math.ceil(headDim / 256));
+      pass.end();
+      this.device.queue.submit([encoder.finish()]);
+
+      // Copy head output to the concatenated output buffer
+      await this._copyHeadToOutput(headOutBuf, outputBuf, 1, h, headDim, numHeads);
+    }
+
+    return outputBuf;
   }
 
   // ─── Internal Kernel Dispatchers ──────────────────────────
@@ -707,10 +1158,12 @@ export class Pipeline {
     const key = `${shaderName}:${entryPoint}`;
     if (this.pipelines[key]) return this.pipelines[key];
 
-    // For attention, the shaderModule name maps differently
+    // Map pipeline keys to their shader module names
     let moduleName = shaderName;
     if (shaderName === "attention_softmax" || shaderName === "attention_ws") {
       moduleName = "attention";
+    } else if (shaderName === "attention_cached_softmax" || shaderName === "attention_cached_ws") {
+      moduleName = "attention_cached";
     }
 
     const bindGroupLayout = this.device.createBindGroupLayout({
@@ -766,6 +1219,72 @@ export class Pipeline {
     const floatData = new Float32Array(bytes.buffer);
 
     const buffer = this._createBuffer("deserialized", floatData.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(buffer, 0, floatData);
+
+    return { buffer, shape };
+  }
+
+  // ─── Binary Protocol (v2) ───────────────────────────────────────
+
+  /**
+   * Serialize a GPU tensor to a raw ArrayBuffer (no base64, no JSON).
+   * Used with the binary wire protocol.
+   */
+  async serializeTensorBinary(tensor) {
+    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
+    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
+    return {
+      shape: tensor.shape,
+      data, // raw ArrayBuffer — no base64 encoding
+    };
+  }
+
+  /**
+   * Deserialize a raw ArrayBuffer tensor and upload to GPU.
+   * Used with the binary wire protocol.
+   */
+  deserializeTensorBinary(payload, shape) {
+    // payload is a Uint8Array view — create Float32Array from its underlying buffer
+    const floatData = new Float32Array(
+      payload.buffer, payload.byteOffset, payload.byteLength / 4
+    );
+
+    const buffer = this._createBuffer("deserialized_bin", floatData.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(buffer, 0, floatData);
+
+    return { buffer, shape };
+  }
+
+  // ─── Quantized Serialization (int8) ─────────────────────────────
+
+  /**
+   * Serialize a GPU tensor as int8-quantized for wire transfer.
+   * Returns packed buffer: [int8_data...][float32_scale]
+   */
+  async serializeTensorQuantized(tensor) {
+    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
+    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
+    const float32 = new Float32Array(data);
+
+    const { data: int8Data, scale } = quantizeInt8(float32);
+    const packed = packQuantized(int8Data, scale);
+
+    return {
+      shape: tensor.shape,
+      data: packed, // ArrayBuffer: int8 data + 4-byte scale
+    };
+  }
+
+  /**
+   * Deserialize a quantized tensor (int8) and upload to GPU as float32.
+   */
+  deserializeTensorQuantized(payload, shape) {
+    const { int8Data, scale } = unpackQuantized(payload);
+    const floatData = dequantizeInt8(int8Data, scale);
+
+    const buffer = this._createBuffer("deserialized_quant", floatData.byteLength,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
     this.device.queue.writeBuffer(buffer, 0, floatData);
 
