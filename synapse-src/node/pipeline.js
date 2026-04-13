@@ -1332,8 +1332,16 @@ export class Pipeline {
       }
     }
 
-    // Use per-channel (per-row) quantization for much better accuracy
-    const cols = tensor.shape[1] || float32.length; // hiddenSize
+    // Per-channel for multi-token (prefill), per-tensor for single token (cached step)
+    // Single token has 1 row so per-channel adds overhead with no accuracy benefit
+    const rows = tensor.shape[0] || 1;
+    if (rows === 1) {
+      const { data: int8Data, scale } = quantizeInt8(float32);
+      const packed = packQuantized(int8Data, scale);
+      return { shape: tensor.shape, data: packed };
+    }
+
+    const cols = tensor.shape[1] || float32.length;
     const { data: int8Data, scales } = quantizeInt8PerChannel(float32, cols);
     const packed = packQuantizedPerChannel(int8Data, scales);
 
@@ -1345,11 +1353,22 @@ export class Pipeline {
 
   /**
    * Deserialize a quantized tensor (int8) and upload to GPU as float32.
+   * Auto-detects per-tensor vs per-channel format.
    */
   deserializeTensorQuantized(payload, shape) {
-    const { int8Data, scales, numRows } = unpackQuantizedPerChannel(payload);
-    const cols = shape[1] || int8Data.length;
-    const floatData = dequantizeInt8PerChannel(int8Data, scales, cols);
+    const rows = shape[0] || 1;
+    let floatData;
+
+    if (rows === 1) {
+      // Single token — per-tensor format: [int8_data][float32_scale]
+      const { int8Data, scale } = unpackQuantized(payload);
+      floatData = dequantizeInt8(int8Data, scale);
+    } else {
+      // Multi-token — per-channel format: [int8_data][scales][numRows]
+      const { int8Data, scales } = unpackQuantizedPerChannel(payload);
+      const cols = shape[1] || int8Data.length;
+      floatData = dequantizeInt8PerChannel(int8Data, scales, cols);
+    }
 
     const buffer = this._createBuffer("deserialized_quant", floatData.byteLength,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
