@@ -154,6 +154,19 @@
   <script type="module">
     import { SynapseNode } from "./node.js?v=20260413b";
 
+    // Remote console — streams errors back to coordinator
+    const _origConsole = { log: console.log, error: console.error, warn: console.warn };
+    function remoteLog(level, ...args) {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      fetch('/api/diag', { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ level, msg, ts: Date.now(), ua: navigator.userAgent.slice(0,100) })
+      }).catch(() => {});
+    }
+    console.log = (...a) => { _origConsole.log(...a); remoteLog('log', ...a); };
+    console.error = (...a) => { _origConsole.error(...a); remoteLog('error', ...a); };
+    console.warn = (...a) => { _origConsole.warn(...a); remoteLog('warn', ...a); };
+    window.onerror = (msg, src, line) => remoteLog('error', `${msg} at ${src}:${line}`);
+
     const logPanel = document.getElementById("logPanel");
     const statusDot = document.getElementById("statusDot");
     const statusText = document.getElementById("statusText");
