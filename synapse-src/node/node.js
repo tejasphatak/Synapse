@@ -38,6 +38,7 @@ import {
   registerRequestId,
 } from "../protocol/binary.js";
 import { unpackQuantized, dequantizeInt8 } from "../protocol/quantize.js";
+import { SpeculativeController } from "./speculative.js";
 
 export class SynapseNode {
   constructor(statusCallback = null) {
@@ -58,11 +59,13 @@ export class SynapseNode {
     this.pingInterval = null;
     this.baseUrl = "";
     this.useBinaryProtocol = false;
-    this.useQuantization = false; // DISABLED — debugging garbage output
-    this.useDeltaEncoding = false; // DISABLED — debugging garbage output
+    this.useQuantization = true;
+    this.useDeltaEncoding = true;
     this._binaryRequestIds = new Map(); // string -> uint32
     this._lastSentActivation = new Map(); // requestId -> Float32Array
     this._lastRecvActivation = new Map(); // requestId -> Float32Array
+    this.speculative = null; // initialized after pipeline is ready
+    this.useSpeculation = true;
   }
 
   /**
@@ -231,6 +234,7 @@ export class SynapseNode {
         this.pipeline?.clearCache(msg.requestId);
         this._lastSentActivation.delete(msg.requestId);
         this._lastRecvActivation.delete(msg.requestId);
+        this.speculative?.clear(msg.requestId);
         break;
 
       case MessageType.ACTIVATION:
@@ -278,6 +282,14 @@ export class SynapseNode {
       // Initialize the compute pipeline
       this.pipeline = new Pipeline(this.device, this.loader);
       await this.pipeline.init();
+
+      // Initialize speculative execution (prediction + verification, no KV cache risk)
+      if (this.useSpeculation) {
+        this.speculative = new SpeculativeController(this.pipeline);
+        this.speculative.enabled = false; // start with prediction-only mode (no speculative compute)
+        // Speculative compute is risky (KV cache corruption on wrong predictions)
+        // For now, just track prediction accuracy — enable compute once accuracy is proven
+      }
 
       this._setStatus("ready", `Loaded ${result.tensorCount} tensors`);
       this._sendLog("perf", "shard_loaded", {
@@ -431,6 +443,25 @@ export class SynapseNode {
         hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);
       }
 
+      // Feed predictor with incoming activation (track accuracy before enabling speculation)
+      if (!isPrefill && this.speculative) {
+        // Read float32 from the hidden buffer for prediction tracking
+        const hiddenSize = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+        const hiddenFloat32 = new Float32Array(
+          await this.pipeline._readBuffer(hidden.buffer, 0, hiddenSize)
+        );
+        // Check if we had a prediction for this step
+        const pred = this.speculative.predictor.predict(requestId);
+        if (pred) {
+          const v = this.speculative.predictor.verify(pred.prediction, hiddenFloat32);
+          this._sendLog("perf", "prediction_accuracy", {
+            requestId, seqLen, cosine: +v.cosine.toFixed(6), accept: v.accept,
+            confidence: +pred.confidence.toFixed(4),
+          });
+        }
+        this.speculative.predictor.observe(requestId, hiddenFloat32);
+      }
+
       if (isPrefill) {
         // Prefill: full sequence, populate KV cache
         hidden = await this.pipeline.forwardLayersPrefill(
@@ -559,7 +590,9 @@ export class SynapseNode {
         this._lastSentActivation.set(requestId, result.currentFloat32);
       } else if (this.useQuantization) {
         serialized = await this.pipeline.serializeTensorQuantized(hidden);
-        flags = setQuantFlags(flags, QuantMode.INT8);
+        if (!serialized.fallbackUnquantized) {
+          flags = setQuantFlags(flags, QuantMode.INT8);
+        }
       } else {
         serialized = await this.pipeline.serializeTensorBinary(hidden);
       }

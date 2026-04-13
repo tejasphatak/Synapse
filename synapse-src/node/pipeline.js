@@ -8,6 +8,7 @@
  */
 
 import { KVCache } from "./kv-cache.js";
+import { EarlyExitDetector } from "./early-exit.js";
 import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
 
 export class Pipeline {
@@ -20,6 +21,7 @@ export class Pipeline {
     this._initialized = false;
     this._tempBuffers = []; // track temporary buffers for cleanup
     this.kvCaches = new Map(); // requestId -> KVCache
+    this.earlyExit = new EarlyExitDetector(); // disabled by default, tracks metrics
   }
 
   /**
@@ -296,6 +298,7 @@ export class Pipeline {
       cache.destroy();
       this.kvCaches.delete(requestId);
     }
+    this.earlyExit?.clear(requestId);
   }
 
   /**
@@ -452,6 +455,17 @@ export class Pipeline {
     let h = hidden;
     for (let l = layerStart; l <= layerEnd; l++) {
       h = await this.forwardLayerCached(h, l, kvCache, seqPos);
+
+      // Early exit check: read hidden state and check convergence
+      if (this.earlyExit && l < layerEnd) {
+        const byteSize = h.shape.reduce((a, b) => a * b, 1) * 4;
+        const hiddenFloat32 = new Float32Array(await this._readBuffer(h.buffer, 0, byteSize));
+        const exitResult = this.earlyExit.check(requestId, l - layerStart, hiddenFloat32, numLayers);
+        if (exitResult.shouldExit) {
+          // Skip remaining layers — this token is already converged
+          break;
+        }
+      }
 
       // Free temp buffers between layers (same as non-cached path)
       const keep = h.buffer;
@@ -1309,6 +1323,14 @@ export class Pipeline {
     const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
     const data = await this._readBuffer(tensor.buffer, 0, byteSize);
     const float32 = new Float32Array(data);
+
+    // Sanity check: if input has NaN, fall back to unquantized
+    for (let i = 0; i < Math.min(float32.length, 64); i++) {
+      if (!isFinite(float32[i])) {
+        console.warn("[pipeline] NaN/Inf in activation — falling back to unquantized");
+        return { ...await this.serializeTensorBinary(tensor), fallbackUnquantized: true };
+      }
+    }
 
     const { data: int8Data, scale } = quantizeInt8(float32);
     const packed = packQuantized(int8Data, scale);
