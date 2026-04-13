@@ -10,9 +10,11 @@
  */
 
 import { createServer } from "http";
-import { readFileSync, existsSync } from "fs";
+import { createServer as createHttpsServer } from "https";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { encode as gptEncode, decode as gptDecode } from "gpt-tokenizer/model/text-davinci-001";
 import { WebSocketServer } from "ws";
 import { Topology } from "./topology.js";
 import { Router } from "./router.js";
@@ -78,6 +80,16 @@ let binaryRequestCounter = 0; // uint32 IDs for binary protocol
 // generationId → { tokenIds, generatedTokens, maxTokens, promptWs, startTime }
 const activeGenerations = new Map();
 
+// ─── Centralized Log Store ───────────────────────────────────────
+// Ring buffer of log entries from all nodes, queryable via /api/logs
+const LOG_MAX = 5000;
+const logStore = [];
+
+function addLog(entry) {
+  logStore.push(entry);
+  if (logStore.length > LOG_MAX) logStore.splice(0, logStore.length - LOG_MAX);
+}
+
 // ─── HTTP Server (serves static files + shard binaries) ───────────
 
 const MIME_TYPES = {
@@ -88,6 +100,7 @@ const MIME_TYPES = {
   ".bin": "application/octet-stream",
   ".wgsl": "text/plain",
   ".py": "text/plain",
+  ".ipynb": "application/json",
 };
 
 function getMimeType(path) {
@@ -95,10 +108,16 @@ function getMimeType(path) {
   return MIME_TYPES[ext] || "application/octet-stream";
 }
 
-const httpServer = createServer((req, res) => {
+// ─── SSL Configuration ───────────────────────────────────────────
+const SSL_CERT = join(ROOT_DIR, "..", "certs", "cert.pem");
+const SSL_KEY = join(ROOT_DIR, "..", "certs", "key.pem");
+const SSL_PORT = parseInt(process.env.SSL_PORT || "8443", 10);
+const hasSSL = existsSync(SSL_CERT) && existsSync(SSL_KEY);
+
+function requestHandler(req, res) {
   // CORS headers for browser access
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
@@ -107,10 +126,118 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  // API: tokenize text using GPT-2 BPE
+  if (req.url === "/api/tokenize" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      try {
+        const { text } = JSON.parse(body);
+        const tokenIds = gptEncode(text);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ tokenIds }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: detokenize token IDs back to text
+  if (req.url === "/api/detokenize" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      try {
+        const { tokenIds } = JSON.parse(body);
+        const text = gptDecode(tokenIds);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ text }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: receive diagnostic results from browser
+  if (req.url === "/api/diag" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      try { writeFileSync("/tmp/diag-results.txt", body); } catch {}
+      console.log("[coordinator] Diag results:\n" + body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+
   // API: get topology snapshot
   if (req.url === "/api/topology") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(topology.toSnapshot()));
+    return;
+  }
+
+  // API: query collected logs from all nodes
+  // GET /api/logs                     → last 200 entries
+  // GET /api/logs?n=500               → last 500 entries
+  // GET /api/logs?node=node-abc123    → filter by nodeId
+  // GET /api/logs?event=layer_forward → filter by event type
+  // GET /api/logs?level=perf          → filter by level
+  // GET /api/logs?since=1713000000000 → entries after timestamp
+  if (req.url.startsWith("/api/logs") && req.method === "GET") {
+    const params = new URL(req.url, `http://localhost:${PORT}`).searchParams;
+    const n = Math.min(parseInt(params.get("n") || "200", 10), LOG_MAX);
+    const nodeFilter = params.get("node");
+    const eventFilter = params.get("event");
+    const levelFilter = params.get("level");
+    const since = parseInt(params.get("since") || "0", 10);
+
+    let results = logStore;
+    if (since) results = results.filter(e => e.timestamp > since);
+    if (nodeFilter) results = results.filter(e => e.nodeId === nodeFilter);
+    if (eventFilter) results = results.filter(e => e.event === eventFilter);
+    if (levelFilter) results = results.filter(e => e.level === levelFilter);
+    results = results.slice(-n);
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ count: results.length, total: logStore.length, logs: results }));
+    return;
+  }
+
+  // API: get live performance summary (aggregated per-node stats)
+  if (req.url === "/api/perf" && req.method === "GET") {
+    const perfByNode = {};
+    for (const entry of logStore) {
+      if (entry.level !== "perf") continue;
+      if (!perfByNode[entry.nodeId]) {
+        perfByNode[entry.nodeId] = { nodeId: entry.nodeId, events: {}, lastSeen: 0 };
+      }
+      const node = perfByNode[entry.nodeId];
+      node.lastSeen = Math.max(node.lastSeen, entry.timestamp);
+      if (!node.events[entry.event]) {
+        node.events[entry.event] = { count: 0, totalMs: 0, minMs: Infinity, maxMs: 0 };
+      }
+      const ev = node.events[entry.event];
+      ev.count++;
+      const ms = entry.data?.latencyMs || entry.data?.durationMs || 0;
+      ev.totalMs += ms;
+      ev.minMs = Math.min(ev.minMs, ms);
+      ev.maxMs = Math.max(ev.maxMs, ms);
+    }
+    // Calculate averages
+    for (const node of Object.values(perfByNode)) {
+      for (const ev of Object.values(node.events)) {
+        ev.avgMs = ev.count > 0 ? +(ev.totalMs / ev.count).toFixed(2) : 0;
+        if (ev.minMs === Infinity) ev.minMs = 0;
+      }
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(perfByNode));
     return;
   }
 
@@ -154,7 +281,11 @@ const httpServer = createServer((req, res) => {
   if (existsSync(fullPath)) {
     try {
       const data = readFileSync(fullPath);
-      res.writeHead(200, { "Content-Type": getMimeType(fullPath) });
+      const headers = { "Content-Type": getMimeType(fullPath) };
+      if (fullPath.endsWith(".wgsl") || fullPath.endsWith(".js") || fullPath.endsWith(".html")) {
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+      }
+      res.writeHead(200, headers);
       res.end(data);
       return;
     } catch {
@@ -164,14 +295,32 @@ const httpServer = createServer((req, res) => {
 
   res.writeHead(404, { "Content-Type": "text/plain" });
   res.end("Not Found");
-});
+}
+
+const httpServer = createServer(requestHandler);
+
+// ─── HTTPS Server (if certs available) ───────────────────────────
+let httpsServer = null;
+if (hasSSL) {
+  httpsServer = createHttpsServer({
+    cert: readFileSync(SSL_CERT),
+    key: readFileSync(SSL_KEY),
+  }, requestHandler);
+}
 
 // ─── WebSocket Server ─────────────────────────────────────────────
+// Attach WS to both HTTP and HTTPS servers
 
 const wss = new WebSocketServer({ server: httpServer });
+let wssSecure = null;
 
-wss.on("connection", (ws, req) => {
+function setupWss(wsServer) {
+  wsServer.on("connection", wsConnectionHandler);
+}
+
+function wsConnectionHandler(ws, req) {
   const clientType = new URL(req.url, `http://localhost:${PORT}`).searchParams.get("type");
+  console.log(`[coordinator] WS connection: type=${clientType} url=${req.url}`);
   const isDashboard = clientType === "dashboard";
 
   if (isDashboard) {
@@ -288,6 +437,10 @@ wss.on("connection", (ws, req) => {
         handleNodeReady(msg);
         break;
 
+      case MessageType.NODE_LOG:
+        handleNodeLog(msg);
+        break;
+
       default:
         ws.send(
           JSON.stringify(createErrorMessage("UNKNOWN_TYPE", `Unhandled message type: ${msg.type}`))
@@ -306,7 +459,14 @@ wss.on("connection", (ws, req) => {
   ws.on("error", (err) => {
     console.error(`[coordinator] WebSocket error for node ${nodeId}:`, err.message);
   });
-});
+}
+
+// Wire up WebSocket handlers
+setupWss(wss);
+if (httpsServer) {
+  wssSecure = new WebSocketServer({ server: httpsServer });
+  setupWss(wssSecure);
+}
 
 // ─── Message Handlers ─────────────────────────────────────────────
 
@@ -400,6 +560,28 @@ function handleActivation(ws, msg) {
   }
 }
 
+function handleNodeLog(msg) {
+  addLog({
+    nodeId: msg.nodeId,
+    level: msg.level,
+    event: msg.event,
+    data: msg.data || {},
+    timestamp: msg.timestamp || Date.now(),
+  });
+
+  // Forward perf-level logs to dashboards for live monitoring
+  if (msg.level === "perf" || msg.level === "error") {
+    broadcastToDashboards({
+      type: "NODE_LOG",
+      nodeId: msg.nodeId,
+      level: msg.level,
+      event: msg.event,
+      data: msg.data,
+      timestamp: msg.timestamp,
+    });
+  }
+}
+
 function handleNodeReady(msg) {
   const { nodeId, shardId } = msg;
   console.log(`[coordinator] Node ${nodeId} ready (shard ${shardId})`);
@@ -418,8 +600,20 @@ function handleNodeReady(msg) {
 }
 
 function handleOutput(ws, msg) {
-  const genId = msg.requestId;
-  const gen = activeGenerations.get(genId);
+  let genId = msg.requestId;
+  let gen = activeGenerations.get(genId);
+
+  // If the requestId came from a node that didn't have the string mapping
+  // (e.g., last node received binary activation with numeric ID only),
+  // try to resolve via the registered binary ID mapping.
+  if (!gen && genId.startsWith("req-")) {
+    const numericId = parseInt(genId.slice(4), 10);
+    const resolved = uint32ToRequestId(numericId);
+    if (resolved !== genId) {
+      genId = resolved;
+      gen = activeGenerations.get(genId);
+    }
+  }
 
   console.log(
     `[coordinator] Output received for ${genId}: token ${msg.tokens?.[0]} (${gen ? gen.generatedTokens.length + 1 + "/" + gen.maxTokens : "no gen"})`
@@ -466,6 +660,21 @@ function handleOutput(ws, msg) {
     console.log(
       `[coordinator] Generation ${genId} complete: ${gen.generatedTokens.length} tokens in ${elapsed}ms (${tokPerSec} tok/s)`
     );
+
+    // Log generation completion for telemetry
+    addLog({
+      nodeId: "coordinator",
+      level: "perf",
+      event: "generation_complete",
+      data: {
+        requestId: genId,
+        totalTokens: gen.generatedTokens.length,
+        elapsedMs: elapsed,
+        tokensPerSecond: parseFloat(tokPerSec),
+        promptLen: gen.promptLen,
+      },
+      timestamp: Date.now(),
+    });
 
     // Send completion message
     if (gen.promptWs && gen.promptWs.readyState === 1) {
@@ -702,3 +911,10 @@ httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`[coordinator] Dashboard:   http://0.0.0.0:${PORT}/ui/dashboard.html`);
   console.log(`[coordinator] Prompt UI:   http://0.0.0.0:${PORT}/`);
 });
+
+if (httpsServer) {
+  httpsServer.listen(SSL_PORT, "0.0.0.0", () => {
+    console.log(`[coordinator] HTTPS running on https://0.0.0.0:${SSL_PORT}`);
+    console.log(`[coordinator] Secure WebSocket: wss://0.0.0.0:${SSL_PORT}`);
+  });
+}

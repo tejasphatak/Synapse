@@ -11,8 +11,8 @@
  * 6. Process INFERENCE_REQUEST / ACTIVATION messages → run pipeline → send output
  */
 
-import { ShardLoader } from "./shard-loader.js";
-import { Pipeline } from "./pipeline.js";
+import { ShardLoader } from "./shard-loader.js?v=20260413b";
+import { Pipeline } from "./pipeline.js?v=20260413b";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -37,6 +37,7 @@ import {
   uint32ToRequestId,
   registerRequestId,
 } from "../protocol/binary.js";
+import { unpackQuantized, dequantizeInt8 } from "../protocol/quantize.js";
 
 export class SynapseNode {
   constructor(statusCallback = null) {
@@ -57,8 +58,11 @@ export class SynapseNode {
     this.pingInterval = null;
     this.baseUrl = "";
     this.useBinaryProtocol = false;
-    this.useQuantization = true; // int8 quantization for activation transfer
+    this.useQuantization = false; // DISABLED — debugging garbage output
+    this.useDeltaEncoding = false; // DISABLED — debugging garbage output
     this._binaryRequestIds = new Map(); // string -> uint32
+    this._lastSentActivation = new Map(); // requestId -> Float32Array
+    this._lastRecvActivation = new Map(); // requestId -> Float32Array
   }
 
   /**
@@ -225,6 +229,8 @@ export class SynapseNode {
 
       case MessageType.KV_RESET:
         this.pipeline?.clearCache(msg.requestId);
+        this._lastSentActivation.delete(msg.requestId);
+        this._lastRecvActivation.delete(msg.requestId);
         break;
 
       case MessageType.ACTIVATION:
@@ -274,12 +280,20 @@ export class SynapseNode {
       await this.pipeline.init();
 
       this._setStatus("ready", `Loaded ${result.tensorCount} tensors`);
+      this._sendLog("perf", "shard_loaded", {
+        tensorCount: result.tensorCount,
+        layerStart: msg.layerStart,
+        layerEnd: msg.layerEnd,
+        gpuVendor: this.gpuInfo?.vendor,
+        maxBufferMB: Math.round((this.gpuInfo?.maxBufferSize || 0) / 1024 / 1024),
+      });
 
       // Tell coordinator we're ready
       this.ws.send(JSON.stringify(createNodeReadyMessage(this.nodeId, this.shardId)));
 
     } catch (err) {
       this._setStatus("error", `Failed to load shard: ${err.message}`);
+      this._sendLog("error", "shard_load_error", { error: err.message });
       console.error("[node] Shard load error:", err);
     }
   }
@@ -315,9 +329,17 @@ export class SynapseNode {
       const elapsed = performance.now() - startTime;
       this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Prefill: ${elapsed.toFixed(0)}ms`);
+      this._sendLog("perf", "prefill", {
+        requestId: msg.requestId,
+        tokenCount: msg.tokenIds.length,
+        durationMs: +elapsed.toFixed(2),
+        isFirstNode: this.isFirstNode,
+        isLastNode: this.isLastNode,
+      });
 
     } catch (err) {
       console.error("[node] Inference error:", err);
+      this._sendLog("error", "prefill_error", { requestId: msg.requestId, error: err.message });
       this.pipeline?._cleanupTempBuffers();
       this._setStatus("error", `Inference failed: ${err.message}`);
     }
@@ -351,9 +373,17 @@ export class SynapseNode {
       const elapsed = performance.now() - startTime;
       this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Step ${msg.seqPos}: ${elapsed.toFixed(0)}ms`);
+      this._sendLog("perf", "cached_step", {
+        requestId: msg.requestId,
+        seqPos: msg.seqPos,
+        durationMs: +elapsed.toFixed(2),
+        isFirstNode: this.isFirstNode,
+        isLastNode: this.isLastNode,
+      });
 
     } catch (err) {
       console.error("[node] Inference step error:", err);
+      this._sendLog("error", "cached_step_error", { requestId: msg.requestId, error: err.message });
       this.pipeline?._cleanupTempBuffers();
       this._setStatus("error", `Step failed: ${err.message}`);
     }
@@ -374,11 +404,29 @@ export class SynapseNode {
     const startTime = performance.now();
 
     try {
-      // Detect quantized payload and dequantize if needed
+      // Detect quantized/delta payload and decode accordingly
       const quantMode = getQuantMode(decoded.flags);
+      const isDelta = !!(decoded.flags & Flags.DELTA);
       let hidden;
-      if (quantMode === QuantMode.INT8) {
+
+      if (isDelta && quantMode === QuantMode.INT8) {
+        // Delta-encoded int8: dequantize delta, add to previous activation
+        const prev = this._lastRecvActivation.get(requestId);
+        if (prev) {
+          const result = this.pipeline.deserializeTensorDeltaApply(decoded.payload, decoded.shape, prev);
+          hidden = { buffer: result.buffer, shape: result.shape };
+          this._lastRecvActivation.set(requestId, result.currentFloat32);
+        } else {
+          // No previous — treat as regular int8 (first token or cache miss)
+          hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
+        }
+      } else if (quantMode === QuantMode.INT8) {
         hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
+        // Cache float32 for future delta decoding (only for single-token)
+        if (!isPrefill && this.useDeltaEncoding) {
+          const unpacked = unpackQuantized(decoded.payload);
+          this._lastRecvActivation.set(requestId, dequantizeInt8(unpacked.int8Data, unpacked.scale));
+        }
       } else {
         hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);
       }
@@ -405,8 +453,16 @@ export class SynapseNode {
       const elapsed = performance.now() - startTime;
       this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Processed in ${elapsed.toFixed(0)}ms`);
+      this._sendLog("perf", isPrefill ? "binary_prefill" : "binary_step", {
+        requestId,
+        durationMs: +elapsed.toFixed(2),
+        quantized: quantMode === QuantMode.INT8,
+        payloadBytes: decoded.payload.byteLength,
+        seqLen,
+      });
     } catch (err) {
       console.error("[node] Binary activation processing error:", err);
+      this._sendLog("error", "binary_activation_error", { requestId, error: err.message });
       this.pipeline?._cleanupTempBuffers();
       this._setStatus("error", `Processing failed: ${err.message}`);
     }
@@ -485,7 +541,23 @@ export class SynapseNode {
       let flags = 0;
       let serialized;
 
-      if (this.useQuantization) {
+      // Try delta encoding for cached steps (single-token, shape[0] === 1)
+      const isSingleToken = hidden.shape[0] === 1;
+      if (this.useDeltaEncoding && this.useQuantization && isSingleToken) {
+        const prev = this._lastSentActivation.get(requestId) || null;
+        const result = await this.pipeline.serializeTensorDelta(hidden, prev);
+        serialized = result;
+        flags = setQuantFlags(flags, QuantMode.INT8);
+        if (result.isDelta) {
+          flags |= Flags.DELTA;
+          this._sendLog("perf", "delta_send", {
+            requestId, sparsity: +(result.sparsity * 100).toFixed(1),
+            payloadBytes: result.data.byteLength,
+          });
+        }
+        // Cache the float32 for next delta
+        this._lastSentActivation.set(requestId, result.currentFloat32);
+      } else if (this.useQuantization) {
         serialized = await this.pipeline.serializeTensorQuantized(hidden);
         flags = setQuantFlags(flags, QuantMode.INT8);
       } else {
@@ -531,6 +603,24 @@ export class SynapseNode {
   _setStatus(status, detail = "") {
     this.status = status;
     this.onStatus(status, detail, this);
+  }
+
+  /**
+   * Ship a log entry to the coordinator for centralized collection.
+   * @param {"perf"|"info"|"warn"|"error"} level
+   * @param {string} event - e.g. "prefill", "cached_step", "activation_send"
+   * @param {object} data - arbitrary metrics
+   */
+  _sendLog(level, event, data = {}) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({
+      type: "NODE_LOG",
+      nodeId: this.nodeId,
+      level,
+      event,
+      data: { shardId: this.shardId, ...data },
+      timestamp: Date.now(),
+    }));
   }
 
   /**
