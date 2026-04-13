@@ -217,6 +217,29 @@
       </table>
     </div>
 
+    <!-- Phase 2+3 Metrics -->
+    <div class="panel">
+      <h2>Optimization Metrics</h2>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div>
+          <h3 style="color: #7c5cff; font-size: 0.9rem; margin-bottom: 0.5rem;">Prediction Accuracy</h3>
+          <div id="predictionMetrics" style="font-size: 0.85rem; color: #888;">Waiting for data...</div>
+        </div>
+        <div>
+          <h3 style="color: #ff6b6b; font-size: 0.9rem; margin-bottom: 0.5rem;">Head Importance (Layer 11)</h3>
+          <div id="headMetrics" style="font-size: 0.85rem; color: #888;">Waiting for data...</div>
+        </div>
+        <div>
+          <h3 style="color: #4ecdc4; font-size: 0.9rem; margin-bottom: 0.5rem;">Wire Compression</h3>
+          <div id="wireMetrics" style="font-size: 0.85rem; color: #888;">Waiting for data...</div>
+        </div>
+        <div>
+          <h3 style="color: #f7dc6f; font-size: 0.9rem; margin-bottom: 0.5rem;">Early Exit</h3>
+          <div id="earlyExitMetrics" style="font-size: 0.85rem; color: #888;">Waiting for data...</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Activity Log -->
     <div class="panel">
       <h2>Activity Stream</h2>
@@ -278,6 +301,49 @@
           logActivity("output", `Output: ${msg.tokens?.length} tokens for ${msg.requestId}`);
           updateLatencyStats();
           break;
+        case "NODE_LOG":
+          handleNodeLog(msg);
+          break;
+        case "TOKEN_GENERATED":
+          logActivity("output", `Token: "${msg.text}" (${msg.latencyMs?.toFixed(0)}ms)`);
+          break;
+      }
+    }
+
+    // ─── Optimization Metrics Tracking ─────────────────────
+    const metrics = {
+      predictions: [],
+      wireBytes: [],
+      earlyExitCosines: {},
+    };
+
+    function handleNodeLog(msg) {
+      const { event, data, level } = msg;
+
+      if (event === "prediction_accuracy" && data) {
+        metrics.predictions.push(data.cosine);
+        const avg = metrics.predictions.reduce((a,b) => a+b, 0) / metrics.predictions.length;
+        const hits = metrics.predictions.filter(c => c > 0.995).length;
+        document.getElementById("predictionMetrics").innerHTML =
+          `Avg cosine: <b style="color:#0f0">${avg.toFixed(4)}</b><br>` +
+          `Hit rate (>0.995): <b>${(hits/metrics.predictions.length*100).toFixed(0)}%</b> (${hits}/${metrics.predictions.length})`;
+      }
+
+      if ((event === "binary_step" || event === "binary_prefill") && data?.payloadBytes) {
+        metrics.wireBytes.push({ bytes: data.payloadBytes, quantized: data.quantized, seqLen: data.seqLen });
+        const last = metrics.wireBytes.slice(-10);
+        const avgBytes = last.reduce((a,b) => a + b.bytes, 0) / last.length;
+        const quantCount = last.filter(w => w.quantized).length;
+        document.getElementById("wireMetrics").innerHTML =
+          `Avg payload: <b style="color:#4ecdc4">${avgBytes.toFixed(0)} bytes</b><br>` +
+          `Quantized: ${quantCount}/${last.length} msgs`;
+      }
+
+      if (level === "perf") {
+        logActivity("activation", `[${msg.nodeId?.slice(0,8)}] ${event}: ${JSON.stringify(data).slice(0,80)}`);
+      }
+      if (level === "error") {
+        logActivity("output", `⚠ [${msg.nodeId?.slice(0,8)}] ${event}: ${data?.error || JSON.stringify(data).slice(0,80)}`);
       }
     }
 
