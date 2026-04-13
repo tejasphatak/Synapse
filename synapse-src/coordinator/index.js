@@ -175,6 +175,33 @@ function requestHandler(req, res) {
     return;
   }
 
+  // API: public health dashboard — safe, no credentials or PII
+  if (req.url === "/api/health") {
+    const uptime = process.uptime();
+    const nodes = [...topology.nodes.values()];
+    const readyNodes = nodes.filter(n => n.status === "ready");
+    const totalInferences = [...activeGenerations.values()].length;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      status: readyNodes.length >= SHARD_CONFIG.length ? "operational" : nodes.length > 0 ? "degraded" : "waiting_for_nodes",
+      version: "0.1.0",
+      uptime_seconds: Math.floor(uptime),
+      nodes: {
+        connected: nodes.length,
+        ready: readyNodes.length,
+        required: SHARD_CONFIG.length,
+        shards_covered: [...new Set(readyNodes.map(n => n.shardId))].length,
+      },
+      model: { name: "GPT-2 117M", dtype: "float16", shards: SHARD_CONFIG.length },
+      pipeline_ready: topology.pipeline.length >= SHARD_CONFIG.length,
+      active_generations: totalInferences,
+      logs_collected: logStore.length,
+      phase: "Phase 1 complete — Phase 2 (Prediction Engine) next",
+      timestamp: Date.now(),
+    }));
+    return;
+  }
+
   // API: get topology snapshot
   if (req.url === "/api/topology") {
     res.writeHead(200, { "Content-Type": "application/json" });
