@@ -95,3 +95,56 @@ export function unpackQuantized(packed) {
 
   return { int8Data, scale };
 }
+
+// ─── Delta Encoding ─────────────────────────────────────────────
+
+/**
+ * Compute delta between current and previous activation tensors.
+ * delta[i] = current[i] - previous[i]
+ *
+ * Consecutive autoregressive activations typically differ by ~5-10%,
+ * making deltas highly compressible via int8 quantization.
+ *
+ * @param {Float32Array} current
+ * @param {Float32Array} previous
+ * @returns {Float32Array}
+ */
+export function computeDelta(current, previous) {
+  const delta = new Float32Array(current.length);
+  for (let i = 0; i < current.length; i++) {
+    delta[i] = current[i] - previous[i];
+  }
+  return delta;
+}
+
+/**
+ * Reconstruct current activation from delta + previous.
+ * current[i] = previous[i] + delta[i]
+ *
+ * @param {Float32Array} delta
+ * @param {Float32Array} previous
+ * @returns {Float32Array}
+ */
+export function applyDelta(delta, previous) {
+  const current = new Float32Array(delta.length);
+  for (let i = 0; i < delta.length; i++) {
+    current[i] = previous[i] + delta[i];
+  }
+  return current;
+}
+
+/**
+ * Measure delta sparsity — fraction of values below a threshold.
+ * Useful for telemetry: high sparsity means delta encoding is effective.
+ *
+ * @param {Float32Array} delta
+ * @param {number} threshold - Values with |delta[i]| < threshold are "near-zero"
+ * @returns {number} Fraction in [0, 1]
+ */
+export function deltaSparsity(delta, threshold = 0.01) {
+  let nearZero = 0;
+  for (let i = 0; i < delta.length; i++) {
+    if (Math.abs(delta[i]) < threshold) nearZero++;
+  }
+  return nearZero / delta.length;
+}

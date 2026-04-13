@@ -73,8 +73,8 @@ export class ShardLoader {
     // Open IndexedDB cache
     try { this._cacheDB = await openCacheDB(); } catch { this._cacheDB = null; }
 
-    // Cache key includes model name + dtype so stale shards aren't reused
-    const cachePrefix = `${this.manifest.model}:${this.manifest.dtype}`;
+    // Cache key includes model name + dtype + version so stale shards aren't reused
+    const cachePrefix = `${this.manifest.model}:${this.manifest.dtype}:v4`;
 
     // Track combined download progress across both files
     const progress = { shardLoaded: 0, shardTotal: 0, sharedLoaded: 0, sharedTotal: 0 };

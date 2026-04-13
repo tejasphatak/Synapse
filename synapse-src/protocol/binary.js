@@ -200,8 +200,14 @@ export function decodeOutputTokens(payload) {
  * Works in both browser (ArrayBuffer) and Node.js (Buffer) contexts.
  */
 export function isBinaryMessage(data) {
-  if (data instanceof ArrayBuffer) return true;
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(data)) return true;
+  // Check for SYN1 magic bytes (0x53594E31) — not just buffer type,
+  // because Node.js WebSocket delivers all messages as Buffers.
+  if (data instanceof ArrayBuffer && data.byteLength >= 4) {
+    return new DataView(data).getUint32(0, false) === MAGIC;
+  }
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(data) && data.length >= 4) {
+    return data.readUInt32BE(0) === MAGIC;
+  }
   return false;
 }
 

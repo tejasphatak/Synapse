@@ -27,9 +27,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let x3 = x * x * x;
   let inner = SQRT_2_OVER_PI * (x + COEFF * x3);
 
-  // tanh approximation: tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
-  let e2x = exp(2.0 * inner);
-  let tanh_val = (e2x - 1.0) / (e2x + 1.0);
+  // Use built-in tanh — the exp-based approximation overflows for large inputs
+  let tanh_val = tanh(inner);
 
   output[idx] = 0.5 * x * (1.0 + tanh_val);
 }

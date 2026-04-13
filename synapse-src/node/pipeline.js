@@ -8,7 +8,7 @@
  */
 
 import { KVCache } from "./kv-cache.js";
-import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized } from "../protocol/quantize.js";
+import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
 
 export class Pipeline {
   constructor(device, shardLoader) {
@@ -27,12 +27,12 @@ export class Pipeline {
    */
   async init() {
     const shaderNames = [
-      "matmul", "attention", "attention_cached", "layernorm", "gelu",
+      "matmul", "matmul_transB", "attention", "attention_cached", "layernorm", "gelu",
       "residual_add", "embed", "bias_add", "head_slice", "head_concat",
     ];
 
     for (const name of shaderNames) {
-      const code = await (await fetch(`/node/kernels/${name}.wgsl`)).text();
+      const code = await (await fetch(`/node/kernels/${name}.wgsl?v=${Date.now()}`)).text();
       this.shaderModules[name] = this.device.createShaderModule({
         label: name,
         code,
@@ -219,10 +219,11 @@ export class Pipeline {
       this.loader.getBuffer("transformer.ln_f.bias")
     );
 
-    // lm_head: [hidden_size, vocab_size] — project to logits
-    const logits = await this._matmul(
+    // lm_head: weight is [vocab_size, hidden_size] (nn.Linear format)
+    // Need C = hidden × W^T, so use transposed matmul
+    const logits = await this._matmulTransB(
       lnOut, seqLen, hiddenSize,
-      this.loader.getBuffer("lm_head.weight"), hiddenSize, vocabSize
+      this.loader.getBuffer("lm_head.weight"), vocabSize
     );
 
     return { buffer: logits, shape: [seqLen, vocabSize] };
@@ -800,6 +801,47 @@ export class Pipeline {
     return outputBuf;
   }
 
+  /**
+   * Matrix multiply with transposed B: C = A × Bᵀ
+   * A is [M, K], B is [N, K] (stored row-major), C is [M, N]
+   * Used for lm_head where weight is [vocab_size, hidden_size].
+   */
+  async _matmulTransB(inputBuf, M, K, weightBuf, N) {
+    const outputBuf = this._createBuffer("mm_transB_out", M * N * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+    const params = new Uint32Array([M, K, N, 0]);
+    const paramBuf = this._createBuffer("mm_transB_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, params);
+
+    const pipeline = this._getOrCreatePipeline("matmul_transB", "main", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ]);
+
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paramBuf } },
+        { binding: 1, resource: { buffer: inputBuf } },
+        { binding: 2, resource: { buffer: weightBuf } },
+        { binding: 3, resource: { buffer: outputBuf } },
+      ],
+    });
+
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(M / 8), Math.ceil(N / 8));
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+
+    return outputBuf;
+  }
+
   async _multiHeadAttention(qkvBuf, seqLen, numHeads, headDim) {
     const hiddenSize = numHeads * headDim;
     const outputBuf = this._createBuffer("mha_out", seqLen * hiddenSize * 4,
@@ -1289,5 +1331,69 @@ export class Pipeline {
     this.device.queue.writeBuffer(buffer, 0, floatData);
 
     return { buffer, shape };
+  }
+
+  // ─── Delta-Encoded Serialization ──────────────────────────────
+
+  /**
+   * Serialize a GPU tensor as delta-encoded int8 for wire transfer.
+   * Computes delta = current - previous, quantizes the delta.
+   * Returns { shape, data, isDelta, sparsity }.
+   *
+   * @param {object} tensor - { buffer, shape }
+   * @param {Float32Array|null} previousFloat32 - Previous activation (null = send full)
+   * @returns {Promise<{ shape, data, isDelta, sparsity, currentFloat32 }>}
+   */
+  async serializeTensorDelta(tensor, previousFloat32) {
+    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
+    const rawData = await this._readBuffer(tensor.buffer, 0, byteSize);
+    const currentFloat32 = new Float32Array(rawData);
+
+    // If no previous activation or shape mismatch, fall back to full send
+    if (!previousFloat32 || previousFloat32.length !== currentFloat32.length) {
+      const { data: int8Data, scale } = quantizeInt8(currentFloat32);
+      const packed = packQuantized(int8Data, scale);
+      return {
+        shape: tensor.shape,
+        data: packed,
+        isDelta: false,
+        sparsity: 0,
+        currentFloat32,
+      };
+    }
+
+    // Compute and quantize delta
+    const delta = computeDelta(currentFloat32, previousFloat32);
+    const sparsity = deltaSparsity(delta);
+    const { data: int8Data, scale } = quantizeInt8(delta);
+    const packed = packQuantized(int8Data, scale);
+
+    return {
+      shape: tensor.shape,
+      data: packed,
+      isDelta: true,
+      sparsity,
+      currentFloat32,
+    };
+  }
+
+  /**
+   * Deserialize a delta-encoded tensor: dequantize delta, add to previous.
+   *
+   * @param {Uint8Array} payload - Wire format (int8 + scale)
+   * @param {number[]} shape
+   * @param {Float32Array} previousFloat32 - Previous activation to add delta to
+   * @returns {{ buffer, shape, currentFloat32 }}
+   */
+  deserializeTensorDeltaApply(payload, shape, previousFloat32) {
+    const { int8Data, scale } = unpackQuantized(payload);
+    const deltaFloat32 = dequantizeInt8(int8Data, scale);
+    const currentFloat32 = applyDelta(deltaFloat32, previousFloat32);
+
+    const buffer = this._createBuffer("deserialized_delta", currentFloat32.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(buffer, 0, currentFloat32);
+
+    return { buffer, shape, currentFloat32 };
   }
 }

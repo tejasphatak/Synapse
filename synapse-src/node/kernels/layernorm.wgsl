@@ -22,6 +22,11 @@ struct LayerNormParams {
 @group(0) @binding(3) var<storage, read> beta: array<f32>;
 @group(0) @binding(4) var<storage, read_write> output: array<f32>;
 
+// Workgroup shared memory — MUST be at module scope
+var<workgroup> partial_sums: array<f32, 256>;
+var<workgroup> row_mean: f32;
+var<workgroup> row_inv_std: f32;
+
 // Each workgroup processes one row (one token position).
 // Workgroup size = 256 threads to handle hidden_size up to 768+.
 
@@ -47,8 +52,7 @@ fn main(
     idx = idx + 256u;
   }
 
-  // Workgroup reduction for sum — using shared memory
-  var<workgroup> partial_sums: array<f32, 256>;
+  // Workgroup reduction for sum
   partial_sums[tid] = local_sum;
 
   workgroupBarrier();
@@ -63,7 +67,6 @@ fn main(
     stride = stride >> 1u;
   }
 
-  var<workgroup> row_mean: f32;
   if (tid == 0u) {
     row_mean = partial_sums[0] / f32(params.hidden_size);
   }
@@ -93,7 +96,6 @@ fn main(
     stride = stride >> 1u;
   }
 
-  var<workgroup> row_inv_std: f32;
   if (tid == 0u) {
     let variance = partial_sums[0] / f32(params.hidden_size);
     row_inv_std = 1.0 / sqrt(variance + params.eps);

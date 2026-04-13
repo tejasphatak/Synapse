@@ -31,6 +31,9 @@ export const MessageType = {
   INFERENCE_STEP: "INFERENCE_STEP",
   KV_RESET: "KV_RESET",
 
+  // Telemetry
+  NODE_LOG: "NODE_LOG",
+
   // Error
   ERROR: "ERROR",
 };
@@ -175,6 +178,24 @@ export function createKVResetMessage(requestId) {
 }
 
 /**
+ * Node sends a telemetry/performance log entry to the coordinator.
+ * @param {string} nodeId
+ * @param {string} level - "perf" | "info" | "warn" | "error"
+ * @param {string} event - e.g. "layer_forward", "activation_send", "shard_load"
+ * @param {object} data - arbitrary metrics (latencyMs, bytes, gpuMemUsed, etc.)
+ */
+export function createNodeLogMessage(nodeId, level, event, data = {}) {
+  return {
+    type: MessageType.NODE_LOG,
+    nodeId,
+    level,
+    event,
+    data,
+    timestamp: Date.now(),
+  };
+}
+
+/**
  * Error message.
  */
 export function createErrorMessage(code, message, details = null) {
@@ -199,6 +220,7 @@ const REQUIRED_FIELDS = {
   [MessageType.NODE_READY]: ["nodeId", "shardId"],
   [MessageType.INFERENCE_STEP]: ["requestId", "tokenId", "seqPos"],
   [MessageType.KV_RESET]: ["requestId"],
+  [MessageType.NODE_LOG]: ["nodeId", "level", "event"],
   [MessageType.PING]: [],
   [MessageType.PONG]: [],
   [MessageType.ERROR]: ["code", "message"],

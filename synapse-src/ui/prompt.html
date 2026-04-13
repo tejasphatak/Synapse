@@ -197,40 +197,29 @@
   </div>
 
   <script type="module">
-    // ─── Simple GPT-2 BPE tokenizer (minimal, uses the Xenova tokenizer) ───
-    // For the POC, we use a simple whitespace tokenizer as fallback
-    // and try to load the proper tokenizer
+    // ─── GPT-2 tokenizer via coordinator API ───
+    let tokenizerReady = true;
 
-    let tokenizer = null;
-    let tokenizerReady = false;
-
-    // Fallback: character-level encoding (works without external deps)
-    const fallbackEncode = (text) => {
-      // Simple byte-level encoding
-      const encoder = new TextEncoder();
-      return Array.from(encoder.encode(text));
+    const tokenizer = {
+      encode: async (text) => {
+        const resp = await fetch("/api/tokenize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const { tokenIds } = await resp.json();
+        return { input_ids: tokenIds };
+      },
+      decode: async (ids) => {
+        const resp = await fetch("/api/detokenize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tokenIds: Array.isArray(ids) ? ids : [ids] }),
+        });
+        const { text } = await resp.json();
+        return text;
+      },
     };
-
-    const fallbackDecode = (ids) => {
-      const decoder = new TextDecoder();
-      return decoder.decode(new Uint8Array(ids));
-    };
-
-    // Try loading the Xenova tokenizer
-    async function initTokenizer() {
-      try {
-        const { AutoTokenizer } = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js");
-        tokenizer = await AutoTokenizer.from_pretrained("Xenova/gpt2");
-        tokenizerReady = true;
-        console.log("[prompt] GPT-2 tokenizer loaded");
-      } catch (e) {
-        console.warn("[prompt] Could not load GPT-2 tokenizer, using byte-level fallback:", e.message);
-        tokenizer = { encode: (t) => ({ input_ids: fallbackEncode(t) }), decode: fallbackDecode };
-        tokenizerReady = true;
-      }
-    }
-
-    initTokenizer();
 
     // ─── WebSocket Connection ─────────────────────────────────────────
 
@@ -336,24 +325,18 @@
       updateInputState();
     }
 
-    function handleOutputToken(msg) {
+    async function handleOutputToken(msg) {
       hideTyping();
       const latency = Date.now() - (inferenceStartTime || Date.now());
       latencies.push(latency);
       totalTokens += msg.tokens.length;
 
-      // Decode token(s)
+      // Decode token(s) via coordinator API
       let text;
-      if (tokenizer && tokenizerReady) {
-        try {
-          text = typeof tokenizer.decode === 'function'
-            ? tokenizer.decode(msg.tokens)
-            : fallbackDecode(msg.tokens);
-        } catch {
-          text = fallbackDecode(msg.tokens);
-        }
-      } else {
-        text = fallbackDecode(msg.tokens);
+      try {
+        text = await tokenizer.decode(msg.tokens);
+      } catch {
+        text = `[token:${msg.tokens}]`;
       }
 
       // Append to current assistant message or create new one
@@ -367,7 +350,7 @@
       currentRequestId = null;
     }
 
-    function handleStreamToken(msg) {
+    async function handleStreamToken(msg) {
       hideTyping();
       const now = Date.now();
       const tokenLatency = now - (lastTokenTime || inferenceStartTime);
@@ -375,14 +358,12 @@
 
       totalTokens++;
 
-      // Decode the single token
+      // Decode the single token via coordinator API
       let text;
       try {
-        text = (tokenizer && tokenizerReady)
-          ? (typeof tokenizer.decode === 'function' ? tokenizer.decode([msg.token]) : fallbackDecode([msg.token]))
-          : fallbackDecode([msg.token]);
+        text = await tokenizer.decode([msg.token]);
       } catch {
-        text = fallbackDecode([msg.token]);
+        text = `[${msg.token}]`;
       }
 
       appendToLastAssistant(text, `${msg.totalGenerated}/${msg.maxTokens} tokens | ${tokenLatency}ms/tok`);
@@ -489,17 +470,14 @@
       currentAssistantDiv = null;
       showTyping();
 
-      // Tokenize
+      // Tokenize via coordinator API
       let tokenIds;
-      if (tokenizer && tokenizerReady) {
-        try {
-          const result = tokenizer.encode ? tokenizer.encode(text) : { input_ids: fallbackEncode(text) };
-          tokenIds = Array.from(result.input_ids || result);
-        } catch {
-          tokenIds = fallbackEncode(text);
-        }
-      } else {
-        tokenIds = fallbackEncode(text);
+      try {
+        const result = await tokenizer.encode(text);
+        tokenIds = Array.from(result.input_ids || result);
+      } catch (e) {
+        console.error("[prompt] Tokenize failed:", e);
+        return;
       }
 
       // Send to coordinator
