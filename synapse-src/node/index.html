@@ -6,6 +6,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/node/manifest.json">
+  <meta name="theme-color" content="#0a0a0f">
   <title>Synapse — Compute Node</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -149,6 +151,23 @@
     </div>
   </div>
 
+  <!-- Chat Panel (collapsible) -->
+  <div id="chatSection" style="display:none; margin: 8px; background: #0d0d14; border: 1px solid #1a1a2a; border-radius: 12px; overflow: hidden;">
+    <div id="chatToggle" style="padding: 10px 16px; background: #12121a; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+      <span style="color: #7c5cff; font-weight: bold; font-size: 14px;">Chat</span>
+      <span id="chatStatus" style="font-size: 11px; color: #555;">waiting for pipeline</span>
+    </div>
+    <div id="chatBody" style="display:none;">
+      <div id="chatMessages" style="max-height: 200px; overflow-y: auto; padding: 10px; font-size: 13px;"></div>
+      <div style="display: flex; gap: 6px; padding: 8px;">
+        <input id="chatInput" type="text" placeholder="Waiting for pipeline..." disabled
+          style="flex:1; background:#12121a; border:1px solid #333; border-radius:6px; color:#e0e0e0; padding:8px 12px; font-family:inherit; font-size:13px; outline:none;">
+        <button id="chatSend" disabled
+          style="background:#7c5cff; color:white; border:none; border-radius:6px; padding:8px 16px; font-family:inherit; cursor:pointer;">Send</button>
+      </div>
+    </div>
+  </div>
+
   <div class="log-panel" id="logPanel"></div>
 
   <script type="module">
@@ -285,6 +304,185 @@
         if (!document.fullscreenElement) fsBtn.style.display = "block";
       });
     }
+
+    // ─── Keep-alive: wake lock + visibility resume ──────────
+    // Aggressive wake lock — keeps screen on while node is active
+    let wakeLock = null;
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeLock.addEventListener('release', () => {
+            log("Wake lock released — screen may turn off", "warn");
+            // Re-acquire on next visibility change
+          });
+          log("Screen wake lock acquired — screen will stay on", "success");
+        }
+      } catch (e) {
+        log("Wake lock unavailable: " + e.message, "warn");
+      }
+    }
+    requestWakeLock();
+
+    // Re-acquire wake lock and reconnect when app comes back to foreground
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState === "visible") {
+        log("App resumed — checking connection...", "info");
+        requestWakeLock();
+        // If WebSocket is dead, reconnect
+        if (!node.ws || node.ws.readyState !== 1) {
+          log("Reconnecting to coordinator...", "info");
+          node.start(wsUrl).then(ok => {
+            if (ok) log("Reconnected!", "success");
+            else log("Reconnect failed", "error");
+          });
+        }
+      }
+    });
+
+    // No hacky keep-alive tricks — just proper wake lock API
+    // If the device doesn't support it, we inform the user honestly
+
+    // Register service worker for PWA install
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/node/sw.js').catch(() => {});
+    }
+
+    // ─── Integrated Chat (prompt client) ────────────────────
+    const chatSection = document.getElementById("chatSection");
+    const chatBody = document.getElementById("chatBody");
+    const chatMessages = document.getElementById("chatMessages");
+    const chatInput = document.getElementById("chatInput");
+    const chatSend = document.getElementById("chatSend");
+    const chatStatus = document.getElementById("chatStatus");
+    let promptWs = null;
+    let chatReady = false;
+    let chatCurrentDiv = null;
+
+    // Show chat section once node is connected
+    function showChat() {
+      chatSection.style.display = "block";
+    }
+
+    // Toggle chat body
+    document.getElementById("chatToggle").addEventListener("click", () => {
+      chatBody.style.display = chatBody.style.display === "none" ? "block" : "none";
+    });
+
+    // Connect prompt WebSocket
+    function connectPrompt() {
+      const promptUrl = `${wsProtocol}//${location.host}?type=prompt`;
+      promptWs = new WebSocket(promptUrl);
+
+      promptWs.onopen = () => {
+        chatStatus.textContent = "connected";
+        chatStatus.style.color = "#00ff88";
+      };
+
+      promptWs.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "TOPOLOGY_UPDATE") {
+          const ready = msg.pipeline?.length >= 2 && msg.nodes?.every(n => n.status === "ready");
+          if (ready && !chatReady) {
+            chatReady = true;
+            chatInput.disabled = false;
+            chatSend.disabled = false;
+            chatInput.placeholder = "Type a message...";
+            chatStatus.textContent = "ready";
+            addChat("synapse", "Pipeline online. Ask me anything.");
+          }
+        } else if (msg.type === "INFER_STARTED") {
+          chatStatus.textContent = "thinking...";
+          chatStatus.style.color = "#ffaa00";
+        } else if (msg.type === "TOKEN_GENERATED") {
+          appendChat(msg.token);
+        } else if (msg.type === "GENERATION_DONE") {
+          chatStatus.textContent = "ready";
+          chatStatus.style.color = "#00ff88";
+          chatCurrentDiv = null;
+          chatInput.disabled = false;
+          chatSend.disabled = false;
+          if (msg.tokensPerSecond) {
+            const meta = document.createElement("div");
+            meta.style.cssText = "font-size:10px; color:#444; margin-top:2px;";
+            meta.textContent = `${msg.totalTokens} tokens, ${msg.tokensPerSecond} tok/s`;
+            chatMessages.lastElementChild?.appendChild(meta);
+          }
+        }
+      };
+
+      promptWs.onclose = () => {
+        chatStatus.textContent = "disconnected";
+        chatStatus.style.color = "#ff4444";
+        chatReady = false;
+        setTimeout(connectPrompt, 3000);
+      };
+    }
+
+    function addChat(role, text) {
+      const div = document.createElement("div");
+      div.style.cssText = `margin-bottom:8px;`;
+      div.innerHTML = `<span style="color:${role==='you'?'#7c5cff':'#00ff88'}; font-size:11px; font-weight:bold;">${role}</span><br><span class="chat-text" style="color:#ccc;">${text}</span>`;
+      chatMessages.appendChild(div);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return div;
+    }
+
+    async function appendChat(tokenId) {
+      let text;
+      try {
+        const resp = await fetch("/api/detokenize", {
+          method: "POST", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ tokenIds: [tokenId] })
+        });
+        text = (await resp.json()).text;
+      } catch { text = `[${tokenId}]`; }
+
+      if (!chatCurrentDiv) {
+        chatCurrentDiv = addChat("synapse", text);
+      } else {
+        chatCurrentDiv.querySelector(".chat-text").textContent += text;
+      }
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    async function sendChat() {
+      const text = chatInput.value.trim();
+      if (!text || !chatReady) return;
+      addChat("you", text);
+      chatInput.value = "";
+      chatCurrentDiv = null;
+      chatInput.disabled = true;
+      chatSend.disabled = true;
+
+      try {
+        const resp = await fetch("/api/tokenize", {
+          method: "POST", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ text })
+        });
+        const { tokenIds } = await resp.json();
+        promptWs.send(JSON.stringify({ type: "PROMPT_INFER", tokenIds, maxTokens: 30 }));
+      } catch (e) {
+        addChat("synapse", "Error: " + e.message);
+        chatInput.disabled = false;
+        chatSend.disabled = false;
+      }
+    }
+
+    chatSend.addEventListener("click", sendChat);
+    chatInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); sendChat(); }
+    });
+
+    // Start prompt connection when node connects
+    const origOnStatus = node.onStatus;
+    node.onStatus = (status, detail, n) => {
+      origOnStatus?.(status, detail, n);
+      if (status === "ready" || status === "connected") {
+        showChat();
+        if (!promptWs) connectPrompt();
+      }
+    };
   </script>
 </body>
 </html>
