@@ -37,7 +37,7 @@ import {
   uint32ToRequestId,
   registerRequestId,
 } from "../protocol/binary.js";
-import { unpackQuantized, dequantizeInt8 } from "../protocol/quantize.js";
+import { unpackQuantized, dequantizeInt8, unpackQuantizedPerChannel, dequantizeInt8PerChannel } from "../protocol/quantize.js";
 import { SpeculativeController } from "./speculative.js";
 
 export class SynapseNode {
@@ -436,8 +436,9 @@ export class SynapseNode {
         hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
         // Cache float32 for future delta decoding (only for single-token)
         if (!isPrefill && this.useDeltaEncoding) {
-          const unpacked = unpackQuantized(decoded.payload);
-          this._lastRecvActivation.set(requestId, dequantizeInt8(unpacked.int8Data, unpacked.scale));
+          const unpacked = unpackQuantizedPerChannel(decoded.payload);
+          const cols = decoded.shape[1] || unpacked.int8Data.length;
+          this._lastRecvActivation.set(requestId, dequantizeInt8PerChannel(unpacked.int8Data, unpacked.scales, cols));
         }
       } else {
         hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);
