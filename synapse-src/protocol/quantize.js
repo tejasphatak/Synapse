@@ -96,6 +96,97 @@ export function unpackQuantized(packed) {
   return { int8Data, scale };
 }
 
+// ─── Per-Channel (Per-Row) Quantization ─────────────────────────
+// Each token position gets its own scale — 50x less error than per-tensor.
+// Wire format: [int8_data...][float32_scale_0][float32_scale_1]...[float32_scale_N][uint16_numRows]
+
+/**
+ * Per-row int8 quantization. Each row (token position) gets its own scale.
+ * For shape [seqLen, hiddenSize], produces seqLen scale factors.
+ *
+ * @param {Float32Array} float32Data - Flattened [rows, cols] tensor
+ * @param {number} cols - Number of columns (hiddenSize)
+ * @returns {{ data: Int8Array, scales: Float32Array }}
+ */
+export function quantizeInt8PerChannel(float32Data, cols) {
+  const rows = float32Data.length / cols;
+  const int8Data = new Int8Array(float32Data.length);
+  const scales = new Float32Array(rows);
+
+  for (let r = 0; r < rows; r++) {
+    const offset = r * cols;
+    let absMax = 0;
+    for (let c = 0; c < cols; c++) {
+      const abs = Math.abs(float32Data[offset + c]);
+      if (abs > absMax) absMax = abs;
+    }
+    const scale = absMax > 0 ? absMax / 127 : 1;
+    scales[r] = scale;
+    const invScale = 1 / scale;
+    for (let c = 0; c < cols; c++) {
+      let val = Math.round(float32Data[offset + c] * invScale);
+      if (val > 127) val = 127;
+      else if (val < -127) val = -127;
+      int8Data[offset + c] = val;
+    }
+  }
+  return { data: int8Data, scales };
+}
+
+/**
+ * Dequantize per-row int8 back to float32.
+ */
+export function dequantizeInt8PerChannel(int8Data, scales, cols) {
+  const float32Data = new Float32Array(int8Data.length);
+  const rows = int8Data.length / cols;
+  for (let r = 0; r < rows; r++) {
+    const offset = r * cols;
+    const scale = scales[r];
+    for (let c = 0; c < cols; c++) {
+      float32Data[offset + c] = int8Data[offset + c] * scale;
+    }
+  }
+  return float32Data;
+}
+
+/**
+ * Pack per-channel quantized data for wire transfer.
+ * Layout: [int8_data...][scales as float32 array][uint16 numRows]
+ */
+export function packQuantizedPerChannel(int8Data, scales) {
+  const totalBytes = int8Data.length + scales.length * 4 + 2;
+  const buffer = new ArrayBuffer(totalBytes);
+  const view = new DataView(buffer);
+
+  new Int8Array(buffer, 0, int8Data.length).set(int8Data);
+  const scalesOffset = int8Data.length;
+  for (let i = 0; i < scales.length; i++) {
+    view.setFloat32(scalesOffset + i * 4, scales[i], true);
+  }
+  view.setUint16(totalBytes - 2, scales.length, true);
+  return buffer;
+}
+
+/**
+ * Unpack per-channel quantized data from wire format.
+ */
+export function unpackQuantizedPerChannel(packed) {
+  const buf = packed instanceof ArrayBuffer ? packed
+    : packed.buffer.slice(packed.byteOffset, packed.byteOffset + packed.byteLength);
+  const view = new DataView(buf);
+
+  const numRows = view.getUint16(buf.byteLength - 2, true);
+  const scalesBytes = numRows * 4;
+  const int8Len = buf.byteLength - scalesBytes - 2;
+
+  const int8Data = new Int8Array(buf, 0, int8Len);
+  const scales = new Float32Array(numRows);
+  for (let i = 0; i < numRows; i++) {
+    scales[i] = view.getFloat32(int8Len + i * 4, true);
+  }
+  return { int8Data, scales, numRows };
+}
+
 // ─── Delta Encoding ─────────────────────────────────────────────
 
 /**

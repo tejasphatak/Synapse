@@ -9,7 +9,7 @@
 
 import { KVCache } from "./kv-cache.js";
 import { EarlyExitDetector } from "./early-exit.js";
-import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
+import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, quantizeInt8PerChannel, dequantizeInt8PerChannel, packQuantizedPerChannel, unpackQuantizedPerChannel, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
 
 export class Pipeline {
   constructor(device, shardLoader) {
@@ -1332,12 +1332,14 @@ export class Pipeline {
       }
     }
 
-    const { data: int8Data, scale } = quantizeInt8(float32);
-    const packed = packQuantized(int8Data, scale);
+    // Use per-channel (per-row) quantization for much better accuracy
+    const cols = tensor.shape[1] || float32.length; // hiddenSize
+    const { data: int8Data, scales } = quantizeInt8PerChannel(float32, cols);
+    const packed = packQuantizedPerChannel(int8Data, scales);
 
     return {
       shape: tensor.shape,
-      data: packed, // ArrayBuffer: int8 data + 4-byte scale
+      data: packed,
     };
   }
 
@@ -1345,8 +1347,9 @@ export class Pipeline {
    * Deserialize a quantized tensor (int8) and upload to GPU as float32.
    */
   deserializeTensorQuantized(payload, shape) {
-    const { int8Data, scale } = unpackQuantized(payload);
-    const floatData = dequantizeInt8(int8Data, scale);
+    const { int8Data, scales, numRows } = unpackQuantizedPerChannel(payload);
+    const cols = shape[1] || int8Data.length;
+    const floatData = dequantizeInt8PerChannel(int8Data, scales, cols);
 
     const buffer = this._createBuffer("deserialized_quant", floatData.byteLength,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);

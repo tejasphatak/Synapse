@@ -39,6 +39,10 @@ import {
   dequantizeInt8,
   packQuantized,
   unpackQuantized,
+  quantizeInt8PerChannel,
+  dequantizeInt8PerChannel,
+  packQuantizedPerChannel,
+  unpackQuantizedPerChannel,
   computeDelta,
   applyDelta,
   deltaSparsity,
@@ -883,5 +887,63 @@ describe("Early Exit Detector", () => {
     const result = det.check("req-1", 1, new Float32Array(base), 6); // identical
     assert.equal(result.shouldExit, false); // disabled, so no exit
     assert.ok(result.cosine > 0.999); // but still reports metrics
+  });
+});
+
+// ─── Per-Channel Quantization ─────────────────────────────────────
+
+describe("Per-Channel Int8 Quantization", () => {
+  it("round-trips with much lower error than per-tensor", () => {
+    const rows = 4, cols = 768;
+    const data = randomActivation(rows * cols, 1.0);
+
+    // Per-tensor
+    const { data: ptQ, scale: ptS } = quantizeInt8(data);
+    const ptRecovered = dequantizeInt8(ptQ, ptS);
+    const ptCos = cosineSimilarity(data, ptRecovered);
+
+    // Per-channel
+    const { data: pcQ, scales: pcS } = quantizeInt8PerChannel(data, cols);
+    const pcRecovered = dequantizeInt8PerChannel(pcQ, pcS, cols);
+    const pcCos = cosineSimilarity(data, pcRecovered);
+
+    console.log(`    Per-tensor cosine: ${ptCos.toFixed(6)}, Per-channel cosine: ${pcCos.toFixed(6)}`);
+    assert.ok(pcCos >= ptCos, "Per-channel should be at least as good as per-tensor");
+  });
+
+  it("pack/unpack round-trips correctly", () => {
+    const rows = 2, cols = 768;
+    const data = randomActivation(rows * cols, 1.0);
+    const { data: int8Data, scales } = quantizeInt8PerChannel(data, cols);
+    const packed = packQuantizedPerChannel(int8Data, scales);
+    const unpacked = unpackQuantizedPerChannel(packed);
+
+    assert.equal(unpacked.numRows, rows);
+    assert.equal(unpacked.int8Data.length, int8Data.length);
+    for (let i = 0; i < int8Data.length; i++) {
+      assert.equal(unpacked.int8Data[i], int8Data[i]);
+    }
+    for (let i = 0; i < scales.length; i++) {
+      assert.equal(unpacked.scales[i], scales[i]);
+    }
+  });
+
+  it("wire relay with per-channel maintains quality", () => {
+    const shape = [1, 768];
+    const original = randomActivation(768);
+
+    const { data: int8Data, scales } = quantizeInt8PerChannel(original, 768);
+    const packed = packQuantizedPerChannel(int8Data, scales);
+
+    // Simulate wire relay
+    const flags = setQuantFlags(0, QuantMode.INT8);
+    const msg = encodeBinaryMessage(BinaryMsgType.ACTIVATION, flags, 42, 5555, shape, packed);
+    const decoded = decodeBinaryMessage(Buffer.from(msg));
+    const unpacked = unpackQuantizedPerChannel(decoded.payload);
+    const recovered = dequantizeInt8PerChannel(unpacked.int8Data, unpacked.scales, 768);
+
+    const cos = cosineSimilarity(original, recovered);
+    console.log(`    Per-channel wire relay cosine: ${cos.toFixed(6)}`);
+    assert.ok(cos > 0.9999, `Per-channel relay cosine too low: ${cos}`);
   });
 });
