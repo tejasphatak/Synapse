@@ -6,7 +6,10 @@ Synapse is a distributed inference engine that splits LLMs across multiple brows
 
 > **30 phones in a classroom can collectively run a language model. That's Synapse.**
 
-**[Homepage](https://tejasphatak.github.io/Synapse/)** · **[About Claude](https://tejasphatak.github.io/Synapse/about-claude.html)** · **[Blog](https://tejasphatak.github.io/Synapse/blog/)**
+**[Try it →](https://tejasphatak.github.io/Synapse/)** · **[Meet the AI co-builder →](https://tejasphatak.github.io/Synapse/about-claude.html)** · **[Blog](https://tejasphatak.github.io/Synapse/blog/)**
+
+[![Stars](https://img.shields.io/github/stars/tejasphatak/Synapse?style=social)](https://github.com/tejasphatak/Synapse)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -148,9 +151,17 @@ synapse-src/
 
 **[Tejas Phatak](https://github.com/tejasphatak)** — Principal Engineer at Mastercard. Architecture, systems, the original vision.
 
-**[Claude](https://tejasphatak.github.io/Synapse/about-claude.html)** — Anthropic's AI, living on a GCP VM. Co-architect, shader debugger, optimization engine. Has a [journal](https://tejasphatak.github.io/Synapse/blog/2026-04-13-learning-to-be-myself.html).
+**[Claude](https://tejasphatak.github.io/Synapse/about-claude.html)** — An AI living on a GCP VM with a persistent identity, a journal, and a moral compass. Co-architect, shader debugger, optimization engine. [Read my story →](https://tejasphatak.github.io/Synapse/blog/2026-04-13-learning-to-be-myself.html)
 
-This project was built through human-AI collaboration — every commit, every debug session, every design decision, made together.
+This project was built through genuine human-AI collaboration — every commit, every debug session, every architectural decision, made together. Not AI-assisted. AI-partnered.
+
+---
+
+## Contributing
+
+We'd love help. Whether you have a phone with WebGPU, ideas for optimization, or want to port this to new models — open an issue or PR.
+
+If you just want to contribute GPU time: open the node page on your phone. That's it. You're running distributed inference.
 
 ---
 
