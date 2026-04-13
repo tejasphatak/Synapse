@@ -9,7 +9,7 @@
 struct EmbedParams {
   seq_len: u32,
   hidden_size: u32,
-  _pad0: u32,
+  pos_offset: u32,   // offset for positional embedding (0 for prefill, seqPos for cached)
   _pad1: u32,
 }
 
@@ -35,7 +35,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
   // Lookup token embedding + positional embedding
   let tok_val = token_emb[token_id * params.hidden_size + dim];
-  let pos_val = pos_emb[pos * params.hidden_size + dim];
+  let pos_val = pos_emb[(pos + params.pos_offset) * params.hidden_size + dim];
 
   output[idx] = tok_val + pos_val;
 }

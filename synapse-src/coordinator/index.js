@@ -25,6 +25,16 @@ import {
   createInferenceRequestMessage,
   createErrorMessage,
 } from "../protocol/messages.js";
+import {
+  isBinaryMessage,
+  decodeBinaryMessage,
+  decodeOutputTokens,
+  peekMessageType,
+  peekRequestId,
+  BinaryMsgType,
+  uint32ToRequestId,
+  registerRequestId,
+} from "../protocol/binary.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = join(__dirname, "..");
@@ -62,6 +72,7 @@ const router = new Router(topology);
 const dashboardClients = new Set();
 const promptClients = new Map(); // ws → { requestCallbacks }
 let requestCounter = 0;
+let binaryRequestCounter = 0; // uint32 IDs for binary protocol
 
 // ─── Generation State ────────────────────────────────────────────
 // generationId → { tokenIds, generatedTokens, maxTokens, promptWs, startTime }
@@ -203,6 +214,8 @@ wss.on("connection", (ws, req) => {
           maxTokens,
           promptWs: ws,
           startTime: Date.now(),
+          prefillDone: false,
+          promptLen: msg.tokenIds.length,
         });
 
         const result = startInference(msg.tokenIds, genId);
@@ -227,6 +240,24 @@ wss.on("connection", (ws, req) => {
   let nodeId = null;
 
   ws.on("message", (raw) => {
+    // ─── Binary protocol path ─────────────────────────────
+    if (isBinaryMessage(raw)) {
+      try {
+        const msgType = peekMessageType(raw);
+
+        if (msgType === BinaryMsgType.ACTIVATION) {
+          // Zero-copy relay: forward the raw binary buffer to the next node
+          handleBinaryActivation(ws, raw, nodeId);
+        } else if (msgType === BinaryMsgType.OUTPUT) {
+          handleBinaryOutput(ws, raw);
+        }
+      } catch (err) {
+        console.error(`[coordinator] Binary parse error from node ${nodeId}:`, err.message);
+      }
+      return;
+    }
+
+    // ─── JSON protocol path ───────────────────────────────
     const { msg, error } = parseMessage(raw.toString());
     if (error) {
       console.error(`[coordinator] Parse error from node ${nodeId}: ${error}`);
@@ -281,11 +312,64 @@ wss.on("connection", (ws, req) => {
 
 function handleJoin(ws, msg) {
   const { nodeId, capabilities } = msg;
-  console.log(`[coordinator] Node ${nodeId} joined (webgpu: ${capabilities.webgpu})`);
+  const protoV2 = capabilities.protocolV2 ? " [proto_v2]" : "";
+  console.log(`[coordinator] Node ${nodeId} joined (webgpu: ${capabilities.webgpu}${protoV2})`);
 
   topology.addNode(nodeId, ws, capabilities);
   tryAssignShards();
   broadcastTopology();
+}
+
+/**
+ * Handle binary ACTIVATION: zero-copy relay to next node.
+ * We only peek at the header for routing — never decode the tensor payload.
+ */
+function handleBinaryActivation(senderWs, rawBuffer, senderNodeId) {
+  if (!senderNodeId) return;
+
+  const nextNode = topology.getNextNode(senderNodeId);
+  if (!nextNode || !nextNode.ws || nextNode.ws.readyState !== 1) {
+    console.error(`[coordinator] Binary relay failed: no next node after ${senderNodeId}`);
+    return;
+  }
+
+  // Forward the raw binary buffer — zero-copy relay
+  nextNode.ws.send(rawBuffer);
+
+  const numericId = peekRequestId(rawBuffer);
+  const requestId = uint32ToRequestId(numericId);
+
+  // Track hop for telemetry
+  if (!router.activeRequests.has(requestId)) {
+    router.activeRequests.set(requestId, { startTime: Date.now(), hops: [] });
+  }
+  router.activeRequests.get(requestId).hops.push({
+    from: senderNodeId,
+    to: nextNode.nodeId,
+    timestamp: Date.now(),
+    binary: true,
+  });
+
+  broadcastToDashboards({
+    type: "ACTIVATION_ROUTED",
+    requestId,
+    from: senderNodeId,
+    to: nextNode.nodeId,
+    binary: true,
+    timestamp: Date.now(),
+  });
+}
+
+/**
+ * Handle binary OUTPUT: decode tokens, feed back into autoregressive loop.
+ */
+function handleBinaryOutput(ws, rawBuffer) {
+  const decoded = decodeBinaryMessage(rawBuffer);
+  const requestId = uint32ToRequestId(decoded.requestId);
+  const tokens = decodeOutputTokens(decoded.payload);
+
+  // Delegate to the existing JSON handler with a synthetic message
+  handleOutput(ws, { requestId, tokens, timestamp: Date.now() });
 }
 
 function handleActivation(ws, msg) {
@@ -395,6 +479,8 @@ function handleOutput(ws, msg) {
       }));
     }
 
+    // Free KV caches on all pipeline nodes
+    broadcastKVReset(genId);
     activeGenerations.delete(genId);
 
     // Clean up pending request tracking
@@ -402,8 +488,12 @@ function handleOutput(ws, msg) {
       state.pendingRequests.delete(genId);
     }
   } else {
-    // Continue generating — send the full sequence back through the pipeline
-    const result = startInference(gen.tokenIds, genId);
+    // Mark prefill as done after first output
+    gen.prefillDone = true;
+
+    // Continue generating — use KV-cached single-token step
+    const seqPos = gen.tokenIds.length - 1; // position of the new token
+    const result = continueGeneration(genId, newToken, seqPos);
     if (!result.ok) {
       console.error(`[coordinator] Generation ${genId} failed to continue: ${result.error}`);
       if (gen.promptWs && gen.promptWs.readyState === 1) {
@@ -468,7 +558,17 @@ function startInference(tokenIds, generationId) {
   }
 
   const requestId = generationId || `req-${++requestCounter}-${Date.now()}`;
+
+  // Assign a uint32 binary request ID and register the mapping
+  const binaryReqId = ++binaryRequestCounter;
+  registerRequestId(requestId, binaryReqId);
+
+  // Store binary request ID in generation state for reuse in continueGeneration
+  const gen = activeGenerations.get(requestId);
+  if (gen) gen._binaryReqId = binaryReqId;
+
   const msg = createInferenceRequestMessage(requestId, tokenIds);
+  msg.binaryRequestId = binaryReqId; // nodes use this for binary wire format
 
   firstNode.ws.send(JSON.stringify(msg));
 
@@ -489,6 +589,65 @@ function startInference(tokenIds, generationId) {
   });
 
   return { ok: true, requestId };
+}
+
+/**
+ * Continue an autoregressive generation with a single new token (KV-cached path).
+ * Sends INFERENCE_STEP instead of INFERENCE_REQUEST with full sequence.
+ */
+function continueGeneration(genId, tokenId, seqPos) {
+  if (!topology.isPipelineReady()) {
+    return { ok: false, error: "Pipeline not ready" };
+  }
+
+  const firstNode = topology.getFirstNode();
+  if (!firstNode || firstNode.ws.readyState !== 1) {
+    return { ok: false, error: "First pipeline node not available" };
+  }
+
+  // Reuse the existing binary request ID mapping
+  const gen = activeGenerations.get(genId);
+  const binaryReqId = gen?._binaryReqId;
+
+  const msg = {
+    type: MessageType.INFERENCE_STEP,
+    requestId: genId,
+    tokenId,
+    seqPos,
+    binaryRequestId: binaryReqId || null,
+    timestamp: Date.now(),
+  };
+
+  firstNode.ws.send(JSON.stringify(msg));
+
+  console.log(`[coordinator] Inference step: ${genId} token=${tokenId} pos=${seqPos}`);
+
+  broadcastToDashboards({
+    type: "INFERENCE_STEP",
+    requestId: genId,
+    tokenId,
+    seqPos,
+    timestamp: Date.now(),
+  });
+
+  return { ok: true };
+}
+
+/**
+ * Broadcast KV_RESET to all pipeline nodes when a generation completes.
+ */
+function broadcastKVReset(requestId) {
+  const msg = JSON.stringify({
+    type: MessageType.KV_RESET,
+    requestId,
+    timestamp: Date.now(),
+  });
+
+  for (const node of topology.nodes.values()) {
+    if (node.ws && node.ws.readyState === 1) {
+      node.ws.send(msg);
+    }
+  }
 }
 
 // ─── Broadcasts ───────────────────────────────────────────────────

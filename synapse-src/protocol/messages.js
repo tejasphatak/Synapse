@@ -27,9 +27,16 @@ export const MessageType = {
   // Node → Coordinator → Dashboard
   OUTPUT: "OUTPUT",
 
+  // Cached inference (KV cache)
+  INFERENCE_STEP: "INFERENCE_STEP",
+  KV_RESET: "KV_RESET",
+
   // Error
   ERROR: "ERROR",
 };
+
+// Protocol version capability flag
+export const PROTOCOL_V2 = "proto_v2";
 
 // ─── Message Constructors ─────────────────────────────────────────
 
@@ -143,6 +150,31 @@ export function createNodeReadyMessage(nodeId, shardId) {
 }
 
 /**
+ * Coordinator sends a single-token inference step (KV-cached path).
+ */
+export function createInferenceStepMessage(requestId, tokenId, seqPos, binaryRequestId = null) {
+  return {
+    type: MessageType.INFERENCE_STEP,
+    requestId,
+    tokenId,
+    seqPos,
+    binaryRequestId,
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * Coordinator tells nodes to free KV cache for a completed generation.
+ */
+export function createKVResetMessage(requestId) {
+  return {
+    type: MessageType.KV_RESET,
+    requestId,
+    timestamp: Date.now(),
+  };
+}
+
+/**
  * Error message.
  */
 export function createErrorMessage(code, message, details = null) {
@@ -165,6 +197,8 @@ const REQUIRED_FIELDS = {
   [MessageType.TOPOLOGY_UPDATE]: ["nodes", "pipeline"],
   [MessageType.INFERENCE_REQUEST]: ["requestId", "tokenIds"],
   [MessageType.NODE_READY]: ["nodeId", "shardId"],
+  [MessageType.INFERENCE_STEP]: ["requestId", "tokenId", "seqPos"],
+  [MessageType.KV_RESET]: ["requestId"],
   [MessageType.PING]: [],
   [MessageType.PONG]: [],
   [MessageType.ERROR]: ["code", "message"],

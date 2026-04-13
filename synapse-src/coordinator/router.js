@@ -1,5 +1,7 @@
 /**
  * Router — Routes activation packets between nodes in the pipeline.
+ *
+ * Supports both JSON and binary (zero-copy) relay modes.
  */
 
 import {
