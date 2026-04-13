@@ -53,3 +53,11 @@ synapse-src/model/shards/*.bin
 synapse-src/model/shards/manifest.json
 model/shards/*.bin
 model/shards/manifest.json
+
+# Claude Code — NEVER commit (contains personal info, credentials, secrets)
+.claude/
+claude-session
+claude-daemon.sh
+vm-backup.sh
+.backups/
+certs/
