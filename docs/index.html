@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synapse — Distributed LLM Inference in Browsers</title>
+  <meta name="description" content="Run LLMs across phones, tablets, and laptops using WebGPU. No cloud GPUs. No API keys. Open source.">
+  <meta property="og:title" content="Synapse — The Internet is the Computer">
+  <meta property="og:description" content="Distributed LLM inference across browsers via WebGPU. GPT-2 running across a Pixel and an iPhone at 1.3 tok/sec.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://tejasphatak.github.io/Synapse">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Synapse — Distributed LLM Inference in Browsers">
+  <meta name="twitter:description" content="Every phone has an idle GPU. Synapse turns them into a distributed inference cluster.">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      line-height: 1.7;
+    }
+    .hero {
+      text-align: center;
+      padding: 80px 20px 60px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .hero h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #7c5cff, #00ff88);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 1rem;
+    }
+    .hero .tagline {
+      font-size: 1.3rem;
+      color: #888;
+      margin-bottom: 2rem;
+    }
+    .hero .highlight {
+      display: inline-block;
+      background: #12121a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 16px 24px;
+      font-family: 'SF Mono', monospace;
+      font-size: 0.9rem;
+      color: #00ff88;
+      margin-bottom: 2rem;
+      text-align: left;
+      max-width: 600px;
+      width: 100%;
+    }
+    .cta {
+      display: inline-block;
+      background: #7c5cff;
+      color: white;
+      padding: 14px 32px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 1.1rem;
+      margin: 8px;
+      transition: background 0.2s;
+    }
+    .cta:hover { background: #6a4de6; }
+    .cta.secondary { background: transparent; border: 1px solid #555; color: #ccc; }
+    .cta.secondary:hover { border-color: #7c5cff; color: #fff; }
+
+    .section {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+    .section h2 {
+      font-size: 1.8rem;
+      color: #7c5cff;
+      margin-bottom: 1rem;
+    }
+    .section p { color: #aaa; margin-bottom: 1rem; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 20px;
+      margin: 40px auto;
+      max-width: 800px;
+      padding: 0 20px;
+    }
+    .stat {
+      background: #12121a;
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+    }
+    .stat .value { font-size: 2rem; font-weight: 800; color: #00ff88; }
+    .stat .label { font-size: 0.85rem; color: #666; margin-top: 4px; }
+
+    .diagram {
+      background: #0d0d14;
+      border: 1px solid #1a1a2a;
+      border-radius: 12px;
+      padding: 24px;
+      font-family: 'SF Mono', monospace;
+      font-size: 0.85rem;
+      overflow-x: auto;
+      white-space: pre;
+      color: #888;
+      margin: 20px 0;
+    }
+
+    footer {
+      text-align: center;
+      padding: 40px 20px;
+      color: #444;
+      font-size: 0.85rem;
+    }
+    footer a { color: #7c5cff; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1>SYNAPSE</h1>
+    <p class="tagline">The Internet is the computer. Every browser is a GPU.</p>
+
+    <div class="highlight">
+Pixel 10 Pro XL  (PowerVR)  ──&gt; Layers 0-5  ──&gt; activations ──&gt;
+iPhone 16 Pro    (Apple GPU) ──&gt; Layers 6-11 ──&gt; token output ──&gt; streaming response
+
+1.3 tok/sec | April 13, 2026 | Two phones. Zero cloud GPUs.
+    </div>
+
+    <br>
+    <a href="https://github.com/tejasphatak/Synapse" class="cta">View on GitHub</a>
+    <a href="https://github.com/tejasphatak/Synapse/releases/tag/v0.1.0" class="cta secondary">v0.1.0 Release</a>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="value">0</div><div class="label">Cloud GPUs required</div></div>
+    <div class="stat"><div class="value">48</div><div class="label">Tests passing</div></div>
+    <div class="stat"><div class="value">11</div><div class="label">WGSL compute shaders</div></div>
+    <div class="stat"><div class="value">5.3x</div><div class="label">Wire compression (int8)</div></div>
+  </div>
+
+  <div class="section">
+    <h2>The Vision</h2>
+    <p>Every phone has a GPU sitting idle. Every laptop, every tablet. Billions of GPUs, unused.</p>
+    <p>Synapse splits transformer models across multiple browser devices — coordinated over WebSockets, computed entirely on-device via WebGPU. A classroom of 30 Chromebooks can collectively run a language model. A family's phones at dinner can be a GPU cluster.</p>
+    <p>No cloud GPUs. No API keys. No cost per token. Just browsers.</p>
+  </div>
+
+  <div class="section">
+    <h2>How It Works</h2>
+    <div class="diagram">
+                      Coordinator (Node.js)
+                            |
+               binary SYN1 protocol (int8 quantized)
+                     /              \
+              Device A              Device B
+              WebGPU                WebGPU
+              Layers 0-5            Layers 6-11
+              (any GPU)             (any GPU)
+                     \              /
+                      token output
+                            |
+                     streaming response
+    </div>
+    <p>Split any HuggingFace model into N shards. Each browser loads one shard and runs WebGPU compute. The coordinator routes activations between nodes and manages the autoregressive generation loop.</p>
+  </div>
+
+  <div class="section">
+    <h2>Try It</h2>
+    <div class="highlight">
+git clone https://github.com/tejasphatak/Synapse.git
+cd Synapse/synapse-src && npm install
+python3 model/split.py --model gpt2 --dtype float16 --num-shards 2
+node coordinator/index.js
+
+# Open two tabs at localhost:8080/node/index.html
+# Both show "Ready" → type in the chat → tokens stream
+    </div>
+    <p>No GPU server needed. Two browser tabs on any WebGPU-capable laptop. That's it.</p>
+  </div>
+
+  <div class="section">
+    <h2>Built By</h2>
+    <p><strong>Tejas Phatak</strong> — Principal Engineer. Architecture, systems, the original vision.</p>
+    <p><strong>Claude</strong> (Anthropic) — AI co-architect. Every commit, every debug session, every design decision — made together through human-AI collaboration.</p>
+  </div>
+
+  <footer>
+    <p>MIT License | <a href="https://github.com/tejasphatak/Synapse">GitHub</a> | April 2026</p>
+  </footer>
+</body>
+</html>
