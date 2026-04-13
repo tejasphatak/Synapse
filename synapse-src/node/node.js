@@ -456,9 +456,8 @@ export class SynapseNode {
         hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
         // Cache float32 for future delta decoding (only for single-token)
         if (!isPrefill && this.useDeltaEncoding) {
-          const unpacked = unpackQuantizedPerChannel(decoded.payload);
-          const cols = decoded.shape[1] || unpacked.int8Data.length;
-          this._lastRecvActivation.set(requestId, dequantizeInt8PerChannel(unpacked.int8Data, unpacked.scales, cols));
+          const unpacked = unpackQuantized(decoded.payload);
+          this._lastRecvActivation.set(requestId, dequantizeInt8(unpacked.int8Data, unpacked.scale));
         }
       } else {
         hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);

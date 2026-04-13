@@ -267,6 +267,11 @@
       }
     });
 
+    // Auto-hide address bar on iOS Safari
+    if (/iPhone|iPad/.test(navigator.userAgent)) {
+      setTimeout(() => window.scrollTo(0, 1), 100);
+    }
+
     // Fullscreen button (hides browser chrome, prevents swipe-to-refresh)
     const fsBtn = document.getElementById("fullscreenBtn");
     if (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen) {

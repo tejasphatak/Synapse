@@ -1,0 +1,1565 @@
+{
+  "model": "gpt2",
+  "arch": "gpt2",
+  "num_layers": 12,
+  "hidden_size": 768,
+  "num_heads": 12,
+  "head_dim": 64,
+  "vocab_size": 50257,
+  "max_seq_len": 1024,
+  "dtype": "float16",
+  "layers_per_shard": 12,
+  "num_shards": 1,
+  "shard_layout": {
+    "0": {
+      "layer_start": 0,
+      "layer_end": 11,
+      "file": "combined.bin"
+    }
+  },
+  "shared_file": "shared.bin",
+  "shared_dtype": "float16",
+  "tensors": [
+    {
+      "name": "transformer.wte.weight",
+      "shape": [
+        50257,
+        768
+      ],
+      "dtype": "float16",
+      "file": "shared.bin",
+      "offset": 0,
+      "size": 77194752
+    },
+    {
+      "name": "transformer.wpe.weight",
+      "shape": [
+        1024,
+        768
+      ],
+      "dtype": "float16",
+      "file": "shared.bin",
+      "offset": 77194752,
+      "size": 1572864
+    },
+    {
+      "name": "transformer.ln_f.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "shared.bin",
+      "offset": 78767616,
+      "size": 1536
+    },
+    {
+      "name": "transformer.ln_f.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "shared.bin",
+      "offset": 78769152,
+      "size": 1536
+    },
+    {
+      "name": "lm_head.weight",
+      "shape": [
+        50257,
+        768
+      ],
+      "dtype": "float16",
+      "file": "shared.bin",
+      "offset": 78770688,
+      "size": 77194752
+    },
+    {
+      "name": "transformer.h.0.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 0,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.0.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 1536,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.0.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 3072,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.0.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 3542016,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.0.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 3546624,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.0.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 4726272,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.0.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 4727808,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.0.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 4729344,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.0.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 4730880,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.0.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 9449472,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.0.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 9455616,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.0.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 14174208,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.1.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 14175744,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.1.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 14177280,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.1.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 14178816,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.1.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 17717760,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.1.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 17722368,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.1.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 18902016,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.1.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 18903552,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.1.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 18905088,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.1.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 18906624,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.1.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 23625216,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.1.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 23631360,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.1.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 28349952,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.2.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 28351488,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.2.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 28353024,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.2.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 28354560,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.2.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 31893504,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.2.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 31898112,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.2.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 33077760,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.2.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 33079296,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.2.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 33080832,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.2.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 33082368,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.2.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 37800960,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.2.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 37807104,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.2.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 42525696,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.3.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 42527232,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.3.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 42528768,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.3.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 42530304,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.3.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 46069248,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.3.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 46073856,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.3.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 47253504,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.3.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 47255040,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.3.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 47256576,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.3.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 47258112,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.3.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 51976704,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.3.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 51982848,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.3.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 56701440,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.4.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 56702976,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.4.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 56704512,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.4.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 56706048,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.4.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 60244992,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.4.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 60249600,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.4.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 61429248,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.4.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 61430784,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.4.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 61432320,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.4.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 61433856,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.4.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 66152448,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.4.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 66158592,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.4.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 70877184,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.5.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 70878720,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.5.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 70880256,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.5.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 70881792,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.5.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 74420736,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.5.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 74425344,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.5.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 75604992,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.5.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 75606528,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.5.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 75608064,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.5.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 75609600,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.5.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 80328192,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.5.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 80334336,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.5.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 85052928,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.6.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 85054464,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.6.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 85056000,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.6.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 85057536,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.6.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 88596480,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.6.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 88601088,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.6.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 89780736,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.6.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 89782272,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.6.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 89783808,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.6.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 89785344,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.6.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 94503936,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.6.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 94510080,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.6.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 99228672,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.7.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 99230208,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.7.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 99231744,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.7.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 99233280,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.7.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 102772224,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.7.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 102776832,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.7.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 103956480,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.7.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 103958016,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.7.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 103959552,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.7.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 103961088,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.7.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 108679680,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.7.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 108685824,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.7.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 113404416,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.8.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 113405952,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.8.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 113407488,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.8.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 113409024,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.8.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 116947968,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.8.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 116952576,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.8.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 118132224,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.8.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 118133760,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.8.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 118135296,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.8.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 118136832,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.8.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 122855424,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.8.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 122861568,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.8.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 127580160,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.9.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 127581696,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.9.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 127583232,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.9.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 127584768,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.9.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 131123712,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.9.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 131128320,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.9.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 132307968,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.9.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 132309504,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.9.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 132311040,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.9.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 132312576,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.9.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 137031168,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.9.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 137037312,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.9.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 141755904,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.10.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 141757440,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.10.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 141758976,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.10.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 141760512,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.10.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 145299456,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.10.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 145304064,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.10.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 146483712,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.10.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 146485248,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.10.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 146486784,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.10.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 146488320,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.10.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 151206912,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.10.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 151213056,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.10.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 155931648,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.11.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 155933184,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.11.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 155934720,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.11.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 155936256,
+      "size": 3538944
+    },
+    {
+      "name": "transformer.h.11.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 159475200,
+      "size": 4608
+    },
+    {
+      "name": "transformer.h.11.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 159479808,
+      "size": 1179648
+    },
+    {
+      "name": "transformer.h.11.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 160659456,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.11.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 160660992,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.11.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 160662528,
+      "size": 1536
+    },
+    {
+      "name": "transformer.h.11.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 160664064,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.11.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 165382656,
+      "size": 6144
+    },
+    {
+      "name": "transformer.h.11.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 165388800,
+      "size": 4718592
+    },
+    {
+      "name": "transformer.h.11.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "dtype": "float16",
+      "file": "combined.bin",
+      "offset": 170107392,
+      "size": 1536
+    }
+  ]
+}
