@@ -72,6 +72,10 @@ export class Topology {
    * Get the next node in the pipeline after the given node.
    * Returns null if this is the last node.
    */
+  getNode(nodeId) {
+    return this.nodes.get(nodeId) || null;
+  }
+
   getNextNode(nodeId) {
     const idx = this.pipeline.indexOf(nodeId);
     if (idx === -1 || idx === this.pipeline.length - 1) return null;

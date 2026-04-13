@@ -39,6 +39,7 @@ import {
 } from "../protocol/binary.js";
 import { unpackQuantized, dequantizeInt8, unpackQuantizedPerChannel, dequantizeInt8PerChannel } from "../protocol/quantize.js";
 import { SpeculativeController } from "./speculative.js";
+import { P2PChannel } from "./p2p.js";
 
 export class SynapseNode {
   constructor(statusCallback = null) {
@@ -66,6 +67,8 @@ export class SynapseNode {
     this._lastRecvActivation = new Map(); // requestId -> Float32Array
     this.speculative = null; // initialized after pipeline is ready
     this.useSpeculation = true;
+    this.p2p = null; // initialized when topology assigns a downstream peer
+    this.useP2P = true;
   }
 
   /**
@@ -247,6 +250,23 @@ export class SynapseNode {
 
       case MessageType.PONG:
         // Heartbeat acknowledged
+        break;
+
+      case "P2P_SIGNAL":
+        // WebRTC signaling relayed through coordinator
+        if (this.p2p) {
+          this.p2p.handleSignal(msg).catch(err =>
+            console.warn("[node] P2P signal error:", err.message));
+        } else if (this.useP2P) {
+          // Incoming offer — create P2P channel as responder
+          this.p2p = new P2PChannel(this.nodeId, this.ws);
+          this.p2p.onMessage = (data) => this._handleBinaryMessage(data);
+          this.p2p.onConnected = () => {
+            this._sendLog("info", "p2p_connected", { peer: msg.from });
+          };
+          this.p2p.handleSignal(msg).catch(err =>
+            console.warn("[node] P2P signal error:", err.message));
+        }
         break;
 
       case MessageType.ERROR:
@@ -607,7 +627,11 @@ export class SynapseNode {
         serialized.shape,
         serialized.data
       );
-      this.ws.send(binaryMsg);
+      // Try P2P direct transfer, fall back to coordinator relay
+      const sentP2P = this.p2p?.send(binaryMsg);
+      if (!sentP2P) {
+        this.ws.send(binaryMsg);
+      }
     } else {
       const serialized = await this.pipeline.serializeTensor(hidden);
       const msg = createActivationMessage(
@@ -631,6 +655,23 @@ export class SynapseNode {
     if (msg.pipeline && msg.pipeline.length > 0) {
       this.isFirstNode = msg.pipeline[0] === this.nodeId;
       this.isLastNode = msg.pipeline[msg.pipeline.length - 1] === this.nodeId;
+
+      // Initiate P2P to downstream peer if not last node
+      if (this.useP2P && !this.isLastNode && !this.p2p) {
+        const myIdx = msg.pipeline.indexOf(this.nodeId);
+        if (myIdx >= 0 && myIdx < msg.pipeline.length - 1) {
+          const downstreamId = msg.pipeline[myIdx + 1];
+          this.p2p = new P2PChannel(this.nodeId, this.ws);
+          this.p2p.onMessage = (data) => this._handleBinaryMessage(data);
+          this.p2p.onConnected = () => {
+            this._sendLog("info", "p2p_connected", { peer: downstreamId });
+          };
+          this.p2p.initiate(downstreamId).catch(err => {
+            console.warn("[node] P2P initiation failed:", err.message);
+            this.p2p = null;
+          });
+        }
+      }
     }
   }
 

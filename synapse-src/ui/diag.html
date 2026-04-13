@@ -5,7 +5,8 @@
 <h2>Synapse GPU Diagnostics</h2>
 <pre id="log">Loading...</pre>
 <script type="module">
-import { ShardLoader } from "/node/shard-loader.js";
+import { ShardLoader } from "/node/shard-loader.js?v=diag2";
+import { Pipeline } from "/node/pipeline.js?v=diag2";
 
 const log = document.getElementById("log");
 let allOutput = "";
@@ -15,8 +16,7 @@ log.textContent = "";
 async function postResults() {
   try {
     await fetch("/api/diag", { method: "POST", headers: {"Content-Type":"text/plain"}, body: allOutput });
-    print("[Results posted to server]");
-  } catch(e) { print("[Post failed: " + e.message + "]"); }
+  } catch {}
 }
 
 async function readBuffer(device, buf, size) {
@@ -32,319 +32,79 @@ async function readBuffer(device, buf, size) {
 }
 
 async function run() {
-  // Init WebGPU
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapter = await navigator.gpu?.requestAdapter();
+  if (!adapter) { print("ERROR: No WebGPU adapter"); await postResults(); return; }
   const device = await adapter.requestDevice({
     requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize }
   });
   print("WebGPU OK: " + (adapter.info?.description || adapter.info?.device || "unknown"));
 
-  // Load manifest + shards (all 12 layers via combined.bin)
   const loader = new ShardLoader(device);
   await loader.loadManifest(location.origin);
-  print("Manifest loaded: " + loader.manifest.model);
+  const config = loader.getModelConfig();
+  print(`Model: ${config.model}, layers: ${config.numLayers}, hidden: ${config.hiddenSize}`);
 
-  print("Loading shard 0 (all layers)...");
-  await loader.loadShard(0, "/shards/combined.bin", "/shards/shared.bin", (l,t,p) => {
-    if (p === "upload") print(`  Upload ${l}/${t}`);
-  });
+  // Determine which shard to load based on manifest
+  const numShards = config.numShards;
+  const shardFile = numShards === 1 ? "combined.bin" : "shard_0.bin";
+  print(`Loading shard (${shardFile})...`);
+
+  try {
+    await loader.loadShard(0, `/shards/${shardFile}`, "/shards/shared.bin");
+  } catch(e) {
+    print("Shard load error: " + e.message);
+    // Try alternative shard file
+    try {
+      await loader.loadShard(0, "/shards/shard_0.bin", "/shards/shared.bin");
+    } catch(e2) {
+      print("Both shard loads failed: " + e2.message);
+      await postResults();
+      return;
+    }
+  }
   print("Shard loaded!");
 
-  const config = loader.getModelConfig();
-  const { hiddenSize, vocabSize } = config;
+  const pipeline = new Pipeline(device, loader);
+  await pipeline.init();
+  print("Pipeline initialized");
 
   // Token IDs for "Hello Hello Synapse!"
   const tokenIds = [15496, 18435, 16065, 7512, 0];
-  const seqLen = tokenIds.length;
-  print(`\nToken IDs: [${tokenIds}]`);
-
-  // === CLEAN TEST: Only run forwardLayer, no other GPU ops ===
-  print("\n--- Clean 12-layer forwardLayer test ---");
-  const { Pipeline } = await import("/node/pipeline.js");
-  const pipeline = new Pipeline(device, loader);
-  await pipeline.init();
-  print("Pipeline initialized");
-
-  let hidden2 = await pipeline.embed(tokenIds);
-  print(`Embed: [${hidden2.shape}]`);
-  let d2 = await readBuffer(device, hidden2.buffer, 20);
-  print(`Embed first 5: [${Array.from(d2.slice(0,5)).map(v=>v.toFixed(4))}]`);
-
-  for (let l = 0; l < 12; l++) {
-    hidden2 = await pipeline.forwardLayer(hidden2, l);
-    d2 = await readBuffer(device, hidden2.buffer, 20);
-    print(`Layer ${l}: [${Array.from(d2.slice(0,5)).map(v=>v.toFixed(4))}] NaN=${Array.from(d2).some(v=>isNaN(v))}`);
-    if (Array.from(d2).some(v=>isNaN(v))) {
-      print("  NaN detected! Stopping.");
-      break;
-    }
-  }
-
-  print("\n=== DONE ===");
-  await postResults();
-  return;
-
-  // === OLD TESTS BELOW (skip) ===
-  // === TEST 1: Read back wte.weight and verify ===
-  const wte = loader.getBuffer("transformer.wte.weight");
-  const wteData = await readBuffer(device, wte, Math.min(40, vocabSize * hiddenSize * 4));
-  print(`\nwte.weight first 10: [${Array.from(wteData.slice(0, 10)).map(v => v.toFixed(4))}]`);
-  print("Expected:            [-0.0875, -0.3301, 0.0152, -0.1353, -0.1204, 0.0805, 0.0050, -0.1114, 0.0227, -0.0225]");
-
-  // === TEST 2: Manual embedding ===
-  // Read wte row for token 15496
-  const wteAll = await readBuffer(device, wte, vocabSize * hiddenSize * 4);
-  const wpeAll = await readBuffer(device, loader.getBuffer("transformer.wpe.weight"), 1024 * hiddenSize * 4);
-
-  const cpuEmbed = new Float32Array(seqLen * hiddenSize);
-  for (let i = 0; i < seqLen; i++) {
-    for (let d = 0; d < hiddenSize; d++) {
-      cpuEmbed[i * hiddenSize + d] = wteAll[tokenIds[i] * hiddenSize + d] + wpeAll[i * hiddenSize + d];
-    }
-  }
-  print(`\nCPU embed first 5: [${Array.from(cpuEmbed.slice(0,5)).map(v=>v.toFixed(4))}]`);
-  print("Expected:          [-0.0875, -0.3301, 0.0152, -0.1353, -0.1204]");
-
-  // === TEST 3: GPU embedding ===
-  // Load embed shader
-  const embedCode = await (await fetch("/node/kernels/embed.wgsl")).text();
-  const embedModule = device.createShaderModule({ code: embedCode });
-
-  const tokenBuf = device.createBuffer({ size: seqLen * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(tokenBuf, 0, new Uint32Array(tokenIds));
-
-  const embedOut = device.createBuffer({ size: seqLen * hiddenSize * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
-  const embedParams = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(embedParams, 0, new Uint32Array([seqLen, hiddenSize, 0, 0]));
-
-  const embedPipeline = device.createComputePipeline({
-    layout: "auto",
-    compute: { module: embedModule, entryPoint: "main" },
-  });
-
-  const embedBG = device.createBindGroup({
-    layout: embedPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: embedParams } },
-      { binding: 1, resource: { buffer: tokenBuf } },
-      { binding: 2, resource: { buffer: wte } },
-      { binding: 3, resource: { buffer: loader.getBuffer("transformer.wpe.weight") } },
-      { binding: 4, resource: { buffer: embedOut } },
-    ],
-  });
-
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(embedPipeline);
-  pass.setBindGroup(0, embedBG);
-  pass.dispatchWorkgroups(Math.ceil((seqLen * hiddenSize) / 256));
-  pass.end();
-  device.queue.submit([enc.finish()]);
-
-  const gpuEmbed = await readBuffer(device, embedOut, seqLen * hiddenSize * 4);
-  print(`\nGPU embed first 5: [${Array.from(gpuEmbed.slice(0,5)).map(v=>v.toFixed(4))}]`);
-
-  // Compare
-  let maxDiff = 0;
-  for (let i = 0; i < seqLen * hiddenSize; i++) {
-    maxDiff = Math.max(maxDiff, Math.abs(cpuEmbed[i] - gpuEmbed[i]));
-  }
-  print(`Embed CPU vs GPU max diff: ${maxDiff.toExponential(2)}`);
-
-  // === TEST 4: GPU matmul (Layer 0 QKV) ===
-  const mmCode = await (await fetch("/node/kernels/matmul.wgsl")).text();
-  const mmModule = device.createShaderModule({ code: mmCode });
-
-  // LayerNorm first
-  const lnCode = await (await fetch("/node/kernels/layernorm.wgsl")).text();
-  const lnModule = device.createShaderModule({ code: lnCode });
-
-  const ln1Out = device.createBuffer({ size: seqLen * hiddenSize * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
-  const lnParams = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  const lnParamData = new ArrayBuffer(16);
-  const lnView = new DataView(lnParamData);
-  lnView.setUint32(0, seqLen, true);
-  lnView.setUint32(4, hiddenSize, true);
-  lnView.setFloat32(8, 1e-5, true);
-  device.queue.writeBuffer(lnParams, 0, new Uint8Array(lnParamData));
-
-  const lnPipeline = device.createComputePipeline({
-    layout: "auto",
-    compute: { module: lnModule, entryPoint: "main" },
-  });
-
-  const lnBG = device.createBindGroup({
-    layout: lnPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: lnParams } },
-      { binding: 1, resource: { buffer: embedOut } },
-      { binding: 2, resource: { buffer: loader.getBuffer("transformer.h.0.ln_1.weight") } },
-      { binding: 3, resource: { buffer: loader.getBuffer("transformer.h.0.ln_1.bias") } },
-      { binding: 4, resource: { buffer: ln1Out } },
-    ],
-  });
-
-  let enc2 = device.createCommandEncoder();
-  let pass2 = enc2.beginComputePass();
-  pass2.setPipeline(lnPipeline);
-  pass2.setBindGroup(0, lnBG);
-  pass2.dispatchWorkgroups(seqLen);
-  pass2.end();
-  device.queue.submit([enc2.finish()]);
-
-  const gpuLn1 = await readBuffer(device, ln1Out, seqLen * hiddenSize * 4);
-  print(`\nGPU LN1 first 5: [${Array.from(gpuLn1.slice(0,5)).map(v=>v.toFixed(4))}]`);
-
-  // CPU LayerNorm for comparison
-  const ln1w = await readBuffer(device, loader.getBuffer("transformer.h.0.ln_1.weight"), hiddenSize * 4);
-  const ln1b = await readBuffer(device, loader.getBuffer("transformer.h.0.ln_1.bias"), hiddenSize * 4);
-  const cpuLn1 = new Float32Array(seqLen * hiddenSize);
-  for (let s = 0; s < seqLen; s++) {
-    let mean = 0;
-    for (let d = 0; d < hiddenSize; d++) mean += cpuEmbed[s * hiddenSize + d];
-    mean /= hiddenSize;
-    let variance = 0;
-    for (let d = 0; d < hiddenSize; d++) {
-      const diff = cpuEmbed[s * hiddenSize + d] - mean;
-      variance += diff * diff;
-    }
-    variance /= hiddenSize;
-    const invStd = 1.0 / Math.sqrt(variance + 1e-5);
-    for (let d = 0; d < hiddenSize; d++) {
-      cpuLn1[s * hiddenSize + d] = ln1w[d] * (cpuEmbed[s * hiddenSize + d] - mean) * invStd + ln1b[d];
-    }
-  }
-  print(`CPU LN1 first 5: [${Array.from(cpuLn1.slice(0,5)).map(v=>v.toFixed(4))}]`);
-
-  // GPU matmul: ln1 @ c_attn.weight
-  const M = seqLen, K = hiddenSize, N = 3 * hiddenSize;
-  const qkvOut = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
-  const mmParams = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(mmParams, 0, new Uint32Array([M, K, N, 0]));
-
-  const mmPipeline = device.createComputePipeline({
-    layout: "auto",
-    compute: { module: mmModule, entryPoint: "main" },
-  });
-
-  const mmBG = device.createBindGroup({
-    layout: mmPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: mmParams } },
-      { binding: 1, resource: { buffer: ln1Out } },
-      { binding: 2, resource: { buffer: loader.getBuffer("transformer.h.0.attn.c_attn.weight") } },
-      { binding: 3, resource: { buffer: qkvOut } },
-    ],
-  });
-
-  let enc3 = device.createCommandEncoder();
-  let pass3 = enc3.beginComputePass();
-  pass3.setPipeline(mmPipeline);
-  pass3.setBindGroup(0, mmBG);
-  pass3.dispatchWorkgroups(Math.ceil(M / 8), Math.ceil(N / 8));
-  pass3.end();
-  device.queue.submit([enc3.finish()]);
-
-  const gpuQKV = await readBuffer(device, qkvOut, M * N * 4);
-  print(`\nGPU QKV first 5: [${Array.from(gpuQKV.slice(0,5)).map(v=>v.toFixed(4))}]`);
-
-  // CPU matmul for comparison
-  const cAttnW = await readBuffer(device, loader.getBuffer("transformer.h.0.attn.c_attn.weight"), K * N * 4);
-  const cpuQKV = new Float32Array(M * N);
-  for (let m = 0; m < M; m++) {
-    for (let n = 0; n < N; n++) {
-      let sum = 0;
-      for (let k = 0; k < K; k++) {
-        sum += cpuLn1[m * K + k] * cAttnW[k * N + n];
-      }
-      cpuQKV[m * N + n] = sum;
-    }
-  }
-  print(`CPU QKV first 5: [${Array.from(cpuQKV.slice(0,5)).map(v=>v.toFixed(4))}]`);
-
-  let qkvMaxDiff = 0;
-  for (let i = 0; i < M * N; i++) {
-    qkvMaxDiff = Math.max(qkvMaxDiff, Math.abs(cpuQKV[i] - gpuQKV[i]));
-  }
-  print(`QKV CPU vs GPU max diff: ${qkvMaxDiff.toExponential(2)}`);
-
-  // === TEST 5: Full pipeline forward pass ===
-  print("\n=== Full Pipeline Test ===");
-  const { Pipeline } = await import("/node/pipeline.js");
-  const pipeline = new Pipeline(device, loader);
-  await pipeline.init();
-  print("Pipeline initialized");
+  print(`Tokens: [${tokenIds}]`);
 
   // Embed
   let hidden = await pipeline.embed(tokenIds);
-  print(`Embed shape: [${hidden.shape}]`);
+  let d = await readBuffer(device, hidden.buffer, 20);
+  print(`Embed: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}]`);
+  print(`Expected: [-0.0875, -0.3301, 0.0152, -0.1353, -0.1204]`);
 
-  // Detailed layer 0 trace
-  const { hiddenSize: hs, numHeads: nh, headDim: hd } = config;
-  const sLen = hidden.shape[0];
-  const prefix = "transformer.h.0";
-
-  print("\n--- Layer 0 detailed trace ---");
-
-  const ln1 = await pipeline._layerNorm(hidden.buffer, sLen, hs,
-    loader.getBuffer(`${prefix}.ln_1.weight`), loader.getBuffer(`${prefix}.ln_1.bias`));
-  let d = await readBuffer(device, ln1, 20);
-  print(`LN1: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}] hasNaN=${Array.from(d).some(v=>isNaN(v))}`);
-
-  const qkv = await pipeline._matmul(ln1, sLen, hs,
-    loader.getBuffer(`${prefix}.attn.c_attn.weight`), hs, 3*hs);
-  d = await readBuffer(device, qkv, 20);
-  print(`QKV pre-bias: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}] hasNaN=${Array.from(d).some(v=>isNaN(v))}`);
-
-  await pipeline._addBias(qkv, sLen, 3*hs, loader.getBuffer(`${prefix}.attn.c_attn.bias`));
-  d = await readBuffer(device, qkv, 20);
-  print(`QKV post-bias: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}] hasNaN=${Array.from(d).some(v=>isNaN(v))}`);
-
-  const attnOut = await pipeline._multiHeadAttention(qkv, sLen, nh, hd);
-  d = await readBuffer(device, attnOut, 20);
-  print(`Attention out: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}] hasNaN=${Array.from(d).some(v=>isNaN(v))}`);
-
-  const projOut = await pipeline._matmul(attnOut, sLen, hs,
-    loader.getBuffer(`${prefix}.attn.c_proj.weight`), hs, hs);
-  await pipeline._addBias(projOut, sLen, hs, loader.getBuffer(`${prefix}.attn.c_proj.bias`));
-  d = await readBuffer(device, projOut, 20);
-  print(`Proj out: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}] hasNaN=${Array.from(d).some(v=>isNaN(v))}`);
-
-  const res1 = await pipeline._residualAdd(hidden.buffer, projOut, sLen * hs);
-  d = await readBuffer(device, res1, 20);
-  print(`Residual1: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(4))}] hasNaN=${Array.from(d).some(v=>isNaN(v))}`);
-
-  // Now run all 12 layers through the standard forwardLayer path
-  print("\n--- Full 12-layer forward ---");
-  hidden = await pipeline.embed(tokenIds);
-  for (let l = 0; l < 12; l++) {
+  // Run all layers
+  const numLayers = loader.manifest.shard_layout["0"].layer_end - loader.manifest.shard_layout["0"].layer_start + 1;
+  for (let l = loader.manifest.shard_layout["0"].layer_start; l <= loader.manifest.shard_layout["0"].layer_end; l++) {
     hidden = await pipeline.forwardLayer(hidden, l);
-    const hData = await readBuffer(device, hidden.buffer, 20);
-    print(`Layer ${l}: [${Array.from(hData.slice(0,5)).map(v=>v.toFixed(2))}] NaN=${Array.from(hData).some(v=>isNaN(v))}`);
+    d = await readBuffer(device, hidden.buffer, 20);
+    const hasNaN = Array.from(d).some(v => isNaN(v));
+    print(`Layer ${l}: [${Array.from(d.slice(0,5)).map(v=>v.toFixed(2))}] NaN=${hasNaN}`);
+    if (hasNaN) { print("NaN detected — stopping"); break; }
   }
 
-  // Output head
-  const logitsTensor = await pipeline.outputHead(hidden);
-  const lastPos = (logitsTensor.shape[0] - 1) * config.vocabSize;
-  const logitsData = await readBuffer(device, logitsTensor.buffer, logitsTensor.shape[0] * config.vocabSize * 4);
-  const lastLogits = logitsData.slice(lastPos, lastPos + config.vocabSize);
+  // Output head (only if we have all 12 layers)
+  if (numLayers === 12) {
+    const logitsTensor = await pipeline.outputHead(hidden);
+    const vocabSize = config.vocabSize;
+    const lastPos = (logitsTensor.shape[0] - 1) * vocabSize;
+    const allLogits = await readBuffer(device, logitsTensor.buffer, logitsTensor.shape[0] * vocabSize * 4);
+    const lastLogits = allLogits.slice(lastPos, lastPos + vocabSize);
 
-  // Find top 5
-  const indexed = Array.from(lastLogits).map((v, i) => ({v, i}));
-  indexed.sort((a, b) => b.v - a.v);
-  print(`\nTop 5 logits (last position):`);
-  for (let k = 0; k < 5; k++) {
-    const resp = await fetch("/api/detokenize", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({tokenIds: [indexed[k].i]})
-    });
-    const {text} = await resp.json();
-    print(`  logit=${indexed[k].v.toFixed(2)} id=${indexed[k].i} -> "${text}"`);
+    const indexed = Array.from(lastLogits).map((v, i) => ({v, i}));
+    indexed.sort((a, b) => b.v - a.v);
+    print(`\nTop 5 logits:`);
+    for (let k = 0; k < 5; k++) {
+      print(`  logit=${indexed[k].v.toFixed(2)} id=${indexed[k].i}`);
+    }
+    print(`Expected top: logit=-78.36 id=16065`);
+    print(`EOS (50256): ${lastLogits[50256]?.toFixed(2)}`);
   }
-
-  // Check EOS token specifically
-  print(`\nEOS (50256) logit: ${lastLogits[50256]?.toFixed(2) || 'N/A'}`);
-  print(`Expected top: logit=-78.36 id=16065 (" Syn")`);
 
   print("\n=== DONE ===");
   await postResults();
