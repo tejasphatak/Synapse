@@ -284,6 +284,11 @@ export class SynapseNode {
           this.p2p.onConnected = () => {
             this._sendLog("info", "p2p_connected", { peer: msg.from });
           };
+          this.p2p.onDisconnected = () => {
+            this._sendLog("info", "p2p_disconnected", { peer: msg.from });
+            this.p2p?.close();
+            this.p2p = null;
+          };
           this.p2p.handleSignal(msg).catch(err =>
             console.warn("[node] P2P signal error:", err.message));
         }
@@ -765,6 +770,11 @@ export class SynapseNode {
           this.p2p.onMessage = (data) => this._handleBinaryMessage(data);
           this.p2p.onConnected = () => {
             this._sendLog("info", "p2p_connected", { peer: downstreamId });
+          };
+          this.p2p.onDisconnected = () => {
+            this._sendLog("info", "p2p_disconnected", { peer: downstreamId });
+            this.p2p?.close();
+            this.p2p = null;
           };
           this.p2p.initiate(downstreamId).catch(err => {
             console.warn("[node] P2P initiation failed:", err.message);
