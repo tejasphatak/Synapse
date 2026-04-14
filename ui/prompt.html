@@ -149,6 +149,19 @@
     .input-area button:hover { background: #6a4de6; }
     .input-area button:disabled { background: #333; cursor: not-allowed; }
 
+    .demo-banner {
+      background: rgba(124, 92, 255, 0.08);
+      border: 1px solid rgba(124, 92, 255, 0.2);
+      border-radius: 8px;
+      padding: 0.6rem 1.2rem;
+      font-size: 0.8rem;
+      color: #aaa;
+      text-align: center;
+      margin-bottom: 1.5rem;
+      max-width: 700px;
+      line-height: 1.5;
+    }
+
     .stats-bar {
       display: flex;
       gap: 2rem;
@@ -160,6 +173,10 @@
   </style>
 </head>
 <body>
+  <div class="demo-banner">
+    This is a live demo running on the lowest-tier consumer GPU available — no cloud, no data center. Just browsers.
+  </div>
+
   <div class="header">
     <h1>SYNAPSE</h1>
     <div class="tagline">Distributed intelligence across the browser network</div>
@@ -191,6 +208,7 @@
     <div class="stats-bar">
       <span>Nodes: <strong id="statNodes">0</strong></span>
       <span>Pipeline: <strong id="statPipeline">offline</strong></span>
+      <span>GPU: <strong id="statGpu">—</strong></span>
       <span>Tokens generated: <strong id="statTokens">0</strong></span>
       <span>Avg latency: <strong id="statLatency">—</strong></span>
     </div>
@@ -312,6 +330,15 @@
       }).join(" ");
 
       document.getElementById("statNodes").textContent = totalNodes;
+
+      // Show GPU info from nodes
+      const gpuNames = nodes
+        .filter(n => n.gpuVendor || n.gpu)
+        .map(n => n.gpuVendor || n.gpu)
+        .filter(Boolean);
+      if (gpuNames.length > 0) {
+        document.getElementById("statGpu").textContent = gpuNames[0];
+      }
 
       if (pipeline.length >= 2 && activeNodes.length >= 2) {
         updatePipelineStatus("ready", `Pipeline ready (${activeNodes.length} nodes)`);
