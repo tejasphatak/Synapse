@@ -37,6 +37,7 @@ import {
   uint32ToRequestId,
   registerRequestId,
 } from "../protocol/binary.js";
+import { GenerationManager } from "./generation.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = join(__dirname, "..");
@@ -77,12 +78,8 @@ let requestCounter = 0;
 let binaryRequestCounter = 0; // uint32 IDs for binary protocol
 
 // ─── Generation State ────────────────────────────────────────────
-// generationId → { tokenIds, generatedTokens, maxTokens, promptWs, startTime }
-const activeGenerations = new Map();
-
-// ─── Generation Timeout ─────────────────────────────────────────
-// If a generation hasn't produced a token in this many ms, it's dead.
 const GENERATION_TIMEOUT_MS = 60000;
+const generations = new GenerationManager(GENERATION_TIMEOUT_MS);
 
 // ─── Centralized Log Store ───────────────────────────────────────
 // Ring buffer of log entries from all nodes, queryable via /api/logs
@@ -184,7 +181,7 @@ function requestHandler(req, res) {
     const uptime = process.uptime();
     const nodes = [...topology.nodes.values()];
     const readyNodes = nodes.filter(n => n.status === "ready");
-    const totalInferences = [...activeGenerations.values()].length;
+    const totalInferences = generations.size;
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       status: readyNodes.length >= SHARD_CONFIG.length ? "operational" : nodes.length > 0 ? "degraded" : "waiting_for_nodes",
@@ -390,23 +387,15 @@ function wsConnectionHandler(ws, req) {
         const maxTokens = msg.maxTokens || 30;
         const genId = `gen-${++requestCounter}-${Date.now()}`;
 
-        // Start a generation session
-        activeGenerations.set(genId, {
-          tokenIds: [...msg.tokenIds],
-          generatedTokens: [],
-          maxTokens,
-          promptWs: ws,
-          startTime: Date.now(),
-          prefillDone: false,
-          promptLen: msg.tokenIds.length,
-        });
+        const gen = generations.create(genId, msg.tokenIds, maxTokens);
+        gen.promptWs = ws;
 
         const result = startInference(msg.tokenIds, genId);
         if (result.ok) {
           promptClients.get(ws)?.pendingRequests.set(genId, true);
           ws.send(JSON.stringify({ type: "INFER_STARTED", requestId: genId }));
         } else {
-          activeGenerations.delete(genId);
+          generations.remove(genId);
           ws.send(JSON.stringify({ type: "INFER_ERROR", error: result.error }));
         }
       }
@@ -645,7 +634,7 @@ function handleNodeReady(msg) {
 
 function handleOutput(ws, msg) {
   let genId = msg.requestId;
-  let gen = activeGenerations.get(genId);
+  let gen = generations.get(genId);
 
   // If the requestId came from a node that didn't have the string mapping
   // (e.g., last node received binary activation with numeric ID only),
@@ -655,7 +644,7 @@ function handleOutput(ws, msg) {
     const resolved = uint32ToRequestId(numericId);
     if (resolved !== genId) {
       genId = resolved;
-      gen = activeGenerations.get(genId);
+      gen = generations.get(genId);
     }
   }
 
@@ -679,9 +668,7 @@ function handleOutput(ws, msg) {
 
   // ─── Autoregressive loop ─────────────────────────────
   const newToken = msg.tokens[0];
-  gen.generatedTokens.push(newToken);
-  gen.tokenIds.push(newToken);
-  gen._lastTokenTime = Date.now();
+  const { done, reason, seqPos } = gen.addToken(newToken);
 
   // Stream the token to the prompt client immediately
   if (gen.promptWs && gen.promptWs.readyState === 1) {
@@ -695,72 +682,60 @@ function handleOutput(ws, msg) {
     }));
   }
 
-  // Check if we should stop: max tokens, or EOS token (50256 for GPT-2)
-  const isEOS = newToken === 50256;
-  const isDone = gen.generatedTokens.length >= gen.maxTokens || isEOS;
-
-  if (isDone) {
-    const elapsed = Date.now() - gen.startTime;
-    const tokPerSec = (gen.generatedTokens.length / (elapsed / 1000)).toFixed(1);
+  if (done) {
+    const stats = gen.getStats();
     console.log(
-      `[coordinator] Generation ${genId} complete: ${gen.generatedTokens.length} tokens in ${elapsed}ms (${tokPerSec} tok/s)`
+      `[coordinator] Generation ${genId} complete: ${stats.totalTokens} tokens in ${stats.elapsedMs}ms (${stats.tokensPerSecond} tok/s)`
     );
 
-    // Log generation completion for telemetry
     addLog({
       nodeId: "coordinator",
       level: "perf",
       event: "generation_complete",
       data: {
         requestId: genId,
-        totalTokens: gen.generatedTokens.length,
-        elapsedMs: elapsed,
-        tokensPerSecond: parseFloat(tokPerSec),
-        promptLen: gen.promptLen,
+        totalTokens: stats.totalTokens,
+        elapsedMs: stats.elapsedMs,
+        tokensPerSecond: stats.tokensPerSecond,
+        promptLen: stats.promptLen,
       },
       timestamp: Date.now(),
     });
 
-    // Send completion message
     if (gen.promptWs && gen.promptWs.readyState === 1) {
       gen.promptWs.send(JSON.stringify({
         type: "GENERATION_DONE",
         requestId: genId,
         tokens: gen.generatedTokens,
-        totalTokens: gen.generatedTokens.length,
-        elapsedMs: elapsed,
-        tokensPerSecond: parseFloat(tokPerSec),
+        totalTokens: stats.totalTokens,
+        elapsedMs: stats.elapsedMs,
+        tokensPerSecond: stats.tokensPerSecond,
       }));
     }
 
-    // Free KV caches on all pipeline nodes
     broadcastKVReset(genId);
-    activeGenerations.delete(genId);
+    generations.remove(genId);
 
-    // Clean up pending request tracking
     for (const [, state] of promptClients) {
       state.pendingRequests.delete(genId);
     }
   } else {
-    // Mark prefill as done after first output
-    gen.prefillDone = true;
-
     // Continue generating — use KV-cached single-token step
-    const seqPos = gen.tokenIds.length - 1; // position of the new token
     const result = continueGeneration(genId, newToken, seqPos);
     if (!result.ok) {
       console.error(`[coordinator] Generation ${genId} failed to continue: ${result.error}`);
       if (gen.promptWs && gen.promptWs.readyState === 1) {
+        const stats = gen.getStats();
         gen.promptWs.send(JSON.stringify({
           type: "GENERATION_DONE",
           requestId: genId,
           tokens: gen.generatedTokens,
-          totalTokens: gen.generatedTokens.length,
-          elapsedMs: Date.now() - gen.startTime,
+          totalTokens: stats.totalTokens,
+          elapsedMs: stats.elapsedMs,
           error: result.error,
         }));
       }
-      activeGenerations.delete(genId);
+      generations.remove(genId);
     }
   }
 }
@@ -818,7 +793,7 @@ function startInference(tokenIds, generationId) {
   registerRequestId(requestId, binaryReqId);
 
   // Store binary request ID in generation state for reuse in continueGeneration
-  const gen = activeGenerations.get(requestId);
+  const gen = generations.get(requestId);
   if (gen) gen._binaryReqId = binaryReqId;
 
   const msg = createInferenceRequestMessage(requestId, tokenIds);
@@ -860,7 +835,7 @@ function continueGeneration(genId, tokenId, seqPos) {
   }
 
   // Reuse the existing binary request ID mapping
-  const gen = activeGenerations.get(genId);
+  const gen = generations.get(genId);
   const binaryReqId = gen?._binaryReqId;
 
   const msg = {
@@ -948,37 +923,34 @@ setInterval(() => {
 
   // Sweep timed-out generations — prevents memory leaks from orphaned requests
   const now = Date.now();
-  for (const [genId, gen] of activeGenerations) {
-    const lastActivity = gen._lastTokenTime || gen.startTime;
-    if (now - lastActivity > GENERATION_TIMEOUT_MS) {
-      console.warn(`[coordinator] Generation ${genId} timed out after ${Math.round((now - gen.startTime) / 1000)}s — cleaning up`);
+  const timedOut = generations.sweepTimedOut(now);
+  for (const gen of timedOut) {
+    const stats = gen.getStats(now);
+    console.warn(`[coordinator] Generation ${gen.id} timed out after ${Math.round(stats.elapsedMs / 1000)}s — cleaning up`);
 
-      // Notify the prompt client
-      if (gen.promptWs && gen.promptWs.readyState === 1) {
-        gen.promptWs.send(JSON.stringify({
-          type: "GENERATION_DONE",
-          requestId: genId,
-          tokens: gen.generatedTokens,
-          totalTokens: gen.generatedTokens.length,
-          elapsedMs: now - gen.startTime,
-          error: "Generation timed out — a node may have disconnected",
-        }));
-      }
+    if (gen.promptWs && gen.promptWs.readyState === 1) {
+      gen.promptWs.send(JSON.stringify({
+        type: "GENERATION_DONE",
+        requestId: gen.id,
+        tokens: gen.generatedTokens,
+        totalTokens: stats.totalTokens,
+        elapsedMs: stats.elapsedMs,
+        error: "Generation timed out — a node may have disconnected",
+      }));
+    }
 
-      addLog({
-        nodeId: "coordinator",
-        level: "error",
-        event: "generation_timeout",
-        data: { requestId: genId, generatedTokens: gen.generatedTokens.length, elapsedMs: now - gen.startTime },
-        timestamp: now,
-      });
+    addLog({
+      nodeId: "coordinator",
+      level: "error",
+      event: "generation_timeout",
+      data: { requestId: gen.id, generatedTokens: stats.totalTokens, elapsedMs: stats.elapsedMs },
+      timestamp: now,
+    });
 
-      broadcastKVReset(genId);
-      activeGenerations.delete(genId);
+    broadcastKVReset(gen.id);
 
-      for (const [, state] of promptClients) {
-        state.pendingRequests.delete(genId);
-      }
+    for (const [, state] of promptClients) {
+      state.pendingRequests.delete(gen.id);
     }
   }
 }, 10000);
