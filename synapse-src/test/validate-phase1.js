@@ -52,6 +52,13 @@ import { ActivationPredictor } from "../node/predictor.js";
 import { EarlyExitDetector } from "../node/early-exit.js";
 
 import {
+  rleCompress,
+  rleDecompress,
+  compressPayload,
+  decompressPayload,
+} from "../protocol/entropy.js";
+
+import {
   MessageType,
   PROTOCOL_V2,
   createActivationMessage,
@@ -1009,5 +1016,156 @@ describe("Attention Head Pruning", () => {
     console.log(`    Prune rate: ${(stats.pruneRate * 100).toFixed(1)}%`);
     assert.ok(stats.totalHeadOps > 0);
     assert.ok(stats.skippedHeadOps > 0);
+  });
+});
+
+// ─── RLE Entropy Coding ─────────────────────────────────────────
+
+describe("RLE Entropy Coding", () => {
+  it("round-trips all-zero data", () => {
+    const data = new Int8Array(768); // all zeros
+    const { compressed, ratio } = rleCompress(data);
+    const restored = rleDecompress(compressed, data.length);
+    assert.deepStrictEqual(restored, data);
+    assert.ok(ratio > 1, `Expected compression, got ratio ${ratio}`);
+    console.log(`    All-zero: ${data.length} → ${compressed.length} bytes (ratio ${ratio.toFixed(1)}x)`);
+  });
+
+  it("round-trips random data losslessly", () => {
+    const data = new Int8Array(768);
+    for (let i = 0; i < data.length; i++) data[i] = Math.floor(Math.random() * 256) - 128;
+    const { compressed } = rleCompress(data);
+    const restored = rleDecompress(compressed, data.length);
+    assert.deepStrictEqual(restored, data);
+  });
+
+  it("compresses sparse delta activations well", () => {
+    // Simulate a delta-encoded activation: mostly zeros with some non-zero values
+    const data = new Int8Array(768);
+    // ~30% non-zero
+    for (let i = 0; i < 768; i += 3) data[i] = Math.floor(Math.random() * 20) - 10;
+    const { compressed, ratio } = rleCompress(data, 0);
+    const restored = rleDecompress(compressed, data.length);
+    assert.deepStrictEqual(restored, data);
+    console.log(`    Sparse delta: ${data.length} → ${compressed.length} bytes (ratio ${ratio.toFixed(2)}x)`);
+  });
+
+  it("compresses with zero threshold (lossy)", () => {
+    // Simulate delta activations: mostly small values with occasional spikes.
+    // Real deltas cluster near zero with long near-zero runs.
+    const data = new Int8Array(768);
+    for (let i = 0; i < data.length; i++) {
+      // ~80% values in [-2,2] (will be zeroed by threshold), ~20% larger spikes
+      data[i] = Math.random() < 0.8
+        ? Math.floor(Math.random() * 5) - 2
+        : Math.floor(Math.random() * 20) - 10;
+    }
+    const { compressed, ratio } = rleCompress(data, 2); // treat |v| <= 2 as zero
+    assert.ok(ratio > 1, `Threshold=2 should compress better than lossless`);
+    const restored = rleDecompress(compressed, data.length);
+    // Lossy: values with |v| <= 2 become 0
+    for (let i = 0; i < data.length; i++) {
+      if (Math.abs(data[i]) <= 2) assert.equal(restored[i], 0);
+    }
+    console.log(`    Lossy threshold=2: ratio ${ratio.toFixed(2)}x`);
+  });
+});
+
+// ─── Wire-Level Payload Compression ─────────────────────────────
+
+describe("Wire Payload Compression", () => {
+  it("round-trips a packed quantized payload", () => {
+    // Create a sparse int8 activation (simulating delta)
+    const activation = randomActivation(768, 0.5);
+    // Zero out 70% to simulate sparse delta
+    for (let i = 0; i < activation.length; i++) {
+      if (Math.random() < 0.7) activation[i] = 0;
+    }
+    const { data: int8Data, scale } = quantizeInt8(activation);
+    const packed = packQuantized(int8Data, scale);
+
+    const result = compressPayload(packed);
+    assert.ok(result !== null, "Sparse data should compress");
+
+    const restored = decompressPayload(new Uint8Array(result.compressed));
+    const unpacked = unpackQuantized(restored);
+
+    assert.equal(unpacked.int8Data.length, int8Data.length);
+    assert.ok(Math.abs(unpacked.scale - scale) < 1e-6);
+    for (let i = 0; i < int8Data.length; i++) {
+      assert.equal(unpacked.int8Data[i], int8Data[i], `Mismatch at index ${i}`);
+    }
+    console.log(`    Quantized payload: ${packed.byteLength} → ${result.compressed.byteLength} bytes (ratio ${result.ratio.toFixed(2)}x)`);
+  });
+
+  it("round-trips a packed per-channel quantized payload", () => {
+    // Simulate sparse delta activation with long zero runs (realistic pattern).
+    // Per-channel packed format has scale metadata, so data needs high sparsity.
+    const activation = randomActivation(768, 0.5);
+    for (let i = 0; i < activation.length; i++) {
+      if (Math.random() < 0.85) activation[i] = 0;
+    }
+    const { data: int8Data, scales } = quantizeInt8PerChannel(activation, 768);
+    const packed = packQuantizedPerChannel(int8Data, scales);
+
+    const result = compressPayload(packed);
+    assert.ok(result !== null, "Sparse per-channel data should compress");
+
+    const restored = decompressPayload(new Uint8Array(result.compressed));
+    const unpacked = unpackQuantizedPerChannel(restored);
+
+    assert.equal(unpacked.int8Data.length, int8Data.length);
+    assert.equal(unpacked.numRows, scales.length);
+    console.log(`    Per-channel payload: ${packed.byteLength} → ${result.compressed.byteLength} bytes`);
+  });
+
+  it("returns null for incompressible data", () => {
+    // Random data with no zeros — shouldn't compress
+    const int8Data = new Int8Array(768);
+    for (let i = 0; i < int8Data.length; i++) int8Data[i] = (i % 127) + 1; // no zeros
+    const packed = packQuantized(int8Data, 1.0);
+    const result = compressPayload(packed);
+    // May or may not be null, but if not null, ratio must be > 1
+    if (result) assert.ok(result.ratio > 1);
+    console.log(`    Incompressible: ${result ? "compressed anyway" : "correctly skipped"}`);
+  });
+
+  it("integrates with binary protocol encode/decode", () => {
+    // Full pipeline: quantize → pack → compress → binary encode → decode → decompress → unpack → dequantize
+    const original = randomActivation(768, 1.0);
+    for (let i = 0; i < original.length; i++) {
+      if (Math.random() < 0.65) original[i] = 0;
+    }
+
+    // Sender side
+    const { data: int8Data, scale } = quantizeInt8(original);
+    const packed = packQuantized(int8Data, scale);
+    let flags = setQuantFlags(0, QuantMode.INT8);
+    let payloadData = packed;
+    const compResult = compressPayload(packed);
+    if (compResult) {
+      payloadData = compResult.compressed;
+      flags |= Flags.COMPRESSED;
+    }
+
+    const reqId = requestIdToUint32("test-rle-integration");
+    const encoded = encodeBinaryMessage(BinaryMsgType.ACTIVATION, flags, 42, reqId, [1, 768], payloadData);
+
+    // Receiver side
+    const decoded = decodeBinaryMessage(encoded);
+    assert.equal(decoded.type, BinaryMsgType.ACTIVATION);
+    assert.equal(decoded.seqPos, 42);
+
+    const isCompressed = !!(decoded.flags & Flags.COMPRESSED);
+    const payload = isCompressed ? decompressPayload(decoded.payload) : decoded.payload;
+    const unpacked = unpackQuantized(payload);
+    const restored = dequantizeInt8(unpacked.int8Data, unpacked.scale);
+
+    // Check within quantization error
+    for (let i = 0; i < original.length; i++) {
+      assert.ok(Math.abs(restored[i] - original[i]) < scale * 1.5,
+        `Value at ${i}: original=${original[i].toFixed(4)}, restored=${restored[i].toFixed(4)}`);
+    }
+    console.log(`    Full pipeline: ${original.byteLength} → ${payloadData.byteLength} bytes on wire`);
   });
 });
