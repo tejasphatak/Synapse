@@ -317,6 +317,11 @@ export class SynapseNode {
         this.speculative.enableThreshold = 0.99; // require 99%+ hit rate to auto-enable
       }
 
+      // Initialize adaptive precision (1 output per node — tracks wire quantization error)
+      if (this.useAdaptivePrecision) {
+        this.adaptivePrecision = new AdaptivePrecisionSelector(1);
+      }
+
       this._setStatus("ready", `Loaded ${result.tensorCount} tensors`);
       this._sendLog("perf", "shard_loaded", {
         tensorCount: result.tensorCount,
@@ -462,6 +467,8 @@ export class SynapseNode {
           // No previous — treat as regular int8 (first token or cache miss)
           hidden = this.pipeline.deserializeTensorQuantized(payload, decoded.shape);
         }
+      } else if (quantMode === QuantMode.INT4) {
+        hidden = this.pipeline.deserializeTensorInt4(payload, decoded.shape);
       } else if (quantMode === QuantMode.INT8) {
         hidden = this.pipeline.deserializeTensorQuantized(payload, decoded.shape);
         // Cache float32 for future delta decoding (only for single-token)
@@ -669,9 +676,15 @@ export class SynapseNode {
       let flags = 0;
       let serialized;
 
+      // Determine quantization mode — adaptive precision overrides default INT8
+      let quantMode = this.useQuantization ? QuantMode.INT8 : QuantMode.NONE;
+      if (this.adaptivePrecision) {
+        quantMode = this.adaptivePrecision.getMode(0);
+      }
+
       // Try delta encoding for cached steps (single-token, shape[0] === 1)
       const isSingleToken = hidden.shape[0] === 1;
-      if (this.useDeltaEncoding && this.useQuantization && isSingleToken) {
+      if (this.useDeltaEncoding && quantMode === QuantMode.INT8 && isSingleToken) {
         const prev = this._lastSentActivation.get(requestId) || null;
         const result = await this.pipeline.serializeTensorDelta(hidden, prev);
         serialized = result;
@@ -685,13 +698,27 @@ export class SynapseNode {
         }
         // Cache the float32 for next delta
         this._lastSentActivation.set(requestId, result.currentFloat32);
-      } else if (this.useQuantization) {
+      } else if (quantMode === QuantMode.INT4) {
+        serialized = await this.pipeline.serializeTensorInt4(hidden);
+        if (!serialized.fallbackUnquantized) {
+          flags = setQuantFlags(flags, QuantMode.INT4);
+        }
+      } else if (quantMode === QuantMode.INT8) {
         serialized = await this.pipeline.serializeTensorQuantized(hidden);
         if (!serialized.fallbackUnquantized) {
           flags = setQuantFlags(flags, QuantMode.INT8);
         }
       } else {
         serialized = await this.pipeline.serializeTensorBinary(hidden);
+      }
+
+      // Feed the adaptive precision selector with this activation's float32 data
+      if (this.adaptivePrecision) {
+        // Use currentFloat32 from delta path, or read from GPU
+        const f32 = serialized.currentFloat32
+          || new Float32Array(await this.pipeline._readBuffer(
+               hidden.buffer, 0, hidden.shape.reduce((a, b) => a * b, 1) * 4));
+        this.adaptivePrecision.observe(0, f32);
       }
 
       // Apply RLE compression on quantized payloads (lossless)

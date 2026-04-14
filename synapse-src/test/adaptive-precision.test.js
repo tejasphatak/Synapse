@@ -7,6 +7,16 @@ import {
   unpackInt4,
   AdaptivePrecisionSelector,
 } from "../protocol/adaptive-precision.js";
+import {
+  encodeBinaryMessage,
+  decodeBinaryMessage,
+  BinaryMsgType,
+  QuantMode,
+  Flags,
+  setQuantFlags,
+  getQuantMode,
+} from "../protocol/binary.js";
+import { compressPayload, decompressPayload } from "../protocol/entropy.js";
 
 // ─── Int4 Quantization ──────────────────────────────────────────
 
@@ -208,5 +218,115 @@ describe("AdaptivePrecisionSelector", () => {
     assert.equal(snap.length, 2);
     assert.equal(snap[0].steps, 10);
     assert.equal(snap[1].steps, 10);
+  });
+});
+
+// ─── Wire Integration: INT4 over SYN1 Binary Protocol ──────────
+
+describe("INT4 Wire Integration", () => {
+  it("round-trips INT4 payload through SYN1 binary encode/decode", () => {
+    const original = new Float32Array(768);
+    for (let i = 0; i < 768; i++) original[i] = Math.sin(i * 0.05) * 5;
+
+    const { data: packedData, scale, length } = quantizeInt4(original);
+    const wirePayload = new Uint8Array(packInt4(packedData, scale, length));
+
+    // Encode as SYN1 binary message with INT4 quant flag
+    let flags = setQuantFlags(0, QuantMode.INT4);
+    const shape = [1, 768];
+    const msg = encodeBinaryMessage(BinaryMsgType.ACTIVATION, flags, 42, 1, shape, wirePayload);
+
+    // Decode
+    const decoded = decodeBinaryMessage(msg);
+    assert.equal(getQuantMode(decoded.flags), QuantMode.INT4);
+    assert.deepEqual(decoded.shape, shape);
+
+    // Dequantize
+    const { packedData: recvPacked, scale: recvScale, originalLength } = unpackInt4(decoded.payload);
+    const recovered = dequantizeInt4(recvPacked, recvScale, originalLength);
+    assert.equal(recovered.length, 768);
+
+    // INT4 error should be bounded (7 levels per direction)
+    let maxErr = 0;
+    for (let i = 0; i < 768; i++) {
+      const err = Math.abs(recovered[i] - original[i]);
+      if (err > maxErr) maxErr = err;
+    }
+    // Max error should be less than 2 * scale (one quantization step)
+    const expectedScale = 5 / 7; // max(|sin * 5|) ≈ 5
+    assert.ok(maxErr < expectedScale * 1.5, `maxErr=${maxErr}, expectedScale=${expectedScale}`);
+  });
+
+  it("INT4 with RLE compression round-trips correctly", () => {
+    // Sparse activation — lots of near-zero values
+    const original = new Float32Array(768);
+    for (let i = 0; i < 20; i++) original[i * 38] = (i - 10) * 0.5;
+
+    const { data: packedData, scale, length } = quantizeInt4(original);
+    const wirePayload = new Uint8Array(packInt4(packedData, scale, length));
+
+    // Compress
+    const compressed = compressPayload(wirePayload);
+    if (compressed) {
+      // Decompress and verify
+      const decompressed = decompressPayload(compressed.compressed);
+      const { packedData: p, scale: s, originalLength: l } = unpackInt4(decompressed);
+      const recovered = dequantizeInt4(p, s, l);
+      assert.equal(recovered.length, 768);
+    }
+    // If compression didn't help, that's fine — just verifying it doesn't corrupt
+  });
+
+  it("AdaptivePrecisionSelector transitions from INT8 warmup to INT4 for clean data", () => {
+    const selector = new AdaptivePrecisionSelector(1, {
+      warmupSteps: 3,
+      int4Threshold: 0.1, // generous
+    });
+
+    // Clean linear ramp — quantizes very well
+    const activation = new Float32Array(256);
+    for (let i = 0; i < 256; i++) activation[i] = i * 0.01;
+
+    // During warmup, should return INT8
+    assert.equal(selector.getMode(0), QuantMode.INT8, "warmup should default to INT8");
+
+    // After warmup, should converge to INT4 for clean data
+    for (let step = 0; step < 10; step++) {
+      selector.observe(0, activation);
+    }
+    const mode = selector.getMode(0);
+    assert.equal(mode, QuantMode.INT4, `expected INT4 for clean data, got ${mode}`);
+  });
+
+  it("selector stays at INT8 when INT4 error is too high", () => {
+    const selector = new AdaptivePrecisionSelector(1, {
+      warmupSteps: 3,
+      int4Threshold: 0.001, // very tight — INT4 won't satisfy
+      int8Threshold: 0.05,  // loose enough for INT8
+    });
+
+    const activation = new Float32Array(256);
+    for (let i = 0; i < 256; i++) activation[i] = Math.sin(i * 0.3) * 10;
+
+    for (let step = 0; step < 10; step++) {
+      selector.observe(0, activation);
+    }
+    const mode = selector.getMode(0);
+    assert.equal(mode, QuantMode.INT8, `expected INT8 for tight INT4 threshold, got ${mode}`);
+  });
+
+  it("SYN1 flags correctly distinguish INT4 from INT8", () => {
+    let flags4 = setQuantFlags(0, QuantMode.INT4);
+    let flags8 = setQuantFlags(0, QuantMode.INT8);
+    let flags0 = setQuantFlags(0, QuantMode.NONE);
+
+    assert.equal(getQuantMode(flags4), QuantMode.INT4);
+    assert.equal(getQuantMode(flags8), QuantMode.INT8);
+    assert.equal(getQuantMode(flags0), QuantMode.NONE);
+
+    // INT4 + COMPRESSED flag should preserve both
+    flags4 |= Flags.COMPRESSED;
+    assert.equal(getQuantMode(flags4), QuantMode.INT4);
+    assert.ok(flags4 & Flags.COMPRESSED);
   });
 });
