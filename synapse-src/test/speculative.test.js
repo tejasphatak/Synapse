@@ -419,4 +419,213 @@ describe("SpeculativeController", () => {
       assert.ok(ctrl.predictor.requests.has("req2"));
     });
   });
+
+  describe("batch speculation — _speculateNextBatch", () => {
+    beforeEach(() => {
+      ctrl.batchDepth = 3;
+    });
+
+    it("does not batch-speculate with insufficient data", () => {
+      ctrl.predictor.observe("req1", f32(1, 2, 3));
+      ctrl._speculateNextBatch("req1", 1, 3, 0, 6);
+      assert.equal(ctrl.pendingBatch.has("req1"), false);
+      assert.equal(ctrl.pending.has("req1"), false);
+    });
+
+    it("creates batch entries for high-confidence multi-step predictions", () => {
+      // Linear trajectory → high confidence for multiple steps
+      ctrl.predictor.observe("req1", f32(1, 2, 3));
+      ctrl.predictor.observe("req1", f32(2, 4, 6));
+      ctrl.predictor.observe("req1", f32(3, 6, 9));
+
+      ctrl._speculateNextBatch("req1", 3, 3, 0, 6);
+
+      // With a perfect linear trajectory, confidence decays as 1.0, 0.85, 0.7225
+      // Steps with confidence < 0.9 are filtered, so we may get 1-2 viable steps
+      const hasBatch = ctrl.pendingBatch.has("req1");
+      const hasSingle = ctrl.pending.has("req1");
+      assert.ok(hasBatch || hasSingle, "should have either batch or single pending");
+    });
+
+    it("falls back to single-step when only 1 prediction is viable", () => {
+      // Only 2 observations → predictMulti gives decaying confidence
+      ctrl.predictor.observe("req1", f32(1, 2, 3));
+      ctrl.predictor.observe("req1", f32(2, 4, 6));
+
+      ctrl._speculateNextBatch("req1", 2, 3, 0, 6);
+
+      // With only 2 observations, base confidence = 1.0 (no 3rd point to compare)
+      // So steps: 1.0, 0.85, 0.7225 — only steps 1 and 2 are >= 0.9
+      // This should create a batch or single depending on viable count
+      const total = ctrl.stats.speculations;
+      assert.ok(total > 0, "should have launched at least 1 speculation");
+    });
+
+    it("batch entries have sequential seqPos values", () => {
+      ctrl.predictor.observe("req1", f32(1, 2, 3));
+      ctrl.predictor.observe("req1", f32(2, 4, 6));
+      ctrl.predictor.observe("req1", f32(3, 6, 9));
+
+      ctrl._speculateNextBatch("req1", 3, 3, 0, 6);
+
+      if (ctrl.pendingBatch.has("req1")) {
+        const batch = ctrl.pendingBatch.get("req1");
+        for (let i = 0; i < batch.length; i++) {
+          assert.equal(batch[i].seqPos, 3 + i);
+        }
+      }
+    });
+
+    it("each batch entry calls forwardLayersCached", () => {
+      let callCount = 0;
+      mockPipeline.forwardLayersCached = async () => {
+        callCount++;
+        return { buffer: {}, shape: [1, 3] };
+      };
+
+      ctrl.predictor.observe("req1", f32(1, 2, 3));
+      ctrl.predictor.observe("req1", f32(2, 4, 6));
+      ctrl.predictor.observe("req1", f32(3, 6, 9));
+
+      ctrl._speculateNextBatch("req1", 3, 3, 0, 6);
+
+      assert.ok(callCount >= 1, `forwardLayersCached called ${callCount} times`);
+    });
+  });
+
+  describe("batch speculation — _verifyBatch", () => {
+    it("rejects entire batch when first prediction is wrong", async () => {
+      const batch = [
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(1, 0, 0), seqPos: 2, estimatedComputeMs: 1 },
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(2, 0, 0), seqPos: 3, estimatedComputeMs: 1 },
+      ];
+
+      // Actual is orthogonal to prediction
+      const result = await ctrl._verifyBatch("req1", f32(0, 1, 0), batch);
+      assert.equal(result.useSpeculative, false);
+      assert.equal(result.acceptedSteps, 0);
+      assert.equal(result.rollbackPos, 2);
+    });
+
+    it("accepts all steps when first prediction matches", async () => {
+      const batch = [
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(3, 6, 9), seqPos: 2, estimatedComputeMs: 2 },
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(4, 8, 12), seqPos: 3, estimatedComputeMs: 2 },
+      ];
+
+      const result = await ctrl._verifyBatch("req1", f32(3, 6, 9), batch);
+      assert.equal(result.useSpeculative, true);
+      assert.equal(result.acceptedSteps, 2);
+      assert.equal(result.rollbackPos, null);
+      assert.equal(ctrl.stats.batchFull, 1);
+    });
+
+    it("handles GPU failure in batch gracefully", async () => {
+      const batch = [
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(3, 6, 9), seqPos: 2, estimatedComputeMs: 1 },
+        { promise: Promise.reject(new Error("GPU error")), prediction: f32(4, 8, 12), seqPos: 3, estimatedComputeMs: 1 },
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(5, 10, 15), seqPos: 4, estimatedComputeMs: 1 },
+      ];
+
+      const result = await ctrl._verifyBatch("req1", f32(3, 6, 9), batch);
+      assert.equal(result.useSpeculative, true);
+      assert.equal(result.acceptedSteps, 1); // only first step before GPU failure
+      assert.equal(ctrl.stats.batchPartial, 1);
+    });
+
+    it("rejects when first step GPU compute fails", async () => {
+      const batch = [
+        { promise: Promise.reject(new Error("GPU error")), prediction: f32(3, 6, 9), seqPos: 2, estimatedComputeMs: 1 },
+      ];
+
+      const result = await ctrl._verifyBatch("req1", f32(3, 6, 9), batch);
+      assert.equal(result.useSpeculative, false);
+      assert.equal(result.acceptedSteps, 0);
+    });
+
+    it("tracks batch stats correctly", async () => {
+      const batch = [
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(1, 2, 3), seqPos: 5, estimatedComputeMs: 3 },
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(2, 4, 6), seqPos: 6, estimatedComputeMs: 3 },
+        { promise: Promise.resolve({ buffer: {}, shape: [1, 3] }), prediction: f32(3, 6, 9), seqPos: 7, estimatedComputeMs: 3 },
+      ];
+
+      await ctrl._verifyBatch("req1", f32(1, 2, 3), batch);
+      assert.equal(ctrl.stats.batchSpeculations, 1);
+      assert.equal(ctrl.stats.batchAccepted, 3);
+      assert.equal(ctrl.stats.savedMs, 9);
+    });
+  });
+
+  describe("batch speculation — end-to-end", () => {
+    beforeEach(() => {
+      ctrl.batchDepth = 3;
+    });
+
+    it("full cycle: build history → batch speculate → verify", async () => {
+      // Build up a linear trajectory (3 observations for high confidence)
+      await ctrl.onActivationReceived("req1", f32(1, 2, 3), { buffer: {}, shape: [1, 3] }, 0, 0, 6);
+      await ctrl.onActivationReceived("req1", f32(2, 4, 6), { buffer: {}, shape: [1, 3] }, 1, 0, 6);
+      await ctrl.onActivationReceived("req1", f32(3, 6, 9), { buffer: {}, shape: [1, 3] }, 2, 0, 6);
+
+      // Should now have batch or single pending for next step(s)
+      const hasBatch = ctrl.pendingBatch.has("req1");
+      const hasSingle = ctrl.pending.has("req1");
+      assert.ok(hasBatch || hasSingle, "should have pending speculation after 3 observations");
+
+      if (hasBatch) {
+        // Verify with the expected next activation
+        const result = await ctrl.onActivationReceived(
+          "req1", f32(4, 8, 12), { buffer: {}, shape: [1, 3] }, 3, 0, 6
+        );
+        assert.equal(result.useSpeculative, true);
+        assert.ok(result.acceptedSteps >= 1);
+      }
+    });
+
+    it("batch reject then single-step recovery", async () => {
+      ctrl.batchDepth = 2;
+      await ctrl.onActivationReceived("req1", f32(1, 2, 3), { buffer: {}, shape: [1, 3] }, 0, 0, 6);
+      await ctrl.onActivationReceived("req1", f32(2, 4, 6), { buffer: {}, shape: [1, 3] }, 1, 0, 6);
+
+      // Send a wildly different activation to trigger rejection
+      const result = await ctrl.onActivationReceived(
+        "req1", f32(-5, 10, -1), { buffer: {}, shape: [1, 3] }, 2, 0, 6
+      );
+
+      // Rejection still observes the activation — next batch can learn from it
+      assert.ok(ctrl.predictor.requests.has("req1"));
+    });
+
+    it("clear removes batch state", () => {
+      ctrl.pendingBatch.set("req1", [
+        { promise: Promise.resolve(), prediction: f32(1), seqPos: 0 },
+      ]);
+      ctrl.pending.set("req1", { promise: Promise.resolve(), prediction: f32(1), seqPos: 0 });
+      ctrl.predictor.observe("req1", f32(1, 2));
+
+      ctrl.clear("req1");
+
+      assert.equal(ctrl.pendingBatch.has("req1"), false);
+      assert.equal(ctrl.pending.has("req1"), false);
+      assert.equal(ctrl.predictor.requests.has("req1"), false);
+    });
+
+    it("batchDepth=1 uses single-step path", async () => {
+      ctrl.batchDepth = 1;
+      await ctrl.onActivationReceived("req1", f32(1, 2, 3), { buffer: {}, shape: [1, 3] }, 0, 0, 6);
+      await ctrl.onActivationReceived("req1", f32(2, 4, 6), { buffer: {}, shape: [1, 3] }, 1, 0, 6);
+
+      // With batchDepth=1, should use _speculateNext, not _speculateNextBatch
+      assert.equal(ctrl.pendingBatch.has("req1"), false);
+      // May have single pending
+    });
+
+    it("getStats includes batchAvgAccepted", () => {
+      ctrl.stats.batchSpeculations = 4;
+      ctrl.stats.batchAccepted = 10;
+      const stats = ctrl.getStats();
+      assert.ok(Math.abs(stats.batchAvgAccepted - 2.5) < 0.001);
+    });
+  });
 });

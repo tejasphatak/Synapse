@@ -89,7 +89,7 @@ Inspired by VLSI design: in chips, wire delay >> gate delay. In distributed infe
 | **Wire** | Binary protocol, KV cache, per-channel int8, delta encoding, zero-copy relay | 15x | **Done** |
 | **Prediction** | Activation predictor, speculative execution, early exit detection | 3-5x | Built (validating) |
 | **Architecture** | Attention head pruning (25% compute reduction), WebRTC P2P | 2-3x | Built (validating) |
-| **Advanced** | Entropy coding, mixture-of-depths, adaptive precision | 1.5-2x | In progress |
+| **Advanced** | Entropy coding, mixture-of-depths, adaptive precision (int4/int8/float32 per-layer) | 1.5-2x | Built (validating) |
 
 **Current:** 1.3 tok/sec across two phones over cellular.
 **Target:** 100+ tok/sec with all optimizations.
@@ -142,7 +142,7 @@ synapse-src/
 ├── model/              # Python model splitter (HuggingFace → shards)
 ├── deploy/             # GCP automation, headless Chrome, Colab integration
 ├── ui/                 # Dashboard with live metrics, QR codes for phone onboarding
-└── test/               # 48 tests — protocol, quantization, prediction, pruning, CPU validation
+└── test/               # 259 tests — protocol, quantization, prediction, pruning, adaptive precision, CPU validation
 ```
 
 ---
