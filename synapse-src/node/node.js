@@ -508,7 +508,7 @@ export class SynapseNode {
           this.speculative.predictor.observe(requestId, f32);
         }
       } else {
-        // Cached step: single token — speculation possible
+        // Cached step: single token — speculation possible (single or batch)
         const seqPos = seqLen - 1;
         let usedSpeculative = false;
 
@@ -518,51 +518,23 @@ export class SynapseNode {
             await this.pipeline._readBuffer(hidden.buffer, 0, hiddenSize)
           );
 
-          // Check pending speculation from the previous step
-          const pending = this.speculative.pending.get(requestId);
-          if (pending && pending.seqPos === seqPos) {
-            const verification = this.speculative.predictor.verify(pending.prediction, hiddenFloat32);
-            this._sendLog("perf", "prediction_accuracy", {
-              requestId, seqLen, cosine: +verification.cosine.toFixed(6),
-              accept: verification.accept,
+          // Unified speculation: verify pending (batch or single), observe, speculate next
+          const result = await this.speculative.onActivationReceived(
+            requestId, hiddenFloat32, hidden, seqPos, this.layerStart, this.layerEnd
+          );
+
+          if (this.speculative.enabled && result.useSpeculative) {
+            hidden = result.speculativeHidden;
+            usedSpeculative = true;
+            this._sendLog("perf", "speculation_accepted", {
+              requestId, seqLen, acceptedSteps: result.acceptedSteps,
             });
-
-            if (this.speculative.enabled && verification.accept) {
-              // Prediction was good — use speculative result, skip real compute
-              try {
-                hidden = await pending.promise;
-                usedSpeculative = true;
-                this.speculative.stats.accepted++;
-                this._sendLog("perf", "speculation_accepted", { requestId, seqLen });
-              } catch (_) {
-                usedSpeculative = false;
-              }
-            }
-
-            if (!usedSpeculative && this.speculative.enabled && pending.promise) {
-              // Rejected — roll back KV cache to before the speculative step
-              const kvCache = this.pipeline.kvCaches.get(requestId);
-              if (kvCache) kvCache.rollback(seqPos);
-              this.speculative.stats.rejected++;
-              this._sendLog("perf", "speculation_rejected", {
-                requestId, seqLen, cosine: +verification.cosine.toFixed(6),
-              });
-            }
-            this.speculative.pending.delete(requestId);
-          } else {
-            // No pending speculation — just track prediction accuracy
-            const pred = this.speculative.predictor.predict(requestId);
-            if (pred) {
-              const v = this.speculative.predictor.verify(pred.prediction, hiddenFloat32);
-              this._sendLog("perf", "prediction_accuracy", {
-                requestId, seqLen, cosine: +v.cosine.toFixed(6), accept: v.accept,
-                confidence: +pred.confidence.toFixed(4),
-              });
-            }
+          } else if (result.rollbackPos != null && this.speculative.enabled) {
+            // Speculation rejected — roll back KV cache
+            const kvCache = this.pipeline.kvCaches.get(requestId);
+            if (kvCache) kvCache.rollback(result.rollbackPos);
+            this._sendLog("perf", "speculation_rejected", { requestId, seqLen });
           }
-
-          // Observe the real activation for future predictions
-          this.speculative.predictor.observe(requestId, hiddenFloat32);
 
           // Auto-enable speculation after warmup if accuracy is high enough
           if (!this.speculative.enabled && this.speculative.warmupSteps > 0) {
@@ -583,15 +555,9 @@ export class SynapseNode {
         }
 
         if (!usedSpeculative) {
-          // Real compute — either no speculation or speculation was rejected
           hidden = await this.pipeline.forwardLayersCached(
             hidden, this.layerStart, this.layerEnd, requestId, seqPos
           );
-        }
-
-        // Kick off speculation for the NEXT step (runs in background during network transfer)
-        if (this.speculative && this.speculative.enabled) {
-          this.speculative._speculateNext(requestId, seqPos + 1, this.layerStart, this.layerEnd);
         }
       }
 

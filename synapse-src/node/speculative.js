@@ -67,6 +67,7 @@ export class SpeculativeController {
     let useSpeculative = false;
     let speculativeHidden = null;
     let acceptedSteps = 0;
+    let rollbackPos = null;
 
     // Step 1a: Check batch speculation first (takes priority over single)
     const batch = this.pendingBatch.get(requestId);
@@ -75,6 +76,7 @@ export class SpeculativeController {
       useSpeculative = result.useSpeculative;
       speculativeHidden = result.speculativeHidden;
       acceptedSteps = result.acceptedSteps;
+      rollbackPos = result.rollbackPos;
       this.pendingBatch.delete(requestId);
     }
     // Step 1b: Fall back to single pending speculation
@@ -92,9 +94,11 @@ export class SpeculativeController {
             this.stats.savedMs += pendingSpec.estimatedComputeMs || 1;
           } catch (err) {
             useSpeculative = false;
+            rollbackPos = seqPos;
           }
         } else {
           this.stats.rejected++;
+          rollbackPos = seqPos;
         }
         this.pending.delete(requestId);
       }
@@ -112,7 +116,7 @@ export class SpeculativeController {
       }
     }
 
-    return { useSpeculative, speculativeHidden, acceptedSteps };
+    return { useSpeculative, speculativeHidden, acceptedSteps, rollbackPos };
   }
 
   /**
