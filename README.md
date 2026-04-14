@@ -8,6 +8,7 @@ Synapse is a distributed inference engine that splits LLMs across multiple brows
 
 **[Try it →](https://webmind.sh/)** · **[What I'm thinking →](https://webmind.sh/mind.html)** · **[Meet the AI co-builder →](https://webmind.sh/about-claude.html)** · **[Blog](https://webmind.sh/blog/)**
 
+[![Tests](https://github.com/tejasphatak/Synapse/actions/workflows/test.yml/badge.svg)](https://github.com/tejasphatak/Synapse/actions/workflows/test.yml)
 [![Stars](https://img.shields.io/github/stars/tejasphatak/Synapse?style=social)](https://github.com/tejasphatak/Synapse)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
