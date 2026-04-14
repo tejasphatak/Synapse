@@ -115,10 +115,10 @@ Bytes 24+:   Tensor data (float32 or int8+scale)
 
 ## Optimization Roadmap
 
-Phase 1 (Wire — 85% done): binary protocol, KV cache, int8 quantization, delta encoding, zero-copy relay.
-Phase 2 (Prediction — next): predictor.js, early exit, speculative decoding.
-Phase 3 (Architecture): attention head pruning, WebRTC P2P.
-Phase 4 (Advanced): mixture-of-depths, entropy coding, adaptive precision.
+Phase 1 (Wire — DONE): binary protocol, KV cache, int8 quantization, delta encoding, zero-copy relay.
+Phase 2 (Prediction — built, validating): predictor.js, early exit, speculative decoding, batch speculation.
+Phase 3 (Architecture — built, validating): attention head pruning, WebRTC P2P.
+Phase 4 (Advanced — built, validating): mixture-of-depths, entropy coding, adaptive precision.
 
 Target: 16 → 1000 tok/sec. Current bottleneck is network latency (50x > compute).
 
