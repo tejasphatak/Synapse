@@ -33,7 +33,9 @@ import {
   decodeOutputTokens,
   peekMessageType,
   peekRequestId,
+  peekFlags,
   BinaryMsgType,
+  Flags,
   uint32ToRequestId,
   registerRequestId,
 } from "../protocol/binary.js";
@@ -391,6 +393,9 @@ function wsConnectionHandler(ws, req) {
           handleBinaryActivation(ws, raw, nodeId);
         } else if (msgType === BinaryMsgType.OUTPUT) {
           handleBinaryOutput(ws, raw);
+        } else if (msgType === BinaryMsgType.EARLY_EXIT) {
+          // Node detected convergence — skip remaining pipeline, treat as output
+          handleBinaryEarlyExit(ws, raw, nodeId);
         }
       } catch (err) {
         console.error(`[coordinator] Binary parse error from node ${nodeId}:`, err.message);
@@ -501,6 +506,9 @@ function handleBinaryActivation(senderWs, rawBuffer, senderNodeId) {
   const numericId = peekRequestId(rawBuffer);
   const requestId = uint32ToRequestId(numericId);
 
+  const flags = peekFlags(rawBuffer);
+  const predicted = !!(flags & Flags.PREDICTED);
+
   // Track hop for telemetry
   if (!router.activeRequests.has(requestId)) {
     router.activeRequests.set(requestId, { startTime: Date.now(), hops: [] });
@@ -510,6 +518,7 @@ function handleBinaryActivation(senderWs, rawBuffer, senderNodeId) {
     to: nextNode.nodeId,
     timestamp: Date.now(),
     binary: true,
+    predicted,
   });
 
   broadcastToDashboards({
@@ -518,6 +527,7 @@ function handleBinaryActivation(senderWs, rawBuffer, senderNodeId) {
     from: senderNodeId,
     to: nextNode.nodeId,
     binary: true,
+    predicted,
     timestamp: Date.now(),
   });
 }
@@ -531,6 +541,34 @@ function handleBinaryOutput(ws, rawBuffer) {
   const tokens = decodeOutputTokens(decoded.payload);
 
   // Delegate to the existing JSON handler with a synthetic message
+  handleOutput(ws, { requestId, tokens, timestamp: Date.now() });
+}
+
+/**
+ * Handle binary EARLY_EXIT: a node detected convergence and is short-circuiting
+ * the pipeline. Treat the activation as final output — skip remaining nodes.
+ */
+function handleBinaryEarlyExit(ws, rawBuffer, senderNodeId) {
+  const decoded = decodeBinaryMessage(rawBuffer);
+  const requestId = uint32ToRequestId(decoded.requestId);
+  const tokens = decodeOutputTokens(decoded.payload);
+
+  logStore.add({
+    nodeId: senderNodeId,
+    event: "early_exit",
+    level: "info",
+    data: { requestId, layersSaved: "unknown" },
+    timestamp: Date.now(),
+  });
+
+  broadcastToDashboards({
+    type: "EARLY_EXIT",
+    requestId,
+    nodeId: senderNodeId,
+    timestamp: Date.now(),
+  });
+
+  // Feed into generation loop as if the full pipeline completed
   handleOutput(ws, { requestId, tokens, timestamp: Date.now() });
 }
 

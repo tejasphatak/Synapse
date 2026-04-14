@@ -16,7 +16,7 @@ import {
   encodeBinaryMessage, decodeBinaryMessage,
   encodeBinaryOutput, decodeOutputTokens,
   isBinaryMessage,
-  peekRequestId, peekMessageType,
+  peekRequestId, peekMessageType, peekFlags,
 } from "../protocol/binary.js";
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -495,5 +495,51 @@ describe("Endianness", () => {
     assert.equal(view.getUint32(0, false), MAGIC);
     // SeqPos: little-endian — 256 as uint16 LE = 0x00 0x01
     assert.equal(view.getUint16(6, true), 256);
+  });
+});
+
+// ─── peekFlags ──────────────────────────────────────────────
+
+describe("peekFlags", () => {
+  it("extracts zero flags from a standard activation", () => {
+    const tensor = new Float32Array([1.0, 2.0]);
+    const encoded = encodeBinaryMessage(BinaryMsgType.ACTIVATION, 0, 0, 1, [1, 2], tensor);
+    assert.equal(peekFlags(encoded), 0);
+  });
+
+  it("extracts PREDICTED flag", () => {
+    const tensor = new Float32Array([1.0]);
+    const encoded = encodeBinaryMessage(BinaryMsgType.ACTIVATION, Flags.PREDICTED, 0, 1, [1, 1], tensor);
+    assert.equal(peekFlags(encoded) & Flags.PREDICTED, Flags.PREDICTED);
+  });
+
+  it("extracts EARLY_EXIT flag", () => {
+    const tensor = new Float32Array([1.0]);
+    const encoded = encodeBinaryMessage(BinaryMsgType.EARLY_EXIT, Flags.EARLY_EXIT, 0, 1, [1, 1], tensor);
+    assert.equal(peekFlags(encoded) & Flags.EARLY_EXIT, Flags.EARLY_EXIT);
+  });
+
+  it("extracts combined flags", () => {
+    const tensor = new Float32Array([1.0]);
+    const flags = Flags.PREDICTED | Flags.COMPRESSED;
+    const encoded = encodeBinaryMessage(BinaryMsgType.ACTIVATION, flags, 0, 1, [1, 1], tensor);
+    const peeked = peekFlags(encoded);
+    assert.equal(peeked & Flags.PREDICTED, Flags.PREDICTED);
+    assert.equal(peeked & Flags.COMPRESSED, Flags.COMPRESSED);
+    assert.equal(peeked & Flags.EARLY_EXIT, 0);
+  });
+
+  it("works with Buffer wrapping", () => {
+    const tensor = new Float32Array([1.0]);
+    const encoded = encodeBinaryMessage(BinaryMsgType.ACTIVATION, Flags.DELTA, 0, 1, [1, 1], tensor);
+    const buf = Buffer.from(encoded);
+    assert.equal(peekFlags(buf) & Flags.DELTA, Flags.DELTA);
+  });
+
+  it("works with EARLY_EXIT message type", () => {
+    const tensor = new Float32Array([3.14]);
+    const encoded = encodeBinaryMessage(BinaryMsgType.EARLY_EXIT, Flags.EARLY_EXIT, 5, 1, [1, 1], tensor);
+    assert.equal(peekMessageType(encoded), BinaryMsgType.EARLY_EXIT);
+    assert.equal(peekFlags(encoded) & Flags.EARLY_EXIT, Flags.EARLY_EXIT);
   });
 });

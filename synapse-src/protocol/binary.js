@@ -233,3 +233,14 @@ export function peekMessageType(data) {
   const view = new DataView(arrayBuf);
   return view.getUint8(4);
 }
+
+/**
+ * Extract flags byte from a binary message without full decode.
+ */
+export function peekFlags(data) {
+  const arrayBuf = data instanceof ArrayBuffer ? data : data.buffer.slice(
+    data.byteOffset, data.byteOffset + data.byteLength
+  );
+  const view = new DataView(arrayBuf);
+  return view.getUint8(5);
+}
