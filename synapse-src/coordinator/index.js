@@ -12,7 +12,7 @@
 import { createServer } from "http";
 import { createServer as createHttpsServer } from "https";
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { encode as gptEncode, decode as gptDecode } from "gpt-tokenizer/model/text-davinci-001";
 import { WebSocketServer } from "ws";
@@ -292,9 +292,10 @@ function requestHandler(req, res) {
 
   // Serve shard files: /shards/shard_0.bin, /shards/manifest.json, etc.
   if (req.url.startsWith("/shards/")) {
-    const filename = req.url.slice("/shards/".length);
-    const filepath = join(SHARDS_DIR, filename);
-    if (existsSync(filepath)) {
+    const filename = decodeURIComponent(req.url.slice("/shards/".length).split("?")[0]);
+    const filepath = resolve(SHARDS_DIR, filename);
+    // Path traversal guard: resolved path must stay within SHARDS_DIR
+    if (filepath.startsWith(SHARDS_DIR + "/") && existsSync(filepath)) {
       const data = readFileSync(filepath);
       res.writeHead(200, {
         "Content-Type": getMimeType(filename),
@@ -306,11 +307,12 @@ function requestHandler(req, res) {
   }
 
   // Serve static files from project root (strip query string)
-  const urlPath = req.url.split("?")[0];
+  const urlPath = decodeURIComponent(req.url.split("?")[0]);
   let filePath = urlPath === "/" ? "/ui/home.html" : urlPath === "/chat" ? "/ui/prompt.html" : urlPath;
-  const fullPath = join(ROOT_DIR, filePath);
+  const fullPath = resolve(ROOT_DIR, filePath.startsWith("/") ? filePath.slice(1) : filePath);
 
-  if (existsSync(fullPath)) {
+  // Path traversal guard: resolved path must stay within ROOT_DIR
+  if ((fullPath === ROOT_DIR || fullPath.startsWith(ROOT_DIR + "/")) && existsSync(fullPath)) {
     try {
       const data = readFileSync(fullPath);
       const headers = { "Content-Type": getMimeType(fullPath) };
