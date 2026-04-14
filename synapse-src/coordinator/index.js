@@ -38,6 +38,7 @@ import {
   registerRequestId,
 } from "../protocol/binary.js";
 import { GenerationManager } from "./generation.js";
+import { LogStore } from "./log-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = join(__dirname, "..");
@@ -82,13 +83,11 @@ const GENERATION_TIMEOUT_MS = 60000;
 const generations = new GenerationManager(GENERATION_TIMEOUT_MS);
 
 // ─── Centralized Log Store ───────────────────────────────────────
-// Ring buffer of log entries from all nodes, queryable via /api/logs
 const LOG_MAX = 5000;
-const logStore = [];
+const logStore = new LogStore(LOG_MAX);
 
 function addLog(entry) {
-  logStore.push(entry);
-  if (logStore.length > LOG_MAX) logStore.splice(0, logStore.length - LOG_MAX);
+  logStore.add(entry);
 }
 
 // ─── HTTP Server (serves static files + shard binaries) ───────────
@@ -219,53 +218,23 @@ function requestHandler(req, res) {
   // GET /api/logs?since=1713000000000 → entries after timestamp
   if (req.url.startsWith("/api/logs") && req.method === "GET") {
     const params = new URL(req.url, `http://localhost:${PORT}`).searchParams;
-    const n = Math.min(parseInt(params.get("n") || "200", 10), LOG_MAX);
-    const nodeFilter = params.get("node");
-    const eventFilter = params.get("event");
-    const levelFilter = params.get("level");
-    const since = parseInt(params.get("since") || "0", 10);
-
-    let results = logStore;
-    if (since) results = results.filter(e => e.timestamp > since);
-    if (nodeFilter) results = results.filter(e => e.nodeId === nodeFilter);
-    if (eventFilter) results = results.filter(e => e.event === eventFilter);
-    if (levelFilter) results = results.filter(e => e.level === levelFilter);
-    results = results.slice(-n);
+    const result = logStore.query({
+      n: parseInt(params.get("n") || "200", 10),
+      node: params.get("node") || undefined,
+      event: params.get("event") || undefined,
+      level: params.get("level") || undefined,
+      since: parseInt(params.get("since") || "0", 10) || undefined,
+    });
 
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ count: results.length, total: logStore.length, logs: results }));
+    res.end(JSON.stringify(result));
     return;
   }
 
   // API: get live performance summary (aggregated per-node stats)
   if (req.url === "/api/perf" && req.method === "GET") {
-    const perfByNode = {};
-    for (const entry of logStore) {
-      if (entry.level !== "perf") continue;
-      if (!perfByNode[entry.nodeId]) {
-        perfByNode[entry.nodeId] = { nodeId: entry.nodeId, events: {}, lastSeen: 0 };
-      }
-      const node = perfByNode[entry.nodeId];
-      node.lastSeen = Math.max(node.lastSeen, entry.timestamp);
-      if (!node.events[entry.event]) {
-        node.events[entry.event] = { count: 0, totalMs: 0, minMs: Infinity, maxMs: 0 };
-      }
-      const ev = node.events[entry.event];
-      ev.count++;
-      const ms = entry.data?.latencyMs || entry.data?.durationMs || 0;
-      ev.totalMs += ms;
-      ev.minMs = Math.min(ev.minMs, ms);
-      ev.maxMs = Math.max(ev.maxMs, ms);
-    }
-    // Calculate averages
-    for (const node of Object.values(perfByNode)) {
-      for (const ev of Object.values(node.events)) {
-        ev.avgMs = ev.count > 0 ? +(ev.totalMs / ev.count).toFixed(2) : 0;
-        if (ev.minMs === Infinity) ev.minMs = 0;
-      }
-    }
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(perfByNode));
+    res.end(JSON.stringify(logStore.getPerfSummary()));
     return;
   }
 
