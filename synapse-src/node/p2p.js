@@ -107,7 +107,8 @@ export class P2PChannel {
    * Called when coordinator relays SDP or ICE from the remote node.
    */
   async handleSignal(signal) {
-    if (signal.type === "sdp-offer") {
+    const sigType = signal.signalType || signal.type;
+    if (sigType === "sdp-offer") {
       // We're the responder — create peer connection and answer
       this.remoteNodeId = signal.from;
       const startTime = performance.now();
@@ -163,10 +164,10 @@ export class P2PChannel {
         to: signal.from,
       });
 
-    } else if (signal.type === "sdp-answer") {
+    } else if (sigType === "sdp-answer") {
       await this.peerConnection.setRemoteDescription(signal.sdp);
 
-    } else if (signal.type === "ice-candidate") {
+    } else if (sigType === "ice-candidate") {
       await this.peerConnection.addIceCandidate(signal.candidate);
     }
   }
@@ -211,6 +212,6 @@ export class P2PChannel {
 
   // Send signaling message through coordinator WebSocket
   _sendSignal(signal) {
-    this.ws.send(JSON.stringify({ type: "P2P_SIGNAL", ...signal }));
+    this.ws.send(JSON.stringify({ ...signal, type: "P2P_SIGNAL", signalType: signal.type }));
   }
 }
