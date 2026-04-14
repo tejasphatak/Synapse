@@ -8,7 +8,9 @@
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "synapse": "cd synapse-src && node coordinator/index.js",
-    "synapse:split": "cd synapse-src && python3 model/split.py"
+    "synapse:split": "cd synapse-src && python3 model/split.py",
+    "test": "cd synapse-src && node --test test/validate-phase1.js test/*.test.js",
+    "test:verbose": "cd synapse-src && node --test --test-reporter=spec test/validate-phase1.js test/*.test.js"
   },
   "private": true,
   "devDependencies": {

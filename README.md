@@ -142,7 +142,7 @@ synapse-src/
 ├── model/              # Python model splitter (HuggingFace → shards)
 ├── deploy/             # GCP automation, headless Chrome, Colab integration
 ├── ui/                 # Dashboard with live metrics, QR codes for phone onboarding
-└── test/               # 397 tests — protocol, quantization, prediction, pruning, P2P, reconnection, adaptive precision, entropy, mixture-of-depths, CPU validation
+└── test/               # 430 tests — protocol, quantization, prediction, topology, routing, pruning, P2P, reconnection, adaptive precision, entropy, mixture-of-depths, CPU validation
 ```
 
 ---
