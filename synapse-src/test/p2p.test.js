@@ -347,6 +347,83 @@ describe("P2PChannel", () => {
     });
   });
 
+  describe("reconnection after disconnect", () => {
+    it("can re-initiate after data channel closes (no stale state)", async () => {
+      await channel.initiate("node-B");
+      channel.dataChannel._simulateOpen();
+      assert.equal(channel.connected, true);
+
+      // Simulate disconnect — close() cleans up stale state
+      channel.close();
+      assert.equal(channel.connected, false);
+      assert.equal(channel.dataChannel, null);
+      assert.equal(channel.peerConnection, null);
+
+      // Re-initiate to the same peer — should work with fresh state
+      await channel.initiate("node-B");
+      assert.ok(channel.peerConnection, "should have a new peer connection");
+      assert.ok(channel.dataChannel, "should have a new data channel");
+      assert.equal(channel.dataChannel.label, "activations");
+
+      // New connection can open successfully
+      channel.dataChannel._simulateOpen();
+      assert.equal(channel.connected, true);
+    });
+
+    it("onDisconnected fires then allows clean re-initiate", async () => {
+      let disconnectCount = 0;
+      let connectCount = 0;
+      channel.onDisconnected = () => { disconnectCount++; };
+      channel.onConnected = () => { connectCount++; };
+
+      await channel.initiate("node-B");
+      channel.dataChannel._simulateOpen();
+      assert.equal(connectCount, 1);
+
+      // Remote side drops — onclose fires
+      channel.dataChannel.close();
+      assert.equal(disconnectCount, 1);
+      assert.equal(channel.connected, false);
+
+      // Clean up stale state before re-initiating
+      channel.close();
+
+      // Re-initiate
+      await channel.initiate("node-B");
+      channel.dataChannel._simulateOpen();
+      assert.equal(connectCount, 2);
+    });
+
+    it("responder can accept new offer after previous connection closed", async () => {
+      // First connection as responder
+      await channel.handleSignal({
+        type: "sdp-offer",
+        sdp: { type: "offer", sdp: "offer-1" },
+        from: "node-B",
+      });
+      const remoteDc1 = new MockDataChannel("activations", {});
+      channel.peerConnection._simulateRemoteDataChannel(remoteDc1);
+      remoteDc1._simulateOpen();
+      assert.equal(channel.connected, true);
+
+      // Disconnect
+      channel.close();
+      assert.equal(channel.connected, false);
+
+      // New offer from same peer — should work
+      await channel.handleSignal({
+        type: "sdp-offer",
+        sdp: { type: "offer", sdp: "offer-2" },
+        from: "node-B",
+      });
+      assert.ok(channel.peerConnection);
+      const remoteDc2 = new MockDataChannel("activations", {});
+      channel.peerConnection._simulateRemoteDataChannel(remoteDc2);
+      remoteDc2._simulateOpen();
+      assert.equal(channel.connected, true);
+    });
+  });
+
   describe("getStats()", () => {
     it("includes connection state", async () => {
       await channel.initiate("node-B");
