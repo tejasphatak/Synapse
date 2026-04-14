@@ -38,6 +38,7 @@ import {
   registerRequestId,
 } from "../protocol/binary.js";
 import { unpackQuantized, dequantizeInt8, unpackQuantizedPerChannel, dequantizeInt8PerChannel } from "../protocol/quantize.js";
+import { compressPayload, decompressPayload } from "../protocol/entropy.js";
 import { SpeculativeController } from "./speculative.js";
 import { P2PChannel } from "./p2p.js";
 
@@ -438,6 +439,10 @@ export class SynapseNode {
     const startTime = performance.now();
 
     try {
+      // Decompress RLE if compressed flag is set
+      const isCompressed = !!(decoded.flags & Flags.COMPRESSED);
+      const payload = isCompressed ? decompressPayload(decoded.payload) : decoded.payload;
+
       // Detect quantized/delta payload and decode accordingly
       const quantMode = getQuantMode(decoded.flags);
       const isDelta = !!(decoded.flags & Flags.DELTA);
@@ -447,22 +452,22 @@ export class SynapseNode {
         // Delta-encoded int8: dequantize delta, add to previous activation
         const prev = this._lastRecvActivation.get(requestId);
         if (prev) {
-          const result = this.pipeline.deserializeTensorDeltaApply(decoded.payload, decoded.shape, prev);
+          const result = this.pipeline.deserializeTensorDeltaApply(payload, decoded.shape, prev);
           hidden = { buffer: result.buffer, shape: result.shape };
           this._lastRecvActivation.set(requestId, result.currentFloat32);
         } else {
           // No previous — treat as regular int8 (first token or cache miss)
-          hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
+          hidden = this.pipeline.deserializeTensorQuantized(payload, decoded.shape);
         }
       } else if (quantMode === QuantMode.INT8) {
-        hidden = this.pipeline.deserializeTensorQuantized(decoded.payload, decoded.shape);
+        hidden = this.pipeline.deserializeTensorQuantized(payload, decoded.shape);
         // Cache float32 for future delta decoding (only for single-token)
         if (!isPrefill && this.useDeltaEncoding) {
-          const unpacked = unpackQuantized(decoded.payload);
+          const unpacked = unpackQuantized(payload);
           this._lastRecvActivation.set(requestId, dequantizeInt8(unpacked.int8Data, unpacked.scale));
         }
       } else {
-        hidden = this.pipeline.deserializeTensorBinary(decoded.payload, decoded.shape);
+        hidden = this.pipeline.deserializeTensorBinary(payload, decoded.shape);
       }
 
       if (isPrefill) {
@@ -686,6 +691,21 @@ export class SynapseNode {
         serialized = await this.pipeline.serializeTensorBinary(hidden);
       }
 
+      // Apply RLE compression on quantized payloads (lossless)
+      let payloadData = serialized.data;
+      if (getQuantMode(flags) !== QuantMode.NONE) {
+        const result = compressPayload(payloadData);
+        if (result) {
+          payloadData = result.compressed;
+          flags |= Flags.COMPRESSED;
+          this._sendLog("perf", "rle_compress", {
+            requestId, ratio: +result.ratio.toFixed(2),
+            originalBytes: serialized.data.byteLength,
+            compressedBytes: payloadData.byteLength,
+          });
+        }
+      }
+
       const numericId = requestIdToUint32(requestId);
       const binaryMsg = encodeBinaryMessage(
         BinaryMsgType.ACTIVATION,
@@ -693,7 +713,7 @@ export class SynapseNode {
         seqLen,          // seqPos: downstream nodes use this for KV cache
         numericId,
         serialized.shape,
-        serialized.data
+        payloadData
       );
       // Try P2P direct transfer, fall back to coordinator relay
       const sentP2P = this.p2p?.send(binaryMsg);

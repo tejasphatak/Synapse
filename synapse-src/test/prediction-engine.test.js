@@ -1,7 +1,7 @@
 /**
- * Phase 2 Prediction Engine Tests
+ * Phase 2-4 Prediction & Optimization Engine Tests
  *
- * Covers: ActivationPredictor, EarlyExitDetector, HeadPruner
+ * Covers: ActivationPredictor, EarlyExitDetector, HeadPruner, MixtureOfDepthsRouter
  * All pure JS — no WebGPU needed.
  */
 
@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { ActivationPredictor } from "../node/predictor.js";
 import { EarlyExitDetector } from "../node/early-exit.js";
 import { HeadPruner } from "../node/head-pruning.js";
+import { MixtureOfDepthsRouter } from "../node/mixture-of-depths.js";
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -525,6 +526,304 @@ describe("HeadPruner", () => {
       const ranking = pruner.getImportanceRanking(0);
       assert.ok(ranking.every(r => r.importance === 1.0));
       assert.equal(pruner.getStats().totalHeadOps, 0);
+    });
+  });
+});
+
+// ─── MixtureOfDepthsRouter ─────────────────────────────────────
+
+describe("MixtureOfDepthsRouter", () => {
+  let router;
+
+  beforeEach(() => {
+    router = new MixtureOfDepthsRouter(6);
+  });
+
+  describe("constructor", () => {
+    it("initializes with correct number of layers", () => {
+      assert.equal(router.numLayers, 6);
+      assert.equal(router.layerDifficulty.length, 6);
+      assert.equal(router.skipThresholds.length, 6);
+    });
+
+    it("starts disabled", () => {
+      assert.equal(router.enabled, false);
+    });
+
+    it("protects first and last layers", () => {
+      assert.ok(router.protectedLayers.has(0));
+      assert.ok(router.protectedLayers.has(5));
+      assert.ok(!router.protectedLayers.has(2));
+    });
+
+    it("initializes difficulty at 0.5", () => {
+      for (let i = 0; i < 6; i++) {
+        assert.equal(router.layerDifficulty[i], 0.5);
+      }
+    });
+  });
+
+  describe("route()", () => {
+    it("never skips protected layers even when enabled", () => {
+      router.enabled = true;
+      const hidden = f32(1, 2, 3, 4);
+
+      const r0 = router.route(0, "req1", hidden);
+      assert.equal(r0.skip, false);
+      assert.equal(r0.reason, "protected");
+
+      const r5 = router.route(5, "req1", hidden);
+      assert.equal(r5.skip, false);
+      assert.equal(r5.reason, "protected");
+    });
+
+    it("never skips when disabled", () => {
+      router.enabled = false;
+      const hidden = f32(1, 2, 3, 4);
+
+      for (let l = 0; l < 6; l++) {
+        const r = router.route(l, "req1", hidden);
+        assert.equal(r.skip, false);
+      }
+    });
+
+    it("tracks stats correctly", () => {
+      const hidden = f32(1, 2, 3);
+      router.route(0, "req1", hidden);
+      router.route(1, "req1", hidden);
+
+      const stats = router.getStats();
+      assert.equal(stats.totalRouted, 2);
+      assert.equal(stats.layersProcessed, 2);
+      assert.equal(stats.layersSkipped, 0);
+    });
+
+    it("can skip middle layers when enabled with low difficulty", () => {
+      router.enabled = true;
+      router.capacity = 0.5; // aggressive — skip 50%
+
+      // Set middle layers to very low difficulty
+      router.layerDifficulty[1] = 0.01;
+      router.layerDifficulty[2] = 0.01;
+      router.layerDifficulty[3] = 0.01;
+      router.layerDifficulty[4] = 0.01;
+
+      // Token with stable norms → easy token (low difficulty)
+      router.tokenDifficulty.set("req1", { normHistory: [10, 10, 10, 10, 10] });
+
+      const r2 = router.route(2, "req1", f32(1, 2, 3));
+      // Easy token + low difficulty layer → high skipScore → should skip
+      assert.equal(r2.skip, true);
+    });
+
+    it("does not skip high-difficulty layers", () => {
+      router.enabled = true;
+      router.capacity = 0.5;
+
+      // Layer 2 is very important
+      router.layerDifficulty[2] = 0.99;
+      router.tokenDifficulty.set("req1", { normHistory: [10, 10, 10, 10, 10] });
+
+      const r2 = router.route(2, "req1", f32(1, 2, 3));
+      assert.equal(r2.skip, false);
+    });
+  });
+
+  describe("recordLayerEffect()", () => {
+    it("updates layer difficulty based on hidden state delta", () => {
+      const input = f32(1, 0, 0, 0);
+      const output = f32(1, 0, 0, 0.01); // very small change
+
+      const before = router.layerDifficulty[2];
+      router.recordLayerEffect(2, input, output);
+      const after = router.layerDifficulty[2];
+
+      // Small delta → low ratio → difficulty should decrease from 0.5
+      assert.ok(after < before, `Expected ${after} < ${before}`);
+    });
+
+    it("increases difficulty for large changes", () => {
+      const input = f32(1, 0, 0, 0);
+      const output = f32(0, 1, 1, 1); // large change
+
+      // First bring difficulty down
+      router.layerDifficulty[3] = 0.1;
+
+      router.recordLayerEffect(3, input, output);
+      assert.ok(router.layerDifficulty[3] > 0.1);
+    });
+
+    it("ignores out-of-range layer indices", () => {
+      const a = f32(1, 2, 3);
+      router.recordLayerEffect(99, a, a); // should not throw
+    });
+  });
+
+  describe("getLayerMask()", () => {
+    it("returns all-true mask when disabled", () => {
+      const mask = router.getLayerMask("req1", f32(1, 2, 3));
+      assert.equal(mask.length, 6);
+      assert.ok(mask.every(v => v === true));
+    });
+
+    it("does not pollute stats", () => {
+      router.getLayerMask("req1", f32(1, 2, 3));
+      const stats = router.getStats();
+      assert.equal(stats.totalRouted, 0);
+      assert.equal(stats.layersProcessed, 0);
+    });
+
+    it("returns correct mask length", () => {
+      router.enabled = true;
+      const mask = router.getLayerMask("req1", f32(1, 2, 3));
+      assert.equal(mask.length, 6);
+      // First and last always true (protected)
+      assert.equal(mask[0], true);
+      assert.equal(mask[5], true);
+    });
+  });
+
+  describe("observeToken()", () => {
+    it("tracks norm history per request", () => {
+      router.observeToken("req1", f32(3, 4)); // norm = 5
+      router.observeToken("req1", f32(6, 8)); // norm = 10
+
+      const entry = router.tokenDifficulty.get("req1");
+      assert.equal(entry.normHistory.length, 2);
+      assert.ok(Math.abs(entry.normHistory[0] - 5) < 0.01);
+      assert.ok(Math.abs(entry.normHistory[1] - 10) < 0.01);
+    });
+
+    it("caps history at 16 entries", () => {
+      for (let i = 0; i < 20; i++) {
+        router.observeToken("req1", f32(i + 1, 0));
+      }
+      const entry = router.tokenDifficulty.get("req1");
+      assert.equal(entry.normHistory.length, 16);
+    });
+
+    it("isolates different requests", () => {
+      router.observeToken("req1", f32(1, 0));
+      router.observeToken("req2", f32(2, 0));
+
+      assert.equal(router.tokenDifficulty.get("req1").normHistory.length, 1);
+      assert.equal(router.tokenDifficulty.get("req2").normHistory.length, 1);
+    });
+  });
+
+  describe("clear()", () => {
+    it("removes token tracking for a request", () => {
+      router.observeToken("req1", f32(1, 2));
+      assert.ok(router.tokenDifficulty.has("req1"));
+
+      router.clear("req1");
+      assert.ok(!router.tokenDifficulty.has("req1"));
+    });
+  });
+
+  describe("getStats()", () => {
+    it("computes skip rate", () => {
+      router.stats.totalRouted = 10;
+      router.stats.layersSkipped = 3;
+      router.stats.layersProcessed = 7;
+
+      const stats = router.getStats();
+      assert.ok(Math.abs(stats.skipRate - 0.3) < 0.001);
+    });
+
+    it("returns zero skip rate with no routing", () => {
+      const stats = router.getStats();
+      assert.equal(stats.skipRate, 0);
+    });
+
+    it("includes layer difficulty array", () => {
+      const stats = router.getStats();
+      assert.equal(stats.layerDifficulty.length, 6);
+    });
+  });
+
+  describe("reset()", () => {
+    it("restores initial state", () => {
+      router.enabled = true;
+      router.observeToken("req1", f32(1, 2));
+      router.stats.totalRouted = 50;
+      router.layerDifficulty[2] = 0.99;
+
+      router.reset();
+
+      assert.equal(router.stats.totalRouted, 0);
+      assert.equal(router.layerDifficulty[2], 0.5);
+      assert.equal(router.tokenDifficulty.size, 0);
+    });
+  });
+
+  describe("token difficulty estimation", () => {
+    it("returns 0.5 for unknown tokens", () => {
+      // Access private method through route behavior
+      router.enabled = true;
+      router.layerDifficulty[2] = 0.5;
+
+      // No observations for req1 → difficulty defaults to 0.5
+      const r = router.route(2, "unknown_req", f32(1, 2, 3));
+      assert.ok(!r.skip); // medium difficulty token + medium layer → no skip at default capacity
+    });
+
+    it("classifies stable norms as easy", () => {
+      // Stable norms → low coefficient of variation → easy token
+      router.tokenDifficulty.set("stable", { normHistory: [10, 10, 10, 10, 10, 10] });
+
+      router.enabled = true;
+      router.capacity = 0.5;
+      router.layerDifficulty[2] = 0.01; // unimportant layer
+
+      const r = router.route(2, "stable", f32(1, 2, 3));
+      assert.equal(r.skip, true, "Stable token + low-difficulty layer should skip");
+    });
+
+    it("classifies volatile norms as hard", () => {
+      // Wildly varying norms → high CV → hard token
+      router.tokenDifficulty.set("volatile", { normHistory: [1, 100, 2, 90, 3, 80] });
+
+      router.enabled = true;
+      router.capacity = 0.5;
+      router.layerDifficulty[2] = 0.01;
+
+      const r = router.route(2, "volatile", f32(1, 2, 3));
+      // Hard token should not skip even with low-difficulty layer
+      assert.equal(r.skip, false, "Volatile token should not skip");
+    });
+  });
+
+  describe("capacity tuning", () => {
+    it("higher capacity means fewer skips", () => {
+      router.enabled = true;
+
+      // Setup: easy token, unimportant layer
+      router.tokenDifficulty.set("req1", { normHistory: [5, 5, 5, 5, 5] });
+      router.layerDifficulty[2] = 0.01;
+
+      // High capacity = almost everything processes
+      router.capacity = 0.99;
+      const r1 = router.route(2, "req1", f32(1, 2, 3));
+      // threshold = 1 - 0.99 = 0.01, very hard to exceed
+      assert.equal(r1.skip, false);
+    });
+
+    it("lower capacity means more skips", () => {
+      router.enabled = true;
+
+      router.tokenDifficulty.set("req1", { normHistory: [5, 5, 5, 5, 5] });
+      router.layerDifficulty[2] = 0.01;
+
+      // Low capacity = aggressive skipping
+      router.capacity = 0.3;
+      // Reset stats from previous route calls
+      router.stats.totalRouted = 0;
+      router.stats.layersSkipped = 0;
+      router.stats.layersProcessed = 0;
+
+      const r = router.route(2, "req1", f32(1, 2, 3));
+      assert.equal(r.skip, true);
     });
   });
 });

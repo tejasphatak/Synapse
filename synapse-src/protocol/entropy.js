@@ -24,27 +24,66 @@
  * @returns {{ compressed: Uint8Array, originalLength: number, ratio: number }}
  */
 export function rleCompress(data, zeroThreshold = 0) {
-  const runs = [];
+  // Minimum zero run length to justify its own run (3-byte header overhead per run,
+  // plus splitting a literal creates another 3-byte header = 6 bytes overhead).
+  // Short zero runs get folded into adjacent literal runs as stored zeros.
+  const MIN_ZERO_RUN = 4;
+
+  // First pass: collect raw runs
+  const rawRuns = [];
   let i = 0;
 
   while (i < data.length) {
     if (Math.abs(data[i]) <= zeroThreshold) {
-      // Count zero run
       let runLen = 0;
       while (i < data.length && Math.abs(data[i]) <= zeroThreshold && runLen < 65535) {
         runLen++;
         i++;
       }
-      runs.push({ type: 0, length: runLen });
+      rawRuns.push({ type: 0, length: runLen, start: i - runLen });
     } else {
-      // Count literal run
       const start = i;
       let runLen = 0;
       while (i < data.length && Math.abs(data[i]) > zeroThreshold && runLen < 65535) {
         runLen++;
         i++;
       }
-      runs.push({ type: 1, length: runLen, data: data.slice(start, start + runLen) });
+      rawRuns.push({ type: 1, length: runLen, start, data: data.slice(start, start + runLen) });
+    }
+  }
+
+  // Second pass: coalesce short zero runs into adjacent literals
+  const runs = [];
+  for (let r = 0; r < rawRuns.length; r++) {
+    const run = rawRuns[r];
+    if (run.type === 0 && run.length < MIN_ZERO_RUN) {
+      // Fold into a literal run — store the zeros as literal data
+      const zeroData = new Int8Array(run.length); // all zeros
+      if (runs.length > 0 && runs[runs.length - 1].type === 1 &&
+          runs[runs.length - 1].length + run.length <= 65535) {
+        // Append to previous literal
+        const prev = runs[runs.length - 1];
+        const merged = new Int8Array(prev.length + run.length);
+        merged.set(prev.data);
+        merged.set(zeroData, prev.length);
+        prev.data = merged;
+        prev.length = merged.length;
+      } else {
+        runs.push({ type: 1, length: run.length, data: zeroData });
+      }
+    } else {
+      // Merge consecutive literals (can happen after folding)
+      if (run.type === 1 && runs.length > 0 && runs[runs.length - 1].type === 1 &&
+          runs[runs.length - 1].length + run.length <= 65535) {
+        const prev = runs[runs.length - 1];
+        const merged = new Int8Array(prev.length + run.length);
+        merged.set(prev.data);
+        merged.set(run.data, prev.length);
+        prev.data = merged;
+        prev.length = merged.length;
+      } else {
+        runs.push(run);
+      }
     }
   }
 
@@ -130,4 +169,50 @@ export function compressActivation(int8Data, zeroThreshold = 0) {
  */
 export function decompressActivation(compressed, originalLength) {
   return rleDecompress(compressed, originalLength);
+}
+
+// ─── Wire-Level Payload Compression ──────────────────────────────
+// Wraps RLE for use on packed quantized payloads (int8 data + scale bytes).
+// Format: [uint32 originalLength] [rle compressed data...]
+
+/**
+ * Compress a packed quantized payload for wire transfer.
+ * Returns null if compression doesn't save space (caller should send uncompressed).
+ *
+ * @param {ArrayBuffer} packedPayload - Output of packQuantized/packQuantizedPerChannel
+ * @param {number} zeroThreshold - Values with |v| <= threshold treated as zero (0 = lossless)
+ * @returns {{ compressed: ArrayBuffer, ratio: number } | null}
+ */
+export function compressPayload(packedPayload, zeroThreshold = 0) {
+  const raw = new Int8Array(packedPayload);
+  const { compressed, ratio } = rleCompress(raw, zeroThreshold);
+
+  // Only compress if we actually save space (accounting for the 4-byte length prefix)
+  if (compressed.byteLength + 4 >= raw.byteLength) {
+    return null;
+  }
+
+  // Wrap: [uint32 originalLength] [compressed bytes...]
+  const wrapped = new ArrayBuffer(4 + compressed.byteLength);
+  new DataView(wrapped).setUint32(0, raw.byteLength, true);
+  new Uint8Array(wrapped, 4).set(compressed);
+
+  return { compressed: wrapped, ratio };
+}
+
+/**
+ * Decompress a wire-compressed payload back to the original packed format.
+ *
+ * @param {Uint8Array} wrappedPayload - Compressed payload from the wire (after header strip)
+ * @returns {Uint8Array} - Original packed quantized payload
+ */
+export function decompressPayload(wrappedPayload) {
+  const buf = wrappedPayload.buffer.slice
+    ? wrappedPayload.buffer.slice(wrappedPayload.byteOffset, wrappedPayload.byteOffset + wrappedPayload.byteLength)
+    : wrappedPayload.buffer;
+  const view = new DataView(buf);
+  const originalLength = view.getUint32(0, true);
+  const compressedBytes = new Uint8Array(buf, 4);
+  const decompressed = rleDecompress(compressedBytes, originalLength);
+  return new Uint8Array(decompressed.buffer);
 }

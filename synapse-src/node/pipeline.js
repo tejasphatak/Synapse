@@ -9,6 +9,8 @@
 
 import { KVCache } from "./kv-cache.js";
 import { EarlyExitDetector } from "./early-exit.js";
+import { MixtureOfDepthsRouter } from "./mixture-of-depths.js";
+import { HeadPruner } from "./head-pruning.js";
 import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, quantizeInt8PerChannel, dequantizeInt8PerChannel, packQuantizedPerChannel, unpackQuantizedPerChannel, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
 
 export class Pipeline {
@@ -22,6 +24,8 @@ export class Pipeline {
     this._tempBuffers = []; // track temporary buffers for cleanup
     this.kvCaches = new Map(); // requestId -> KVCache
     this.earlyExit = new EarlyExitDetector(); // disabled by default, tracks metrics
+    this.modRouter = null; // MixtureOfDepths — initialized when layer range is known
+    this.headPruner = null; // HeadPruner — initialized when layer range is known
   }
 
   /**
@@ -107,10 +111,11 @@ export class Pipeline {
    *   h = h + Attention(LayerNorm(h))   [pre-attention norm]
    *   h = h + MLP(LayerNorm(h))         [pre-FFN norm]
    */
-  async forwardLayer(hidden, layerIdx) {
+  async forwardLayer(hidden, layerIdx, relLayer) {
     const { hiddenSize, numHeads, headDim } = this.config;
     const seqLen = hidden.shape[0];
     const prefix = `transformer.h.${layerIdx}`;
+    const headMask = this.headPruner ? this.headPruner.getHeadMask(relLayer ?? 0) : null;
 
     // ─── Pre-Attention LayerNorm ───────────────────────────
     const ln1Out = await this._layerNorm(
@@ -131,7 +136,7 @@ export class Pipeline {
     );
 
     // Split Q, K, V and compute multi-head attention
-    const attnOut = await this._multiHeadAttention(qkvOut, seqLen, numHeads, headDim);
+    const attnOut = await this._multiHeadAttention(qkvOut, seqLen, numHeads, headDim, headMask);
 
     // c_proj: project attention output back to hidden_size
     const projOut = await this._matmul(
@@ -187,10 +192,38 @@ export class Pipeline {
   async forwardLayers(hidden, layerStart, layerEnd) {
     // Build a set of weight buffers once so we never destroy them
     const weightBuffers = new Set(this.loader.buffers.values());
+    const numLayers = layerEnd - layerStart + 1;
+
+    // Initialize MoD router on first call (now we know layer count)
+    if (!this.modRouter) {
+      this.modRouter = new MixtureOfDepthsRouter(numLayers);
+    }
+    // Initialize head pruner on first call
+    if (!this.headPruner) {
+      this.headPruner = new HeadPruner(this.config.numHeads, numLayers);
+    }
 
     let h = hidden;
     for (let l = layerStart; l <= layerEnd; l++) {
-      h = await this.forwardLayer(h, l);
+      const relLayer = l - layerStart;
+
+      // MoD routing for prefill path (uses a synthetic requestId since prefill is one-shot)
+      const byteSize = h.shape.reduce((a, b) => a * b, 1) * 4;
+      const preHidden = new Float32Array(await this._readBuffer(h.buffer, 0, byteSize));
+      this.modRouter.observeToken("prefill", preHidden);
+
+      const routeDecision = this.modRouter.route(relLayer, "prefill", preHidden);
+      if (routeDecision.skip) {
+        continue;
+      }
+
+      h = await this.forwardLayer(h, l, relLayer);
+
+      // Record layer effect for difficulty profiling
+      const postByteSize = h.shape.reduce((a, b) => a * b, 1) * 4;
+      const postHidden = new Float32Array(await this._readBuffer(h.buffer, 0, postByteSize));
+      this.modRouter.recordLayerEffect(relLayer, preHidden, postHidden);
+
       // Free all temp buffers except the output we just produced and weight buffers
       const keep = h.buffer;
       const surviving = [];
@@ -203,6 +236,7 @@ export class Pipeline {
       }
       this._tempBuffers = surviving;
     }
+    this.modRouter.clear("prefill");
     return h;
   }
 
@@ -299,6 +333,7 @@ export class Pipeline {
       this.kvCaches.delete(requestId);
     }
     this.earlyExit?.clear(requestId);
+    this.modRouter?.clear(requestId);
   }
 
   /**
@@ -357,7 +392,7 @@ export class Pipeline {
    * Run a single transformer layer with KV cache (single-token forward).
    * Only processes the NEW token — K,V from previous tokens are cached.
    */
-  async forwardLayerCached(hidden, layerIdx, kvCache, seqPos) {
+  async forwardLayerCached(hidden, layerIdx, kvCache, seqPos, relLayer) {
     const { hiddenSize, numHeads, headDim } = this.config;
     const seqLen = 1; // always 1 token in cached mode
     const prefix = `transformer.h.${layerIdx}`;
@@ -396,8 +431,9 @@ export class Pipeline {
 
     // ─── Cached Multi-Head Attention ─────────────────
     const cacheLen = seqPos + 1; // includes current token
+    const headMask = this.headPruner ? this.headPruner.getHeadMask(relLayer ?? 0) : null;
     const attnOut = await this._multiHeadAttentionCached(
-      qkvOut, numHeads, headDim, kvCache, layerIdx, cacheLen
+      qkvOut, numHeads, headDim, kvCache, layerIdx, cacheLen, headMask
     );
 
     // c_proj: project attention output back to hidden_size
@@ -452,15 +488,44 @@ export class Pipeline {
     const kvCache = this.getOrCreateKVCache(requestId, layerStart, numLayers);
     const weightBuffers = new Set(this.loader.buffers.values());
 
+    // Initialize MoD router on first call (now we know layer count)
+    if (!this.modRouter) {
+      this.modRouter = new MixtureOfDepthsRouter(numLayers);
+    }
+    // Initialize head pruner on first call
+    if (!this.headPruner) {
+      this.headPruner = new HeadPruner(this.config.numHeads, numLayers);
+    }
+
     let h = hidden;
     for (let l = layerStart; l <= layerEnd; l++) {
-      h = await this.forwardLayerCached(h, l, kvCache, seqPos);
+      const relLayer = l - layerStart;
+
+      // Mixture-of-Depths: check if this layer should be skipped
+      // Read hidden state for routing decision
+      const byteSize = h.shape.reduce((a, b) => a * b, 1) * 4;
+      const preHidden = new Float32Array(await this._readBuffer(h.buffer, 0, byteSize));
+
+      // Observe token for difficulty estimation
+      this.modRouter.observeToken(requestId, preHidden);
+
+      const routeDecision = this.modRouter.route(relLayer, requestId, preHidden);
+      if (routeDecision.skip) {
+        // Residual passthrough — hidden state passes unchanged
+        // Still need to update KV cache with identity for this layer
+        // so that future tokens have cache entries at this position
+        continue;
+      }
+
+      h = await this.forwardLayerCached(h, l, kvCache, seqPos, relLayer);
+
+      // Record layer effect for MoD difficulty profiling
+      const postHidden = new Float32Array(await this._readBuffer(h.buffer, 0, byteSize));
+      this.modRouter.recordLayerEffect(relLayer, preHidden, postHidden);
 
       // Early exit check: read hidden state and check convergence
       if (this.earlyExit && l < layerEnd) {
-        const byteSize = h.shape.reduce((a, b) => a * b, 1) * 4;
-        const hiddenFloat32 = new Float32Array(await this._readBuffer(h.buffer, 0, byteSize));
-        const exitResult = this.earlyExit.check(requestId, l - layerStart, hiddenFloat32, numLayers);
+        const exitResult = this.earlyExit.check(requestId, relLayer, postHidden, numLayers);
         if (exitResult.shouldExit) {
           // Skip remaining layers — this token is already converged
           break;
@@ -597,7 +662,7 @@ export class Pipeline {
    * Multi-head attention using KV cache for single query token.
    * Q is from the new token's QKV, K and V come from the cache.
    */
-  async _multiHeadAttentionCached(qkvBuf, numHeads, headDim, kvCache, layerIdx, cacheLen) {
+  async _multiHeadAttentionCached(qkvBuf, numHeads, headDim, kvCache, layerIdx, cacheLen, headMask) {
     const hiddenSize = numHeads * headDim;
     const outputBuf = this._createBuffer("mha_cached_out", hiddenSize * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -606,6 +671,9 @@ export class Pipeline {
     const scale = 1.0 / Math.sqrt(headDim);
 
     for (let h = 0; h < numHeads; h++) {
+      // Head pruning: skip computation for low-importance heads
+      // Output buffer is zero-initialized by WebGPU, so skipped heads contribute zeros
+      if (headMask && !headMask[h]) continue;
       // Extract Q for this head from QKV [1, 3*hiddenSize]
       // Q is at columns [0..hiddenSize], head h at [h*headDim..(h+1)*headDim]
       const qBuf = await this._extractHeadSlice(qkvBuf, 1, 3 * hiddenSize, 0, h, headDim, numHeads);
@@ -856,7 +924,7 @@ export class Pipeline {
     return outputBuf;
   }
 
-  async _multiHeadAttention(qkvBuf, seqLen, numHeads, headDim) {
+  async _multiHeadAttention(qkvBuf, seqLen, numHeads, headDim, headMask) {
     const hiddenSize = numHeads * headDim;
     const outputBuf = this._createBuffer("mha_out", seqLen * hiddenSize * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -865,6 +933,8 @@ export class Pipeline {
     // QKV buffer layout: [seq, 3*hidden] → Q=[seq, hidden], K=[seq, hidden], V=[seq, hidden]
     // We process one head at a time, each head has contiguous Q[h], K[h], V[h] slices
     for (let h = 0; h < numHeads; h++) {
+      // Head pruning: skip computation for low-importance heads
+      if (headMask && !headMask[h]) continue;
       // Extract Q, K, V for this head from the combined QKV buffer
       // GPT-2 QKV layout: [seq_len, 3 * hidden_size] where Q = [:, 0:hidden], K = [:, hidden:2*hidden], V = [:, 2*hidden:3*hidden]
       // Within Q, head h occupies columns [h*head_dim : (h+1)*head_dim]
