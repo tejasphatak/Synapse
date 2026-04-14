@@ -11,8 +11,7 @@ import { KVCache } from "./kv-cache.js";
 import { EarlyExitDetector } from "./early-exit.js";
 import { MixtureOfDepthsRouter } from "./mixture-of-depths.js";
 import { HeadPruner } from "./head-pruning.js";
-import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, quantizeInt8PerChannel, dequantizeInt8PerChannel, packQuantizedPerChannel, unpackQuantizedPerChannel, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
-import { quantizeInt4, dequantizeInt4, packInt4, unpackInt4 } from "../protocol/adaptive-precision.js";
+import { TensorSerializer } from "./tensor-serializer.js";
 
 export class Pipeline {
   constructor(device, shardLoader) {
@@ -27,6 +26,11 @@ export class Pipeline {
     this.earlyExit = new EarlyExitDetector(); // disabled by default, tracks metrics
     this.modRouter = null; // MixtureOfDepths — initialized when layer range is known
     this.headPruner = null; // HeadPruner — initialized when layer range is known
+    this.serializer = new TensorSerializer(
+      device,
+      (label, size, usage) => this._createBuffer(label, size, usage),
+      (buffer, offset, size) => this._readBuffer(buffer, offset, size),
+    );
   }
 
   /**
@@ -1355,232 +1359,16 @@ export class Pipeline {
     return pipeline;
   }
 
-  /**
-   * Serialize a GPU tensor to a transferable object (base64 Float32Array).
-   */
-  async serializeTensor(tensor) {
-    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
-    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
-    const bytes = new Uint8Array(data);
+  // ─── Tensor Serialization (delegated to TensorSerializer) ────
 
-    // Convert to base64
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return {
-      shape: tensor.shape,
-      dtype: "float32",
-      data: btoa(binary),
-    };
-  }
-
-  /**
-   * Deserialize a received tensor and upload to a GPU buffer.
-   */
-  deserializeTensor(tensorMsg) {
-    const { shape, data } = tensorMsg;
-    const binary = atob(data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    const floatData = new Float32Array(bytes.buffer);
-
-    const buffer = this._createBuffer("deserialized", floatData.byteLength,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(buffer, 0, floatData);
-
-    return { buffer, shape };
-  }
-
-  // ─── Binary Protocol (v2) ───────────────────────────────────────
-
-  /**
-   * Serialize a GPU tensor to a raw ArrayBuffer (no base64, no JSON).
-   * Used with the binary wire protocol.
-   */
-  async serializeTensorBinary(tensor) {
-    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
-    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
-    return {
-      shape: tensor.shape,
-      data, // raw ArrayBuffer — no base64 encoding
-    };
-  }
-
-  /**
-   * Deserialize a raw ArrayBuffer tensor and upload to GPU.
-   * Used with the binary wire protocol.
-   */
-  deserializeTensorBinary(payload, shape) {
-    // payload is a Uint8Array view — create Float32Array from its underlying buffer
-    const floatData = new Float32Array(
-      payload.buffer, payload.byteOffset, payload.byteLength / 4
-    );
-
-    const buffer = this._createBuffer("deserialized_bin", floatData.byteLength,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(buffer, 0, floatData);
-
-    return { buffer, shape };
-  }
-
-  // ─── Quantized Serialization (int8) ─────────────────────────────
-
-  /**
-   * Serialize a GPU tensor as int8-quantized for wire transfer.
-   * Returns packed buffer: [int8_data...][float32_scale]
-   */
-  async serializeTensorQuantized(tensor) {
-    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
-    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
-    const float32 = new Float32Array(data);
-
-    // Sanity check: if input has NaN, fall back to unquantized
-    for (let i = 0; i < Math.min(float32.length, 64); i++) {
-      if (!isFinite(float32[i])) {
-        console.warn("[pipeline] NaN/Inf in activation — falling back to unquantized");
-        return { ...await this.serializeTensorBinary(tensor), fallbackUnquantized: true };
-      }
-    }
-
-    // Per-channel for multi-token (prefill), per-tensor for single token (cached step)
-    // Single token has 1 row so per-channel adds overhead with no accuracy benefit
-    const rows = tensor.shape[0] || 1;
-    if (rows === 1) {
-      const { data: int8Data, scale } = quantizeInt8(float32);
-      const packed = packQuantized(int8Data, scale);
-      return { shape: tensor.shape, data: packed };
-    }
-
-    const cols = tensor.shape[1] || float32.length;
-    const { data: int8Data, scales } = quantizeInt8PerChannel(float32, cols);
-    const packed = packQuantizedPerChannel(int8Data, scales);
-
-    return {
-      shape: tensor.shape,
-      data: packed,
-    };
-  }
-
-  /**
-   * Deserialize a quantized tensor (int8) and upload to GPU as float32.
-   * Auto-detects per-tensor vs per-channel format.
-   */
-  deserializeTensorQuantized(payload, shape) {
-    const rows = shape[0] || 1;
-    let floatData;
-
-    if (rows === 1) {
-      // Single token — per-tensor format: [int8_data][float32_scale]
-      const { int8Data, scale } = unpackQuantized(payload);
-      floatData = dequantizeInt8(int8Data, scale);
-    } else {
-      // Multi-token — per-channel format: [int8_data][scales][numRows]
-      const { int8Data, scales } = unpackQuantizedPerChannel(payload);
-      const cols = shape[1] || int8Data.length;
-      floatData = dequantizeInt8PerChannel(int8Data, scales, cols);
-    }
-
-    const buffer = this._createBuffer("deserialized_quant", floatData.byteLength,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(buffer, 0, floatData);
-
-    return { buffer, shape };
-  }
-
-  // ─── INT4 Serialization ──────────────────────────────────────
-
-  async serializeTensorInt4(tensor) {
-    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
-    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
-    const float32 = new Float32Array(data);
-
-    for (let i = 0; i < Math.min(float32.length, 64); i++) {
-      if (!isFinite(float32[i])) {
-        console.warn("[pipeline] NaN/Inf in activation — falling back to unquantized");
-        return { ...await this.serializeTensorBinary(tensor), fallbackUnquantized: true };
-      }
-    }
-
-    const { data: packedData, scale, length } = quantizeInt4(float32);
-    const packed = packInt4(packedData, scale, length);
-    return { shape: tensor.shape, data: new Uint8Array(packed) };
-  }
-
-  deserializeTensorInt4(payload, shape) {
-    const { packedData, scale, originalLength } = unpackInt4(payload);
-    const floatData = dequantizeInt4(packedData, scale, originalLength);
-
-    const buffer = this._createBuffer("deserialized_int4", floatData.byteLength,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(buffer, 0, floatData);
-
-    return { buffer, shape };
-  }
-
-  // ─── Delta-Encoded Serialization ──────────────────────────────
-
-  /**
-   * Serialize a GPU tensor as delta-encoded int8 for wire transfer.
-   * Computes delta = current - previous, quantizes the delta.
-   * Returns { shape, data, isDelta, sparsity }.
-   *
-   * @param {object} tensor - { buffer, shape }
-   * @param {Float32Array|null} previousFloat32 - Previous activation (null = send full)
-   * @returns {Promise<{ shape, data, isDelta, sparsity, currentFloat32 }>}
-   */
-  async serializeTensorDelta(tensor, previousFloat32) {
-    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
-    const rawData = await this._readBuffer(tensor.buffer, 0, byteSize);
-    const currentFloat32 = new Float32Array(rawData);
-
-    // If no previous activation or shape mismatch, fall back to full send
-    if (!previousFloat32 || previousFloat32.length !== currentFloat32.length) {
-      const { data: int8Data, scale } = quantizeInt8(currentFloat32);
-      const packed = packQuantized(int8Data, scale);
-      return {
-        shape: tensor.shape,
-        data: packed,
-        isDelta: false,
-        sparsity: 0,
-        currentFloat32,
-      };
-    }
-
-    // Compute and quantize delta
-    const delta = computeDelta(currentFloat32, previousFloat32);
-    const sparsity = deltaSparsity(delta);
-    const { data: int8Data, scale } = quantizeInt8(delta);
-    const packed = packQuantized(int8Data, scale);
-
-    return {
-      shape: tensor.shape,
-      data: packed,
-      isDelta: true,
-      sparsity,
-      currentFloat32,
-    };
-  }
-
-  /**
-   * Deserialize a delta-encoded tensor: dequantize delta, add to previous.
-   *
-   * @param {Uint8Array} payload - Wire format (int8 + scale)
-   * @param {number[]} shape
-   * @param {Float32Array} previousFloat32 - Previous activation to add delta to
-   * @returns {{ buffer, shape, currentFloat32 }}
-   */
-  deserializeTensorDeltaApply(payload, shape, previousFloat32) {
-    const { int8Data, scale } = unpackQuantized(payload);
-    const deltaFloat32 = dequantizeInt8(int8Data, scale);
-    const currentFloat32 = applyDelta(deltaFloat32, previousFloat32);
-
-    const buffer = this._createBuffer("deserialized_delta", currentFloat32.byteLength,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(buffer, 0, currentFloat32);
-
-    return { buffer, shape, currentFloat32 };
-  }
+  async serializeTensor(tensor) { return this.serializer.serialize(tensor); }
+  deserializeTensor(tensorMsg) { return this.serializer.deserialize(tensorMsg); }
+  async serializeTensorBinary(tensor) { return this.serializer.serializeBinary(tensor); }
+  deserializeTensorBinary(payload, shape) { return this.serializer.deserializeBinary(payload, shape); }
+  async serializeTensorQuantized(tensor) { return this.serializer.serializeQuantized(tensor); }
+  deserializeTensorQuantized(payload, shape) { return this.serializer.deserializeQuantized(payload, shape); }
+  async serializeTensorInt4(tensor) { return this.serializer.serializeInt4(tensor); }
+  deserializeTensorInt4(payload, shape) { return this.serializer.deserializeInt4(payload, shape); }
+  async serializeTensorDelta(tensor, prev) { return this.serializer.serializeDelta(tensor, prev); }
+  deserializeTensorDeltaApply(payload, shape, prev) { return this.serializer.deserializeDeltaApply(payload, shape, prev); }
 }
