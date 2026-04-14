@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node coordinator/index.js",
     "split-model": "python3 model/split.py",
-    "test": "node --test test/validate-phase1.js test/coordinator.test.js test/prediction-engine.test.js test/protocol.test.js",
-    "test:verbose": "node --test --test-reporter=spec test/validate-phase1.js test/coordinator.test.js test/prediction-engine.test.js test/protocol.test.js"
+    "test": "node --test test/validate-phase1.js test/coordinator.test.js test/prediction-engine.test.js test/protocol.test.js test/adaptive-precision.test.js",
+    "test:verbose": "node --test --test-reporter=spec test/validate-phase1.js test/coordinator.test.js test/prediction-engine.test.js test/protocol.test.js test/adaptive-precision.test.js"
   },
   "dependencies": {
     "express": "^4.18.2",
