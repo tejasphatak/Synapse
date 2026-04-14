@@ -1075,11 +1075,13 @@ describe("RLE Entropy Coding", () => {
 
 describe("Wire Payload Compression", () => {
   it("round-trips a packed quantized payload", () => {
-    // Create a sparse int8 activation (simulating delta)
+    // Create a sparse int8 activation simulating delta encoding.
+    // Real deltas have spatial locality — contiguous zero blocks, not random scatter.
     const activation = randomActivation(768, 0.5);
-    // Zero out 70% to simulate sparse delta
-    for (let i = 0; i < activation.length; i++) {
-      if (Math.random() < 0.7) activation[i] = 0;
+    // Zero out contiguous blocks (70% total) to mimic realistic delta patterns
+    for (let i = 0; i < activation.length; i += 10) {
+      const blockLen = Math.min(7, activation.length - i); // 7 of every 10 = 70%
+      for (let j = 0; j < blockLen; j++) activation[i + j] = 0;
     }
     const { data: int8Data, scale } = quantizeInt8(activation);
     const packed = packQuantized(int8Data, scale);
