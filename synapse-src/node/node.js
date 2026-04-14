@@ -39,6 +39,7 @@ import {
 } from "../protocol/binary.js";
 import { unpackQuantized, dequantizeInt8, unpackQuantizedPerChannel, dequantizeInt8PerChannel } from "../protocol/quantize.js";
 import { compressPayload, decompressPayload } from "../protocol/entropy.js";
+import { AdaptivePrecisionSelector } from "../protocol/adaptive-precision.js";
 import { SpeculativeController } from "./speculative.js";
 import { P2PChannel } from "./p2p.js";
 
@@ -70,6 +71,8 @@ export class SynapseNode {
     this.useSpeculation = true;
     this.p2p = null; // initialized when topology assigns a downstream peer
     this.useP2P = true;
+    this.adaptivePrecision = null; // initialized when layer range is known
+    this.useAdaptivePrecision = true;
   }
 
   /**

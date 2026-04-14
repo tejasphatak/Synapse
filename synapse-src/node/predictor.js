@@ -102,6 +102,56 @@ export class ActivationPredictor {
   }
 
   /**
+   * Predict K steps ahead for batch speculative decoding.
+   * Each step extrapolates further from the current trajectory.
+   *
+   * @param {string} requestId
+   * @param {number} k - number of steps to predict (1-4)
+   * @returns {Array<{ prediction: Float32Array, confidence: number, stepsAhead: number }> | null}
+   */
+  predictMulti(requestId, k = 3) {
+    const entry = this.requests.get(requestId);
+    if (!entry || entry.history.length < 2) {
+      return null;
+    }
+
+    const history = entry.history;
+    const n = history.length;
+    const curr = history[n - 1];
+    const prev = history[n - 2];
+    const size = curr.length;
+
+    // Compute the delta (velocity)
+    const delta = this._delta(curr, prev);
+
+    // Base confidence from trajectory smoothness
+    let baseConfidence = 1.0;
+    if (n >= 3) {
+      const prevPrev = history[n - 3];
+      baseConfidence = Math.max(0, this._cosineSimilarity(
+        delta,
+        this._delta(prev, prevPrev)
+      ));
+    }
+
+    const results = [];
+    for (let step = 1; step <= k; step++) {
+      const prediction = new Float32Array(size);
+      // Linear extrapolation: curr + step * delta
+      for (let i = 0; i < size; i++) {
+        prediction[i] = curr[i] + step * delta[i];
+      }
+      // Confidence decays with each step ahead — farther predictions are less reliable
+      const confidence = baseConfidence * Math.pow(0.85, step - 1);
+      results.push({ prediction, confidence, stepsAhead: step });
+
+      this.stats.predictions++;
+    }
+
+    return results;
+  }
+
+  /**
    * Verify a prediction against ground truth.
    * Returns whether the prediction was good enough to keep.
    *

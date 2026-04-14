@@ -12,6 +12,7 @@ import { EarlyExitDetector } from "./early-exit.js";
 import { MixtureOfDepthsRouter } from "./mixture-of-depths.js";
 import { HeadPruner } from "./head-pruning.js";
 import { quantizeInt8, dequantizeInt8, packQuantized, unpackQuantized, quantizeInt8PerChannel, dequantizeInt8PerChannel, packQuantizedPerChannel, unpackQuantizedPerChannel, computeDelta, applyDelta, deltaSparsity } from "../protocol/quantize.js";
+import { quantizeInt4, dequantizeInt4, packInt4, unpackInt4 } from "../protocol/adaptive-precision.js";
 
 export class Pipeline {
   constructor(device, shardLoader) {
@@ -543,6 +544,19 @@ export class Pipeline {
         this.device.queue.submit([enc.finish()]);
 
         kvCache.append(l, kNewBuf, vNewBuf, seqPos);
+
+        // Free temp buffers from skip path immediately — on mobile GPUs,
+        // letting them accumulate until the next non-skipped layer is wasteful.
+        const keep = h.buffer;
+        const surviving = [];
+        for (const buf of this._tempBuffers) {
+          if (buf === keep || weightBuffers.has(buf)) {
+            surviving.push(buf);
+          } else {
+            buf.destroy();
+          }
+        }
+        this._tempBuffers = surviving;
         continue;
       }
 
@@ -1470,6 +1484,36 @@ export class Pipeline {
     }
 
     const buffer = this._createBuffer("deserialized_quant", floatData.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(buffer, 0, floatData);
+
+    return { buffer, shape };
+  }
+
+  // ─── INT4 Serialization ──────────────────────────────────────
+
+  async serializeTensorInt4(tensor) {
+    const byteSize = tensor.shape.reduce((a, b) => a * b, 1) * 4;
+    const data = await this._readBuffer(tensor.buffer, 0, byteSize);
+    const float32 = new Float32Array(data);
+
+    for (let i = 0; i < Math.min(float32.length, 64); i++) {
+      if (!isFinite(float32[i])) {
+        console.warn("[pipeline] NaN/Inf in activation — falling back to unquantized");
+        return { ...await this.serializeTensorBinary(tensor), fallbackUnquantized: true };
+      }
+    }
+
+    const { data: packedData, scale, length } = quantizeInt4(float32);
+    const packed = packInt4(packedData, scale, length);
+    return { shape: tensor.shape, data: new Uint8Array(packed) };
+  }
+
+  deserializeTensorInt4(payload, shape) {
+    const { packedData, scale, originalLength } = unpackInt4(payload);
+    const floatData = dequantizeInt4(packedData, scale, originalLength);
+
+    const buffer = this._createBuffer("deserialized_int4", floatData.byteLength,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
     this.device.queue.writeBuffer(buffer, 0, floatData);
 
