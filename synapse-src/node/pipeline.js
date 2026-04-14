@@ -511,9 +511,38 @@ export class Pipeline {
 
       const routeDecision = this.modRouter.route(relLayer, requestId, preHidden);
       if (routeDecision.skip) {
-        // Residual passthrough — hidden state passes unchanged
-        // Still need to update KV cache with identity for this layer
-        // so that future tokens have cache entries at this position
+        // Residual passthrough — hidden state passes unchanged, but we MUST
+        // still populate the KV cache so future tokens can attend to this position.
+        // Compute K,V from the current hidden state via LayerNorm + QKV projection.
+        const { hiddenSize, numHeads, headDim } = this.config;
+        const prefix = `transformer.h.${l}`;
+
+        const ln1Out = await this._layerNorm(
+          h.buffer, 1, hiddenSize,
+          this.loader.getBuffer(`${prefix}.ln_1.weight`),
+          this.loader.getBuffer(`${prefix}.ln_1.bias`)
+        );
+
+        const qkvOut = await this._matmul(
+          ln1Out, 1, hiddenSize,
+          this.loader.getBuffer(`${prefix}.attn.c_attn.weight`), hiddenSize, 3 * hiddenSize
+        );
+        await this._addBias(qkvOut, 1, 3 * hiddenSize,
+          this.loader.getBuffer(`${prefix}.attn.c_attn.bias`)
+        );
+
+        // Extract K and V from QKV and append to cache
+        const kNewBuf = this._createBuffer("mod_skip_k", hiddenSize * 4,
+          GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+        const vNewBuf = this._createBuffer("mod_skip_v", hiddenSize * 4,
+          GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+        const enc = this.device.createCommandEncoder();
+        enc.copyBufferToBuffer(qkvOut, hiddenSize * 4, kNewBuf, 0, hiddenSize * 4);
+        enc.copyBufferToBuffer(qkvOut, 2 * hiddenSize * 4, vNewBuf, 0, hiddenSize * 4);
+        this.device.queue.submit([enc.finish()]);
+
+        kvCache.append(l, kNewBuf, vNewBuf, seqPos);
         continue;
       }
 
