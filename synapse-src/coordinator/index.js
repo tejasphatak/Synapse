@@ -80,6 +80,10 @@ let binaryRequestCounter = 0; // uint32 IDs for binary protocol
 // generationId → { tokenIds, generatedTokens, maxTokens, promptWs, startTime }
 const activeGenerations = new Map();
 
+// ─── Generation Timeout ─────────────────────────────────────────
+// If a generation hasn't produced a token in this many ms, it's dead.
+const GENERATION_TIMEOUT_MS = 60000;
+
 // ─── Centralized Log Store ───────────────────────────────────────
 // Ring buffer of log entries from all nodes, queryable via /api/logs
 const LOG_MAX = 5000;
@@ -196,7 +200,7 @@ function requestHandler(req, res) {
       pipeline_ready: topology.pipeline.length >= SHARD_CONFIG.length,
       active_generations: totalInferences,
       logs_collected: logStore.length,
-      phase: "Phase 1 complete — Phase 2 (Prediction Engine) next",
+      phase: "Phases 1-4 complete — validating with real WebGPU",
       timestamp: Date.now(),
     }));
     return;
@@ -675,6 +679,7 @@ function handleOutput(ws, msg) {
   const newToken = msg.tokens[0];
   gen.generatedTokens.push(newToken);
   gen.tokenIds.push(newToken);
+  gen._lastTokenTime = Date.now();
 
   // Stream the token to the prompt client immediately
   if (gen.promptWs && gen.promptWs.readyState === 1) {
@@ -938,6 +943,42 @@ setInterval(() => {
   }
   if (stale.length > 0) broadcastTopology();
   router.cleanupOldRequests();
+
+  // Sweep timed-out generations — prevents memory leaks from orphaned requests
+  const now = Date.now();
+  for (const [genId, gen] of activeGenerations) {
+    const lastActivity = gen._lastTokenTime || gen.startTime;
+    if (now - lastActivity > GENERATION_TIMEOUT_MS) {
+      console.warn(`[coordinator] Generation ${genId} timed out after ${Math.round((now - gen.startTime) / 1000)}s — cleaning up`);
+
+      // Notify the prompt client
+      if (gen.promptWs && gen.promptWs.readyState === 1) {
+        gen.promptWs.send(JSON.stringify({
+          type: "GENERATION_DONE",
+          requestId: genId,
+          tokens: gen.generatedTokens,
+          totalTokens: gen.generatedTokens.length,
+          elapsedMs: now - gen.startTime,
+          error: "Generation timed out — a node may have disconnected",
+        }));
+      }
+
+      addLog({
+        nodeId: "coordinator",
+        level: "error",
+        event: "generation_timeout",
+        data: { requestId: genId, generatedTokens: gen.generatedTokens.length, elapsedMs: now - gen.startTime },
+        timestamp: now,
+      });
+
+      broadcastKVReset(genId);
+      activeGenerations.delete(genId);
+
+      for (const [, state] of promptClients) {
+        state.pendingRequests.delete(genId);
+      }
+    }
+  }
 }, 10000);
 
 // ─── Start ────────────────────────────────────────────────────────
