@@ -186,6 +186,22 @@ export class SynapseNode {
   }
 
   /**
+   * Handle raw binary data received via P2P (WebRTC data channel).
+   * Same format as WebSocket binary messages — SYN1 encoded activations.
+   */
+  async _handleBinaryMessage(raw) {
+    try {
+      const decoded = decodeBinaryMessage(raw);
+      if (decoded.type === BinaryMsgType.ACTIVATION) {
+        const requestId = uint32ToRequestId(decoded.requestId);
+        await this._handleActivationBinary(decoded, requestId);
+      }
+    } catch (err) {
+      console.error("[node] P2P binary decode error:", err);
+    }
+  }
+
+  /**
    * Handle incoming WebSocket messages (binary or JSON).
    */
   async _handleMessage(raw) {
