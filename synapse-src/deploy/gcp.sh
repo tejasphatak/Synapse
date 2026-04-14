@@ -17,8 +17,8 @@
 set -euo pipefail
 
 PROJECT="directed-cove-493200-b8"
-ZONE="us-central1-a"
-REGION="us-central1"
+ZONE="us-west1-b"
+REGION="us-west1"
 
 COORD_VM="synapse-coordinator"
 COORD_TYPE="e2-medium"            # 2 vCPU, 4GB — plenty for coordinator
