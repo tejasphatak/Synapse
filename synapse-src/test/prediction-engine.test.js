@@ -231,6 +231,123 @@ describe("ActivationPredictor", () => {
       assert.ok(verification.cosine > 0.95);
     });
   });
+
+  describe("predictMulti — batch speculation", () => {
+    it("returns null with fewer than 2 observations", () => {
+      assert.equal(predictor.predictMulti("req1"), null);
+      predictor.observe("req1", f32(1, 2, 3));
+      assert.equal(predictor.predictMulti("req1"), null);
+    });
+
+    it("returns k predictions with correct stepsAhead", () => {
+      predictor.observe("req1", f32(1, 2));
+      predictor.observe("req1", f32(3, 4));
+      const results = predictor.predictMulti("req1", 4);
+      assert.equal(results.length, 4);
+      for (let i = 0; i < 4; i++) {
+        assert.equal(results[i].stepsAhead, i + 1);
+      }
+    });
+
+    it("step 1 matches single predict()", () => {
+      predictor.observe("req1", f32(10, 20, 30));
+      predictor.observe("req1", f32(12, 24, 36));
+      // delta = [2, 4, 6]
+      const single = predictor.predict("req1");
+      // Reset stats to get clean predictMulti
+      const p2 = new ActivationPredictor();
+      p2.observe("req1", f32(10, 20, 30));
+      p2.observe("req1", f32(12, 24, 36));
+      const multi = p2.predictMulti("req1", 3);
+      assert.deepEqual(Array.from(multi[0].prediction), Array.from(single.prediction));
+    });
+
+    it("extrapolates linearly: curr + step * delta", () => {
+      predictor.observe("req1", f32(0, 0));
+      predictor.observe("req1", f32(10, 5));
+      // delta = [10, 5]
+      const results = predictor.predictMulti("req1", 3);
+      // step 1: [10+10, 5+5] = [20, 10]
+      assert.deepEqual(Array.from(results[0].prediction), [20, 10]);
+      // step 2: [10+20, 5+10] = [30, 15]
+      assert.deepEqual(Array.from(results[1].prediction), [30, 15]);
+      // step 3: [10+30, 5+15] = [40, 20]
+      assert.deepEqual(Array.from(results[2].prediction), [40, 20]);
+    });
+
+    it("confidence decays by 0.85 per step", () => {
+      // With only 2 observations, base confidence = 1.0
+      predictor.observe("req1", f32(1, 2));
+      predictor.observe("req1", f32(2, 4));
+      const results = predictor.predictMulti("req1", 4);
+      assert.ok(Math.abs(results[0].confidence - 1.0) < 0.001);
+      assert.ok(Math.abs(results[1].confidence - 0.85) < 0.001);
+      assert.ok(Math.abs(results[2].confidence - 0.85 * 0.85) < 0.001);
+      assert.ok(Math.abs(results[3].confidence - Math.pow(0.85, 3)) < 0.001);
+    });
+
+    it("base confidence reflects trajectory smoothness", () => {
+      // Smooth trajectory: consistent deltas
+      predictor.observe("req1", f32(1, 2, 3));
+      predictor.observe("req1", f32(2, 4, 6));
+      predictor.observe("req1", f32(3, 6, 9));
+      const smooth = predictor.predictMulti("req1", 2);
+      assert.ok(smooth[0].confidence > 0.99, "smooth trajectory → high base confidence");
+
+      // Erratic trajectory
+      const p2 = new ActivationPredictor();
+      p2.observe("req2", f32(1, 0, 0));
+      p2.observe("req2", f32(0, 1, 0));
+      p2.observe("req2", f32(0, 0, 1));
+      const erratic = p2.predictMulti("req2", 2);
+      assert.ok(erratic[0].confidence < 0.5, "erratic trajectory → low base confidence");
+    });
+
+    it("defaults to k=3 when omitted", () => {
+      predictor.observe("req1", f32(1));
+      predictor.observe("req1", f32(2));
+      const results = predictor.predictMulti("req1");
+      assert.equal(results.length, 3);
+    });
+
+    it("increments stats.predictions for each step", () => {
+      predictor.observe("req1", f32(1));
+      predictor.observe("req1", f32(2));
+      const before = predictor.getStats().predictions;
+      predictor.predictMulti("req1", 4);
+      assert.equal(predictor.getStats().predictions, before + 4);
+    });
+
+    it("handles constant activations (zero delta)", () => {
+      predictor.observe("req1", f32(5, 5, 5));
+      predictor.observe("req1", f32(5, 5, 5));
+      const results = predictor.predictMulti("req1", 3);
+      // All predictions should equal the constant
+      for (const r of results) {
+        assert.deepEqual(Array.from(r.prediction), [5, 5, 5]);
+      }
+    });
+
+    it("works with high-dimensional activations", () => {
+      const dim = 768;
+      const a = new Float32Array(dim);
+      const b = new Float32Array(dim);
+      for (let i = 0; i < dim; i++) {
+        a[i] = Math.sin(i * 0.01);
+        b[i] = Math.sin(i * 0.01) + 0.1;
+      }
+      predictor.observe("req1", a);
+      predictor.observe("req1", b);
+      const results = predictor.predictMulti("req1", 3);
+      assert.equal(results.length, 3);
+      assert.equal(results[0].prediction.length, dim);
+      // Step 1 should be b + 0.1 ≈ sin + 0.2
+      for (let i = 0; i < dim; i++) {
+        const expected = b[i] + 0.1;
+        assert.ok(Math.abs(results[0].prediction[i] - expected) < 0.001);
+      }
+    });
+  });
 });
 
 // ─── EarlyExitDetector ───────────────────────────────────────
