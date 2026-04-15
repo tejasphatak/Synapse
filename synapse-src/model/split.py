@@ -207,7 +207,10 @@ def detect_architecture(model, config):
 
 # ─── Parameter Categorization ────────────────────────────────────
 
-# Patterns for shared weights (embeddings, output head, final norm)
+# Patterns for shared weights (embeddings, output head, final norm).
+# Gemma 3 and Gemma 4 use model.embed_tokens + model.norm, similar to Llama.
+# lm_head.weight may be weight-tied to embed_tokens.weight (no separate lm_head
+# key in safetensors) — check is done downstream in categorize_params.
 SHARED_PATTERNS = {
     "gpt2": [
         "transformer.wte", "transformer.wpe", "transformer.ln_f", "lm_head",
@@ -227,9 +230,18 @@ SHARED_PATTERNS = {
     "qwen2": [
         "model.embed_tokens", "model.norm", "lm_head",
     ],
+    # Gemma family — text-only sub-model. For multi-modal Gemma 4, the text
+    # transformer is nested under "language_model." which we strip in the
+    # Gemma loader branch before name-matching.
+    "gemma3_text": [
+        "model.embed_tokens", "model.norm", "lm_head",
+    ],
+    "gemma4": [
+        "model.embed_tokens", "model.norm", "lm_head",
+    ],
 }
 
-# Patterns for identifying layer index from parameter name
+# Patterns for identifying layer index from parameter name.
 LAYER_PATTERNS = {
     "gpt2": "transformer.h.",
     "llama": "model.layers.",
@@ -237,6 +249,8 @@ LAYER_PATTERNS = {
     "phi": "model.layers.",
     "mistral": "model.layers.",
     "qwen2": "model.layers.",
+    "gemma3_text": "model.layers.",
+    "gemma4": "model.layers.",
 }
 
 
