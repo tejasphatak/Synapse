@@ -576,9 +576,16 @@ export class Pipeline {
    * Sample the next token from logits using temperature sampling.
    * Reads the last position's logits from GPU, applies softmax on CPU, samples.
    */
-  async sampleToken(logitsTensor, temperature = 0.8) {
+  async sampleToken(logitsTensor, opts = 0.8) {
     const { vocabSize } = this.config;
     const seqLen = logitsTensor.shape[0];
+
+    // Backward-compat: callers that pass a plain number get treated as
+    // { temperature: number } with default top-k/top-p. Objects override.
+    const sOpts = typeof opts === "number" ? { temperature: opts } : (opts || {});
+    const temperature = sOpts.temperature ?? 0.8;
+    const topK = sOpts.topK ?? 40;           // 0 disables; 40 is a common default
+    const topP = sOpts.topP ?? 0.95;         // 0 disables; 0.95 is nucleus default
 
     // Read only the last position's logits from GPU
     const offset = (seqLen - 1) * vocabSize * 4;
@@ -590,8 +597,8 @@ export class Pipeline {
     const rawLogits = Float32Array.from(logitsF32);
 
     // Temperature scaling
-    for (let i = 0; i < logitsF32.length; i++) {
-      logitsF32[i] /= temperature;
+    if (temperature !== 1.0) {
+      for (let i = 0; i < logitsF32.length; i++) logitsF32[i] /= temperature;
     }
 
     // Softmax
@@ -605,8 +612,35 @@ export class Pipeline {
       probs[i] = Math.exp(logitsF32[i] - maxLogit);
       sumExp += probs[i];
     }
-    for (let i = 0; i < probs.length; i++) {
-      probs[i] /= sumExp;
+    for (let i = 0; i < probs.length; i++) probs[i] /= sumExp;
+
+    // Top-K + Top-P filter. For 262k-vocab Gemma, keeping only top-40
+    // tokens concentrates mass and eliminates long-tail noise that
+    // causes "Thank You. Thank You." style loops under pure multinomial.
+    if ((topK > 0 && topK < probs.length) || (topP > 0 && topP < 1)) {
+      const order = Array.from(probs.keys()).sort((a, b) => probs[b] - probs[a]);
+      // Top-K: zero everything past K
+      const kCut = topK > 0 ? Math.min(topK, order.length) : order.length;
+      // Top-P: accumulate prob mass, cut when cumulative > topP
+      let cumulative = 0;
+      let pCut = order.length;
+      if (topP > 0 && topP < 1) {
+        for (let i = 0; i < order.length; i++) {
+          cumulative += probs[order[i]];
+          if (cumulative >= topP) { pCut = i + 1; break; }
+        }
+      }
+      const keep = Math.max(1, Math.min(kCut, pCut));
+      const mask = new Uint8Array(probs.length);
+      for (let i = 0; i < keep; i++) mask[order[i]] = 1;
+      // Re-normalize survivors
+      let survSum = 0;
+      for (let i = 0; i < probs.length; i++) {
+        if (!mask[i]) probs[i] = 0; else survSum += probs[i];
+      }
+      if (survSum > 0) {
+        for (let i = 0; i < probs.length; i++) probs[i] /= survSum;
+      }
     }
 
     // Instrumentation: log top-5 tokens with probabilities. Helps diagnose
