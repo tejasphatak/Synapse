@@ -35,6 +35,58 @@ export class Pipeline {
       (label, size, usage) => this._createBuffer(label, size, usage),
       (buffer, offset, size) => this._readBuffer(buffer, offset, size),
     );
+    // Per-method cumulative timing (AOP — wraps every method at construction).
+    // Caller resets via _perfReset() and harvests via _perfSnapshot().
+    this._perfCounters = {};
+    this._installPerfAspect();
+  }
+
+  _perfReset() { this._perfCounters = {}; }
+  _perfSnapshot() {
+    const out = {};
+    for (const [k, v] of Object.entries(this._perfCounters)) {
+      out[k] = { ms: +v.ms.toFixed(2), calls: v.calls };
+    }
+    return out;
+  }
+
+  /**
+   * Install timing aspect on every async method of Pipeline. Runs once at
+   * construction. Skips the perf plumbing itself so we don't double-count.
+   */
+  _installPerfAspect() {
+    const skip = new Set(["constructor", "_installPerfAspect", "_perfReset",
+                          "_perfSnapshot"]);
+    const proto = Object.getPrototypeOf(this);
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (skip.has(name)) continue;
+      const orig = proto[name];
+      if (typeof orig !== "function") continue;
+      const self = this;
+      // Replace on THIS instance, not prototype, so other Pipeline instances
+      // (if any, e.g., self-test) aren't affected and hot-reload's new class
+      // isn't polluted.
+      this[name] = function (...args) {
+        const t0 = performance.now();
+        let r;
+        try { r = orig.apply(self, args); }
+        catch (e) {
+          const c = self._perfCounters[name] || (self._perfCounters[name] = { ms: 0, calls: 0 });
+          c.ms += performance.now() - t0; c.calls += 1;
+          throw e;
+        }
+        // Handle both sync + async returns.
+        if (r && typeof r.then === "function") {
+          return r.finally(() => {
+            const c = self._perfCounters[name] || (self._perfCounters[name] = { ms: 0, calls: 0 });
+            c.ms += performance.now() - t0; c.calls += 1;
+          });
+        }
+        const c = self._perfCounters[name] || (self._perfCounters[name] = { ms: 0, calls: 0 });
+        c.ms += performance.now() - t0; c.calls += 1;
+        return r;
+      };
+    }
   }
 
   /**

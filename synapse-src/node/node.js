@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-gelu2";
+import { Pipeline } from "./pipeline.js?v=20260415-fast1";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -107,6 +107,20 @@ export class SynapseNode {
     // (bypassing adaptive selector). Default: INT8 + adaptive promotion.
     // Used for A/B bandwidth measurement. See 2026-04-15 int4 finding.
     this.forceQuantMode = null;
+
+    // Debug-profile mode gates all per-step diagnostic GPU→CPU readbacks
+    // (post_embed_stats, pre_lmhead_hidden, _nanTrace, _subKernelTrace,
+    // outgoing_activation_stats, layer_stats). Each is ~100ms on mobile
+    // due to mapAsync fence. Default OFF — enable via ?debug=1 URL.
+    try {
+      this.debugProfile = typeof location !== "undefined"
+        && new URLSearchParams(location.search).get("debug") === "1";
+    } catch { this.debugProfile = false; }
+
+    // AOP perf aspect — same shape as pipeline._perfCounters. Installed
+    // below after all methods are defined on the prototype chain.
+    this._perfCounters = {};
+    this._installPerfAspect();
     if (typeof window !== "undefined" && window.location) {
       const params = new URLSearchParams(window.location.search);
       const q = params.get("quant");
@@ -582,6 +596,11 @@ export class SynapseNode {
         this.useQuantization = false;
         this.useAdaptivePrecision = false;
         this.forceQuantMode = "none";
+        // Speculation's predictor was tuned on GPT-2 activation shape and
+        // doesn't generalize. Each predict+verify triggers an extra
+        // readback per step. Disable until retrained.
+        this.useSpeculation = false;
+        this.speculative = null;
       }
 
       // Initialize speculative execution
@@ -679,30 +698,21 @@ export class SynapseNode {
         ? await this.pipeline.gemmaEmbed(tokenIds)
         : await this.pipeline.embed(tokenIds);
 
-      // Diagnostic: stats of embedding output. If NaN here, embed kernel
-      // is broken. If clean here but NaN after forwardLayersPrefill, the
-      // bug is in one of the per-layer kernels.
-      try {
-        const sz = hidden.shape.reduce((a,b)=>a*b,1) * 4;
-        const f = new Float32Array(await this.pipeline._readBuffer(hidden.buffer, 0, sz));
-        let nans=0, mn=Infinity, mx=-Infinity, sum2=0;
-        for (let i=0;i<f.length;i++) { const v=f[i]; if (Number.isNaN(v)) nans++; else { if(v<mn)mn=v; if(v>mx)mx=v; sum2+=v*v; } }
-        this._sendLog("perf","post_embed_stats",{
-          requestId: msg.requestId, shape: hidden.shape,
-          min: isFinite(mn)?+mn.toFixed(4):null, max: isFinite(mx)?+mx.toFixed(4):null,
-          nans, rms: +Math.sqrt(sum2/Math.max(1,f.length-nans)).toFixed(4),
-        });
-      } catch(_){}
-
-      // Enable per-layer trace BEFORE the prefill so we can identify which
-      // exact layer first introduces NaN in shard 0.
-      this.pipeline._nanTrace = [];
-      // Sub-kernel trace ONLY for shard 0 (where the bug originates) to
-      // avoid expensive readbacks on healthy shards.
-      // Enable sub-kernel trace on EVERY shard's first layer — captures
-      // rms/nans after each sub-kernel (ln1 / qkv / attention / etc.) so we
-      // can find where Intel introduces NaN regardless of which shard it's on.
-      this.pipeline._subKernelTrace = [];
+      if (this.debugProfile) {
+        try {
+          const sz = hidden.shape.reduce((a,b)=>a*b,1) * 4;
+          const f = new Float32Array(await this.pipeline._readBuffer(hidden.buffer, 0, sz));
+          let nans=0, mn=Infinity, mx=-Infinity, sum2=0;
+          for (let i=0;i<f.length;i++) { const v=f[i]; if (Number.isNaN(v)) nans++; else { if(v<mn)mn=v; if(v>mx)mx=v; sum2+=v*v; } }
+          this._sendLog("perf","post_embed_stats",{
+            requestId: msg.requestId, shape: hidden.shape,
+            min: isFinite(mn)?+mn.toFixed(4):null, max: isFinite(mx)?+mx.toFixed(4):null,
+            nans, rms: +Math.sqrt(sum2/Math.max(1,f.length-nans)).toFixed(4),
+          });
+        } catch(_){}
+        this.pipeline._nanTrace = [];
+        this.pipeline._subKernelTrace = [];
+      }
 
       // Run assigned layers — branch on architecture. Gemma-family models
       // use a different layer composition (RMSNorm + RoPE + GQA + gated MLP)
@@ -883,10 +893,9 @@ export class SynapseNode {
       }
 
       if (isPrefill) {
-        // Per-layer NaN trace: ALWAYS on during this debug session so we
-        // can pinpoint which layer corrupts activation on failing devices.
-        // Re-rate-limit once root cause found.
-        const traceEnabled = true;
+        // Per-layer NaN trace: gated on debugProfile. Each layer adds a
+        // ~10ms readback. With 8 layers on shard 1, disabling saves 80ms.
+        const traceEnabled = this.debugProfile;
         if (traceEnabled) {
           this.pipeline._nanTrace = [];
         }
@@ -1022,6 +1031,16 @@ export class SynapseNode {
       const elapsed = performance.now() - startTime;
       this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Processed in ${elapsed.toFixed(0)}ms`);
+      // Ship per-method perf snapshot from BOTH pipeline + node AOP counters.
+      // Reset so next step is counted in isolation.
+      this._sendLog("perf", "gemma_perf_breakdown", {
+        requestId, shardId: this.shardId, phase: isPrefill ? "prefill" : "step",
+        elapsedMs: +elapsed.toFixed(2),
+        pipeline: this.pipeline._perfSnapshot ? this.pipeline._perfSnapshot() : {},
+        node: this._perfSnapshot(),
+      });
+      this.pipeline._perfReset && this.pipeline._perfReset();
+      this._perfReset();
       this._sendLog("perf", isPrefill ? "binary_prefill" : "binary_step", {
         requestId,
         durationMs: +elapsed.toFixed(2),
@@ -1099,30 +1118,25 @@ export class SynapseNode {
    * Produce final output: run output head, sample token, send OUTPUT.
    */
   async _produceOutput(hidden, requestId, temperature = 1.0) {
-    // Diagnostic: measure hidden state stats before LM head. If these are
-    // zeros/NaN, the upstream pipeline failed. If they look normal but
-    // logits are zero, the LM head itself is broken.
-    try {
-      const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
-      const buf = await this.pipeline._readBuffer(hidden.buffer, 0, sz);
-      const f = new Float32Array(buf);
-      let mn = Infinity, mx = -Infinity, nz = 0, sum2 = 0, nans = 0;
-      for (let i = 0; i < f.length; i++) {
-        const v = f[i];
-        if (Number.isNaN(v)) { nans++; continue; }
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
-        if (v !== 0) nz++;
-        sum2 += v * v;
-      }
-      this._sendLog("perf", "pre_lmhead_hidden", {
-        requestId,
-        shape: hidden.shape,
-        min: +mn.toFixed(4), max: +mx.toFixed(4),
-        nonZero: nz, nans,
-        rms: +Math.sqrt(sum2 / f.length).toFixed(4),
-      });
-    } catch (_) { /* ignore */ }
+    if (this.debugProfile) {
+      try {
+        const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+        const buf = await this.pipeline._readBuffer(hidden.buffer, 0, sz);
+        const f = new Float32Array(buf);
+        let mn = Infinity, mx = -Infinity, nz = 0, sum2 = 0, nans = 0;
+        for (let i = 0; i < f.length; i++) {
+          const v = f[i];
+          if (Number.isNaN(v)) { nans++; continue; }
+          if (v < mn) mn = v; if (v > mx) mx = v; if (v !== 0) nz++;
+          sum2 += v * v;
+        }
+        this._sendLog("perf", "pre_lmhead_hidden", {
+          requestId, shape: hidden.shape,
+          min: +mn.toFixed(4), max: +mx.toFixed(4),
+          nonZero: nz, nans, rms: +Math.sqrt(sum2 / f.length).toFixed(4),
+        });
+      } catch (_) {}
+    }
 
     const archOut = this.loader?.manifest?.arch;
     let logitsTensor;
@@ -1172,30 +1186,26 @@ export class SynapseNode {
    * @param {number} seqLen - Current sequence length (for KV cache coordination)
    */
   async _sendActivation(hidden, requestId, seqLen = 0) {
-    // Diagnostic: measure outgoing activation so we can trace which shard
-    // first introduces NaN in multi-hop pipelines.
-    try {
-      const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
-      const buf = await this.pipeline._readBuffer(hidden.buffer, 0, sz);
-      const f = new Float32Array(buf);
-      let mn = Infinity, mx = -Infinity, nans = 0, sum2 = 0;
-      for (let i = 0; i < f.length; i++) {
-        const v = f[i];
-        if (Number.isNaN(v)) { nans++; continue; }
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
-        sum2 += v * v;
-      }
-      this._sendLog("perf", "shard_output_stats", {
-        requestId,
-        shardId: this.shardId,
-        shape: hidden.shape,
-        min: isFinite(mn) ? +mn.toFixed(4) : null,
-        max: isFinite(mx) ? +mx.toFixed(4) : null,
-        nans,
-        rms: +Math.sqrt(sum2 / f.length).toFixed(4),
-      });
-    } catch (_) { /* ignore */ }
+    if (this.debugProfile) {
+      try {
+        const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+        const buf = await this.pipeline._readBuffer(hidden.buffer, 0, sz);
+        const f = new Float32Array(buf);
+        let mn = Infinity, mx = -Infinity, nans = 0, sum2 = 0;
+        for (let i = 0; i < f.length; i++) {
+          const v = f[i];
+          if (Number.isNaN(v)) { nans++; continue; }
+          if (v < mn) mn = v; if (v > mx) mx = v;
+          sum2 += v * v;
+        }
+        this._sendLog("perf", "shard_output_stats", {
+          requestId, shardId: this.shardId, shape: hidden.shape,
+          min: isFinite(mn) ? +mn.toFixed(4) : null,
+          max: isFinite(mx) ? +mx.toFixed(4) : null,
+          nans, rms: +Math.sqrt(sum2 / f.length).toFixed(4),
+        });
+      } catch (_) {}
+    }
 
     if (this.useBinaryProtocol) {
       let flags = 0;
@@ -1418,5 +1428,46 @@ export class SynapseNode {
     if (this.ws) this.ws.close();
     if (this.loader) this.loader.destroy();
     this.status = "destroyed";
+  }
+
+  // ─── AOP perf aspect ─────────────────────────────────────────────
+  _perfReset() { this._perfCounters = {}; }
+  _perfSnapshot() {
+    const out = {};
+    for (const [k, v] of Object.entries(this._perfCounters)) {
+      out[k] = { ms: +v.ms.toFixed(2), calls: v.calls };
+    }
+    return out;
+  }
+  _installPerfAspect() {
+    const skip = new Set(["constructor", "_installPerfAspect", "_perfReset",
+                          "_perfSnapshot", "destroy", "_setStatus",
+                          "_sendLog", "_isMobile", "_releaseWakeLock"]);
+    const proto = Object.getPrototypeOf(this);
+    const self = this;
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (skip.has(name)) continue;
+      const orig = proto[name];
+      if (typeof orig !== "function") continue;
+      this[name] = function (...args) {
+        const t0 = performance.now();
+        let r;
+        try { r = orig.apply(self, args); }
+        catch (e) {
+          const c = self._perfCounters[name] || (self._perfCounters[name] = { ms: 0, calls: 0 });
+          c.ms += performance.now() - t0; c.calls += 1;
+          throw e;
+        }
+        if (r && typeof r.then === "function") {
+          return r.finally(() => {
+            const c = self._perfCounters[name] || (self._perfCounters[name] = { ms: 0, calls: 0 });
+            c.ms += performance.now() - t0; c.calls += 1;
+          });
+        }
+        const c = self._perfCounters[name] || (self._perfCounters[name] = { ms: 0, calls: 0 });
+        c.ms += performance.now() - t0; c.calls += 1;
+        return r;
+      };
+    }
   }
 }
