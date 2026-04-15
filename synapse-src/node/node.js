@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-subprobe";
+import { Pipeline } from "./pipeline.js?v=20260415-gelu2";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -990,6 +990,17 @@ export class SynapseNode {
             );
           }
         }
+      }
+
+      // Ship per-Gemma-layer stats from this shard (1 or 2) so we can
+      // compare against numpy reference across the whole stack.
+      if (this.pipeline._layerStats) {
+        this._sendLog("perf", "gemma_layer_stats", {
+          requestId,
+          shardId: this.shardId,
+          stats: this.pipeline._layerStats,
+        });
+        this.pipeline._layerStats = null;
       }
 
       if (this.isLastNode) {

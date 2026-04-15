@@ -1564,9 +1564,10 @@ export class Pipeline {
     await probe(gate, seqLen * intermediateSize, "gate_pre_gelu");
     await probe(up,   seqLen * intermediateSize, "up");
     const total = seqLen * intermediateSize;
-    await this._gelu(gate, total);
-    await probe(gate, seqLen * intermediateSize, "gate_gelu");
-    const gated = await this._elementwiseMul(gate, up, total);
+    // _gelu returns a NEW buffer (not in-place). Capture it.
+    const gateAct = await this._gelu(gate, total);
+    await probe(gateAct, seqLen * intermediateSize, "gate_gelu");
+    const gated = await this._elementwiseMul(gateAct, up, total);
     await probe(gated, seqLen * intermediateSize, "gated");
     const down = await this._matmulTransB(gated, seqLen, intermediateSize, getW("mlp.down_proj"), hiddenSize);
     await probe(down, seqLen * hiddenSize, "down");
@@ -1756,8 +1757,8 @@ export class Pipeline {
     const ln2 = await this._rmsNorm(afterAttn, 1, hiddenSize, getW("pre_feedforward_layernorm"), rmsEps, 1.0);
     const gate = await this._matmulTransB(ln2, 1, hiddenSize, getW("mlp.gate_proj"), intermediateSize);
     const up   = await this._matmulTransB(ln2, 1, hiddenSize, getW("mlp.up_proj"),   intermediateSize);
-    await this._gelu(gate, intermediateSize);
-    const gated = await this._elementwiseMul(gate, up, intermediateSize);
+    const gateAct = await this._gelu(gate, intermediateSize);
+    const gated = await this._elementwiseMul(gateAct, up, intermediateSize);
     const down = await this._matmulTransB(gated, 1, intermediateSize, getW("mlp.down_proj"), hiddenSize);
     const downNorm = await this._rmsNorm(down, 1, hiddenSize, getW("post_feedforward_layernorm"), rmsEps, 1.0);
     return this._residualAdd(residual2, downNorm, hiddenSize);
