@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-topkp2";
+import { Pipeline } from "./pipeline.js?v=20260415-p2phop";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -1296,11 +1296,18 @@ export class SynapseNode {
         serialized.shape,
         payloadData
       );
-      // Try P2P direct transfer, fall back to coordinator relay
+      // Try P2P direct transfer, fall back to coordinator relay.
       const sentP2P = this.p2p?.send(binaryMsg);
       if (!sentP2P) {
         this.ws.send(binaryMsg);
       }
+      // Instrument every hop so we can measure P2P coverage against the
+      // coord-relay floor. Cheap — no readback, just counter emit.
+      this._sendLog("perf", "wire_hop", {
+        requestId, shardId: this.shardId,
+        via: sentP2P ? "p2p" : "coord",
+        bytes: binaryMsg.byteLength ?? binaryMsg.length ?? 0,
+      });
     } else {
       const serialized = await this.pipeline.serializeTensor(hidden);
       const msg = createActivationMessage(

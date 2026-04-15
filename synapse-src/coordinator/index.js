@@ -220,6 +220,34 @@ function requestHandler(req, res) {
     return;
   }
 
+  // API: P2P coverage — counts wire_hop events by transport.
+  // Public, no PII. Used to track whether shard-to-shard activations
+  // are going direct (p2p) or via coord relay fallback.
+  if (req.url.startsWith("/api/p2p-stats")) {
+    const url = new URL(req.url, "http://x");
+    const windowMs = parseInt(url.searchParams.get("windowMs") || "300000", 10);
+    const since = Date.now() - windowMs;
+    const hops = logStore.query({ event: "wire_hop", since, n: 10000 }).logs;
+    let p2p = 0, coord = 0, p2pBytes = 0, coordBytes = 0;
+    const byShard = {};
+    for (const h of hops) {
+      const d = h.data || {};
+      const s = d.shardId ?? "?";
+      byShard[s] = byShard[s] || { p2p: 0, coord: 0 };
+      if (d.via === "p2p") { p2p++; p2pBytes += (d.bytes || 0); byShard[s].p2p++; }
+      else                  { coord++; coordBytes += (d.bytes || 0); byShard[s].coord++; }
+    }
+    const total = p2p + coord;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      windowMs, totalHops: total,
+      p2pRatio: total ? +(p2p / total).toFixed(3) : 0,
+      p2p, coord, p2pBytes, coordBytes,
+      byShard,
+    }));
+    return;
+  }
+
   // API: get topology snapshot
   if (req.url === "/api/topology") {
     res.writeHead(200, { "Content-Type": "application/json" });
