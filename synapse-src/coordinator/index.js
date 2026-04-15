@@ -683,8 +683,29 @@ function wsConnectionHandler(ws, req) {
     if (nodeId) {
       console.log(`[coordinator] Node ${nodeId} disconnected`);
       topology.removeNode(nodeId);
-      // Refill any shard slot the disconnected node was holding from the
-      // unassigned pool, otherwise new connects sit idle as "waiting".
+      // Fail-fast: abort any in-flight generation that was routed through
+      // this node. Much better UX than a 60s timeout.
+      const failedGenIds = [];
+      for (const [genId, gen] of generations) {
+        if (gen.routedThrough?.has?.(nodeId) || gen.promptClient) {
+          failedGenIds.push(genId);
+        }
+      }
+      for (const genId of failedGenIds) {
+        const gen = generations.get(genId);
+        if (!gen) continue;
+        if (gen.promptClient?.readyState === 1) {
+          try {
+            gen.promptClient.send(JSON.stringify({
+              type: "GENERATION_FAILED",
+              genId,
+              error: `Node ${nodeId} dropped mid-generation — aborted so you can retry`,
+            }));
+          } catch {}
+        }
+        generations.delete(genId);
+        console.log(`[coordinator] aborted ${genId} due to ${nodeId} disconnect`);
+      }
       tryAssignShards();
       broadcastTopology();
     }
