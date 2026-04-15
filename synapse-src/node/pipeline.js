@@ -2305,20 +2305,47 @@ export class Pipeline {
   // ─── Buffer Utilities ─────────────────────────────────────
 
   _createBuffer(label, size, usage) {
+    // Pool lookup: reuse an idle buffer with same (size, usage). Keyed on
+    // both because GPUBufferUsage flags must match exactly for binding.
+    if (!this._bufPool) this._bufPool = new Map();
+    const key = `${size}|${usage}`;
+    const bucket = this._bufPool.get(key);
+    if (bucket && bucket.length) {
+      const buf = bucket.pop();
+      this._tempBuffers.push(buf);
+      return buf;
+    }
     const buf = this.device.createBuffer({ label, size, usage });
+    buf._poolKey = key; // remember bucket for recycle
     this._tempBuffers.push(buf);
     return buf;
   }
 
   /**
-   * Destroy all temporary buffers created during inference.
-   * Keeps weight buffers (owned by ShardLoader) intact.
+   * Return temp buffers to the pool (not destroy). Weight buffers owned
+   * by ShardLoader are never in _tempBuffers so they're safe.
    */
   _cleanupTempBuffers() {
+    if (!this._bufPool) this._bufPool = new Map();
     for (const buf of this._tempBuffers) {
-      buf.destroy();
+      const key = buf._poolKey;
+      if (!key) { buf.destroy(); continue; }
+      let bucket = this._bufPool.get(key);
+      if (!bucket) { bucket = []; this._bufPool.set(key, bucket); }
+      // Cap bucket size so we don't grow unbounded across many request types.
+      if (bucket.length >= 32) { buf.destroy(); continue; }
+      bucket.push(buf);
     }
     this._tempBuffers = [];
+  }
+
+  /**
+   * Fully free the pool. Call on shutdown.
+   */
+  _drainBufferPool() {
+    if (!this._bufPool) return;
+    for (const bucket of this._bufPool.values()) for (const b of bucket) b.destroy();
+    this._bufPool.clear();
   }
 
   async _readBuffer(buffer, offset, size) {

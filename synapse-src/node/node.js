@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-fast1";
+import { Pipeline } from "./pipeline.js?v=20260415-bufpool";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -303,12 +303,19 @@ export class SynapseNode {
       `GPU: ${this.gpuInfo.vendor} | Max buffer: ${Math.round(this.gpuInfo.maxBufferSize / 1024 / 1024)}MB | Mobile: ${this.gpuInfo.isMobile}`
     );
 
+    // Opportunistically request timestamp-query so we can measure true
+    // GPU execution time separate from the mapAsync fence. Falls through
+    // cleanly on devices that don't support it.
+    const optionalFeatures = [];
+    if (adapter.features?.has?.("timestamp-query")) optionalFeatures.push("timestamp-query");
     this.device = await adapter.requestDevice({
+      requiredFeatures: optionalFeatures,
       requiredLimits: {
         maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
         maxBufferSize: adapter.limits.maxBufferSize,
       },
     });
+    this.hasTimestampQuery = optionalFeatures.includes("timestamp-query");
 
     this.device.lost.then((info) => {
       this._setStatus("error", `WebGPU device lost: ${info.message}`);
