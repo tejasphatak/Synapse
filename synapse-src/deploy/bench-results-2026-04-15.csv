@@ -1,0 +1,21 @@
+prompt,input_tokens,max_tokens,generated,ttft_ms,total_ms,decode_tps,reported_tps,ok
+[bench] Hello  max=5  ttft=1244ms total=6071ms decode=0.83tok/s
+"Hello",1,5,5,1244,6071,0.83,0.80,1
+[bench] Hello  max=15  ttft=1193ms total=18266ms decode=0.82tok/s
+"Hello",1,15,15,1193,18266,0.82,0.80,1
+[bench] Hello  max=30  ttft=1274ms total=36886ms decode=0.81tok/s
+"Hello",1,30,30,1274,36886,0.81,0.80,1
+[bench] The universe is  max=5  ttft=1168ms total=5986ms decode=0.83tok/s
+"The universe is",3,5,5,1168,5986,0.83,0.80,1
+[bench] The universe is  max=15  ttft=1240ms total=18555ms decode=0.81tok/s
+"The universe is",3,15,15,1240,18555,0.81,0.80,1
+[bench] The universe is  max=30  ttft=1227ms total=36790ms decode=0.82tok/s
+"The universe is",3,30,30,1227,36790,0.82,0.80,1
+[bench] Once upon a time  max=5  ttft=1209ms total=6021ms decode=0.83tok/s
+"Once upon a time",4,5,5,1209,6021,0.83,0.80,1
+[bench] Once upon a time  max=15  ttft=1237ms total=18264ms decode=0.82tok/s
+"Once upon a time",4,15,15,1237,18264,0.82,0.80,1
+[bench] Once upon a time  max=30  ttft=1252ms total=37009ms decode=0.81tok/s
+"Once upon a time",4,30,30,1252,37009,0.81,0.80,1
+
+[bench] summary: n=9  avg_ttft=1227ms  avg_decode=0.82tok/s  avg_total=20428ms
