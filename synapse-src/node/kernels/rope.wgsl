@@ -25,11 +25,10 @@
 // reused across all forward passes. head_dim/2 entries per position
 // because each entry applies to a pair.
 //
-// Gemma 3's rotation is the INTERLEAVED variant: pairs are (0,1),
-// (2,3), (4,5), ... NOT the split-half variant (0, d/2), (1, d/2+1), ...
-// that some Llama codepaths use. Confirm per model config; HF's
-// modeling_gemma3.py uses interleaved. This kernel implements
-// interleaved.
+// Gemma 3's rotation is the ROTATE_HALF variant (HF default):
+//   out[:, i]        = x[:, i]        * cos - x[:, i + d/2] * sin
+//   out[:, i + d/2]  = x[:, i + d/2]  * cos + x[:, i]       * sin
+// for i in [0, d/2). Proven by CPU-vs-HF parity (research/gemma_parity).
 //
 // Optimizations:
 //   - Each thread handles one (head, pair) for one position. Workgroup
@@ -76,12 +75,11 @@ fn rope(
   let c = cos_cache[abs_pos * D2 + pair];
   let s = sin_cache[abs_pos * D2 + pair];
 
-  // Base offset for the (pos, head) segment in x. Interleaved layout:
-  // dim 2*pair is even, 2*pair+1 is odd.
-  let base = pos_in_seq * H * D + head * D + pair * 2u;
-  let x_even = x[base];
-  let x_odd  = x[base + 1u];
+  // rotate_half: element `pair` pairs with element `pair + D/2`.
+  let head_base = pos_in_seq * H * D + head * D;
+  let x_lo = x[head_base + pair];
+  let x_hi = x[head_base + pair + D2];
 
-  x[base]     = x_even * c - x_odd * s;
-  x[base + 1u] = x_even * s + x_odd * c;
+  x[head_base + pair]       = x_lo * c - x_hi * s;
+  x[head_base + pair + D2]  = x_hi * c + x_lo * s;
 }

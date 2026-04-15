@@ -140,20 +140,26 @@ export class ShardLoader {
     if (this.manifest.rope_cos_file && this.manifest.rope_sin_file) {
       try {
         const base = shardUrl.substring(0, shardUrl.lastIndexOf("/") + 1);
-        const cosUrl = base + this.manifest.rope_cos_file;
-        const sinUrl = base + this.manifest.rope_sin_file;
-        const [cosData, sinData] = await Promise.all([
-          this._fetchWithCache(cosUrl, `${cachePrefix}:${cosUrl}`, () => {}),
-          this._fetchWithCache(sinUrl, `${cachePrefix}:${sinUrl}`, () => {}),
-        ]);
-        // Both caches are raw float32, [max_pos, head_dim/2]. Upload
-        // directly as GPUBuffers and expose via this.ropeCosBuffer /
-        // this.ropeSinBuffer for the pipeline to bind.
-        const cosF32 = new Float32Array(cosData);
-        const sinF32 = new Float32Array(sinData);
-        this.ropeCosBuffer = this._createGPUBuffer("rope_cos", cosF32, [cosF32.length]);
-        this.ropeSinBuffer = this._createGPUBuffer("rope_sin", sinF32, [sinF32.length]);
-        console.log(`[shard-loader] uploaded RoPE caches (${cosF32.length} f32 each)`);
+        const fetches = [
+          ["ropeCosBuffer", this.manifest.rope_cos_file, "rope_cos"],
+          ["ropeSinBuffer", this.manifest.rope_sin_file, "rope_sin"],
+        ];
+        // Gemma 3: optional second RoPE cache pair for sliding_attention
+        // layers (θ=10000) vs full_attention layers (θ=1000000). Splitter
+        // emits both when rope_scaling has dual bases.
+        if (this.manifest.rope_cos_local_file && this.manifest.rope_sin_local_file) {
+          fetches.push(
+            ["ropeCosLocalBuffer", this.manifest.rope_cos_local_file, "rope_cos_local"],
+            ["ropeSinLocalBuffer", this.manifest.rope_sin_local_file, "rope_sin_local"],
+          );
+        }
+        for (const [prop, file, label] of fetches) {
+          const url = base + file;
+          const data = await this._fetchWithCache(url, `${cachePrefix}:${url}`, () => {});
+          const f32 = new Float32Array(data);
+          this[prop] = this._createGPUBuffer(label, f32, [f32.length]);
+        }
+        console.log(`[shard-loader] uploaded RoPE caches (${fetches.length} buffers)`);
       } catch (e) {
         console.warn(`[shard-loader] RoPE cache load failed: ${e.message}`);
       }

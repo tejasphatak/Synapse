@@ -37,7 +37,7 @@ struct Params1 {
   num_kv_heads:  u32,
   head_dim:      u32,
   window_size:   u32,  // 0 = no sliding window (pure causal)
-  _pad1:         u32,
+  inv_sqrt_scale: f32, // 1/sqrt(query_pre_attn_scalar). Caller pre-computes.
   _pad2:         u32,
   _pad3:         u32,
 };
@@ -89,8 +89,7 @@ fn qk_scores(
   for (var d: u32 = 0u; d < D; d = d + 1u) {
     dot = dot + q1[q_base + d] * k1[k_base + d];
   }
-  let inv_sqrt_d = 1.0 / sqrt(f32(D));
-  scores[scores_idx] = dot * inv_sqrt_d;
+  scores[scores_idx] = dot * params1.inv_sqrt_scale;
 }
 
 // Pass 2: row-wise softmax. Same shape semantics as attention.wgsl.

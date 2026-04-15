@@ -34,11 +34,14 @@
 //   - gamma buffer length == hidden_size.
 //   - eps is typically 1e-6 for Gemma (smaller than GPT-2's 1e-5).
 
+// Gemma 3 variant: y = x / rms * (1 + gamma). Toggle via params.gamma_bias
+// (0.0 for Llama/GPT-style pure-gamma, 1.0 for Gemma 3 family).
+
 struct Params {
   seq_len:     u32,
   hidden_size: u32,
   eps:         f32,
-  _pad:        f32,  // 16-byte align
+  gamma_bias:  f32,  // 0.0 → y = x/rms * gamma;  1.0 → y = x/rms * (1 + gamma)
 };
 
 @group(0) @binding(0) var<storage, read>       input:   array<f32>;
@@ -96,7 +99,7 @@ fn rmsnorm(
   i = tid;
   loop {
     if (i >= H) { break; }
-    output[base + i] = input[base + i] * rrms * gamma[i];
+    output[base + i] = input[base + i] * rrms * (params.gamma_bias + gamma[i]);
     i = i + 256u;
   }
 }

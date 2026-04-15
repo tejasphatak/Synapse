@@ -54,7 +54,9 @@ export class Pipeline {
     for (const name of shaderNames) {
       try {
         const resp = await fetch(`/node/kernels/${name}.wgsl?v=${Date.now()}`);
-        if (!resp.ok) {
+        // Treat missing `.ok` as truthy (test mocks don't set it); only skip
+        // on explicit false. Real Response objects always set it.
+        if (resp.ok === false) {
           console.warn(`[pipeline] skipping kernel ${name}: ${resp.status}`);
           continue;
         }
@@ -255,6 +257,45 @@ export class Pipeline {
     pass.end();
     this.device.queue.submit([encoder.finish()]);
 
+    return { buffer: outputBuf, shape: [seqLen, hiddenSize] };
+  }
+
+  /**
+   * Gemma embedding: token IDs → hidden state [seq_len, hidden_size].
+   * No positional embedding (RoPE handles that). Output is scaled by
+   * sqrt(hidden_size) per Gemma 3 spec (embed_scale).
+   *
+   * Implementation: CPU-side gather from the loader's float16 tensor bytes
+   * directly into a Float32Array, then upload. Simpler than a dedicated
+   * WGSL kernel and runs once per prefill so perf cost is negligible.
+   */
+  async gemmaEmbed(tokenIds) {
+    const { hiddenSize } = this.config;
+    const seqLen = tokenIds.length;
+    const name = "model.embed_tokens.weight";
+    const meta = this.loader.getTensorMeta ? this.loader.getTensorMeta(name) : null;
+    const gpuBuf = this.loader.getBuffer(name);
+    if (!gpuBuf) throw new Error(`Gemma embed: ${name} not loaded`);
+
+    // Read back only the rows we need. Read full embed matrix once (small
+    // relative to attention buffers), gather in JS.
+    const vocabSize = this.loader?.manifest?.vocab_size;
+    if (!vocabSize) throw new Error("Gemma embed: manifest.vocab_size missing");
+    const embedBytes = vocabSize * hiddenSize * 4; // f32 after upload
+    const raw = await this._readBuffer(gpuBuf, 0, embedBytes);
+    const embed = new Float32Array(raw);
+
+    const scale = Math.sqrt(hiddenSize);
+    const out = new Float32Array(seqLen * hiddenSize);
+    for (let i = 0; i < seqLen; i++) {
+      const row = tokenIds[i] * hiddenSize;
+      const dst = i * hiddenSize;
+      for (let j = 0; j < hiddenSize; j++) out[dst + j] = embed[row + j] * scale;
+    }
+
+    const outputBuf = this._createBuffer("gemma_embed_out", out.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(outputBuf, 0, out);
     return { buffer: outputBuf, shape: [seqLen, hiddenSize] };
   }
 
@@ -1122,7 +1163,9 @@ export class Pipeline {
    * RMSNorm: y[i] = x[i] / sqrt(mean(x[i]^2) + eps) * gamma[i].
    * Drop-in for Gemma / Llama / Qwen / Mistral (replaces LayerNorm).
    */
-  async _rmsNorm(inputBuf, seqLen, hiddenSize, gammaBuf, eps = 1e-6) {
+  async _rmsNorm(inputBuf, seqLen, hiddenSize, gammaBuf, eps = 1e-6, gammaBias = 0.0) {
+    // gammaBias: 0.0 for Llama/GPT-style (y = x/rms * gamma),
+    //            1.0 for Gemma 3 family (y = x/rms * (1 + gamma)).
     const outputBuf = this._createBuffer("rms_out", seqLen * hiddenSize * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
     const params = new ArrayBuffer(16);
@@ -1130,7 +1173,7 @@ export class Pipeline {
     view.setUint32(0, seqLen, true);
     view.setUint32(4, hiddenSize, true);
     view.setFloat32(8, eps, true);
-    view.setUint32(12, 0, true);
+    view.setFloat32(12, gammaBias, true);
     const paramBuf = this._createBuffer("rms_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     this.device.queue.writeBuffer(paramBuf, 0, new Uint8Array(params));
 
@@ -1250,7 +1293,7 @@ export class Pipeline {
    * windowSize === 0         → pure causal (no sliding window).
    * windowSize  > 0           → sliding-window causal (Gemma 3 uses 512 on some layers).
    */
-  async _attentionGqa(qBuf, kBuf, vBuf, seqLen, numQHeads, numKvHeads, headDim, windowSize = 0) {
+  async _attentionGqa(qBuf, kBuf, vBuf, seqLen, numQHeads, numKvHeads, headDim, windowSize = 0, invSqrtScale = null) {
     // Scores buffer: [numQHeads, seqLen, seqLen]
     const scoresBuf = this._createBuffer("gqa_scores", numQHeads * seqLen * seqLen * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -1265,6 +1308,7 @@ export class Pipeline {
     v1.setUint32(8, numKvHeads, true);
     v1.setUint32(12, headDim, true);
     v1.setUint32(16, windowSize, true);
+    v1.setFloat32(20, invSqrtScale ?? (1.0 / Math.sqrt(headDim)), true);
     const p1Buf = this._createBuffer("gqa_p1", 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     this.device.queue.writeBuffer(p1Buf, 0, new Uint8Array(p1));
 
@@ -1386,8 +1430,9 @@ export class Pipeline {
    * @param {GPUBuffer} cosBuf / sinBuf — precomputed RoPE caches
    * @returns {Promise<GPUBuffer>} — output buffer [seqLen, hiddenSize]
    */
-  async forwardLayerGemmaPrefill(xBuf, l, seqLen, cfg, cosBuf, sinBuf) {
-    const { hiddenSize, numQHeads, numKvHeads, headDim, intermediateSize, windowSize, rmsEps } = cfg;
+  async forwardLayerGemmaPrefill(xBuf, l, seqLen, cfg, ropeBufs) {
+    const { hiddenSize, numQHeads, numKvHeads, headDim, intermediateSize,
+            windowSize, rmsEps, invSqrtScale, layerTypes } = cfg;
     const prefix = `model.layers.${l}`;
     const getW = (name) => {
       const b = this.loader.getBuffer(`${prefix}.${name}.weight`);
@@ -1395,55 +1440,73 @@ export class Pipeline {
       return b;
     };
 
+    // Per-layer attention type selects (1) sliding-window size and
+    // (2) which RoPE cache to use. Gemma 3 interleaves sliding+full.
+    const isSliding = layerTypes ? layerTypes[l] === "sliding_attention" : (windowSize > 0);
+    const layerWindow = isSliding ? (windowSize || 0) : 0;
+    const cosBuf = isSliding && ropeBufs.cosLocal ? ropeBufs.cosLocal : ropeBufs.cos;
+    const sinBuf = isSliding && ropeBufs.sinLocal ? ropeBufs.sinLocal : ropeBufs.sin;
+
     // ── Attention block ──────────────────────────────────────────
     const residual1 = xBuf;
 
+    // Gemma 3: RMSNorm uses y = x/rms * (1 + gamma). gammaBias = 1.0.
     const ln1 = await this._rmsNorm(xBuf, seqLen, hiddenSize,
-      getW("input_layernorm"), rmsEps);
+      getW("input_layernorm"), rmsEps, 1.0);
 
-    // Q/K/V projections. Gemma's shapes:
-    //   q_proj.weight: [numQHeads*headDim, hiddenSize] → matmul output [seq, numQHeads*headDim]
-    //   k_proj.weight: [numKvHeads*headDim, hiddenSize]
-    //   v_proj.weight: same as k
     const qFull = numQHeads * headDim;
     const kvFull = numKvHeads * headDim;
     const q = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.q_proj"), hiddenSize, qFull);
     const k = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.k_proj"), hiddenSize, kvFull);
     const v = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.v_proj"), hiddenSize, kvFull);
 
-    // RoPE applies to Q and K only, not V. In-place.
+    // Gemma 3 per-head q_norm / k_norm over head_dim — BEFORE RoPE.
+    // Treat Q as (seqLen*numQHeads) rows of headDim; same for K.
+    await this._rmsNormInPlace(q, seqLen * numQHeads, headDim, getW("self_attn.q_norm"), rmsEps, 1.0);
+    await this._rmsNormInPlace(k, seqLen * numKvHeads, headDim, getW("self_attn.k_norm"), rmsEps, 1.0);
+
     await this._rope(q, seqLen, numQHeads,  headDim, cosBuf, sinBuf, 0);
     await this._rope(k, seqLen, numKvHeads, headDim, cosBuf, sinBuf, 0);
 
-    // GQA attention with optional sliding window.
-    const attnOut = await this._attentionGqa(q, k, v, seqLen, numQHeads, numKvHeads, headDim, windowSize || 0);
+    const attnOut = await this._attentionGqa(q, k, v, seqLen,
+      numQHeads, numKvHeads, headDim, layerWindow, invSqrtScale);
 
-    // Output projection back to hidden_size.
     const oProj = await this._matmul(attnOut, seqLen, qFull, getW("self_attn.o_proj"), qFull, hiddenSize);
 
-    const afterAttn = await this._residualAdd(residual1, oProj, seqLen * hiddenSize);
+    // Gemma 3 quirk: post_attention_layernorm is applied to o_proj output
+    // BEFORE the residual add (not after).
+    const oNorm = await this._rmsNorm(oProj, seqLen, hiddenSize,
+      getW("post_attention_layernorm"), rmsEps, 1.0);
+    const afterAttn = await this._residualAdd(residual1, oNorm, seqLen * hiddenSize);
 
-    // ── FFN block ────────────────────────────────────────────────
+    // ── FFN block (pre + post feedforward norms wrap the MLP) ────
     const residual2 = afterAttn;
     const ln2 = await this._rmsNorm(afterAttn, seqLen, hiddenSize,
-      getW("post_attention_layernorm"), rmsEps);
+      getW("pre_feedforward_layernorm"), rmsEps, 1.0);
 
-    // Gated MLP: gate = matmul(h, gate_proj); up = matmul(h, up_proj)
     const gate = await this._matmul(ln2, seqLen, hiddenSize, getW("mlp.gate_proj"), hiddenSize, intermediateSize);
     const up   = await this._matmul(ln2, seqLen, hiddenSize, getW("mlp.up_proj"),   hiddenSize, intermediateSize);
-
-    // gelu(gate) in-place
     const total = seqLen * intermediateSize;
     await this._gelu(gate, total);
-
-    // gated = gelu(gate) * up
     const gated = await this._elementwiseMul(gate, up, total);
-
-    // down = matmul(gated, down_proj)
     const down = await this._matmul(gated, seqLen, intermediateSize, getW("mlp.down_proj"), intermediateSize, hiddenSize);
 
-    const finalOut = await this._residualAdd(residual2, down, seqLen * hiddenSize);
+    // post_feedforward_layernorm on MLP output BEFORE residual add.
+    const downNorm = await this._rmsNorm(down, seqLen, hiddenSize,
+      getW("post_feedforward_layernorm"), rmsEps, 1.0);
+    const finalOut = await this._residualAdd(residual2, downNorm, seqLen * hiddenSize);
     return finalOut;
+  }
+
+  /** RMSNorm where the "row" dimension isn't seq_len — e.g. q_norm over
+   *  (seqLen*numHeads) rows of headDim. Thin wrapper over _rmsNorm that
+   *  overwrites inputBuf via copy after norm. */
+  async _rmsNormInPlace(buf, rows, cols, gammaBuf, eps, gammaBias = 0.0) {
+    const out = await this._rmsNorm(buf, rows, cols, gammaBuf, eps, gammaBias);
+    const enc = this.device.createCommandEncoder();
+    enc.copyBufferToBuffer(out, 0, buf, 0, rows * cols * 4);
+    this.device.queue.submit([enc.finish()]);
+    return buf;
   }
 
   /**
@@ -1459,17 +1522,13 @@ export class Pipeline {
    * @param {GPUBuffer} cosBuf / sinBuf — precomputed RoPE caches for the session
    * @returns {Promise<{buffer, shape}>}
    */
-  async forwardLayersGemmaPrefill(hidden, layerStart, layerEnd, cfg, cosBuf, sinBuf) {
+  async forwardLayersGemmaPrefill(hidden, layerStart, layerEnd, cfg, ropeBufs) {
     const seqLen = hidden.shape[0];
     let cur = hidden.buffer;
     const weightBuffers = new Set(this.loader.buffers.values());
 
     for (let l = layerStart; l <= layerEnd; l++) {
-      // Some Gemma 3 layers use sliding-window attention, others use full.
-      // HF's modeling_gemma3 alternates every N layers via a pattern;
-      // for now we honour the global sliding_window config on all layers.
-      // A per-layer override can come from cfg.layerTypes[l] if needed.
-      cur = await this.forwardLayerGemmaPrefill(cur, l, seqLen, cfg, cosBuf, sinBuf);
+      cur = await this.forwardLayerGemmaPrefill(cur, l, seqLen, cfg, ropeBufs);
 
       // Clean up temp buffers between layers to bound peak memory on
       // mobile (same pattern as forwardLayersPrefill for GPT-2).
@@ -1497,7 +1556,8 @@ export class Pipeline {
    */
   async gemmaFinalNormAndLmHead(hidden, cfg, normGamma, headWeight) {
     const seqLen = hidden.shape[0];
-    const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps);
+    // Gemma 3: final RMSNorm also uses (1 + gamma).
+    const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps, 1.0);
     // lm_head.weight shape: [vocab, hidden]. matmul_transB runs input @ W.T.
     const logits = await this._matmulTransB(normed, seqLen, cfg.hiddenSize, headWeight, cfg.vocabSize);
     return { buffer: logits, shape: [seqLen, cfg.vocabSize] };

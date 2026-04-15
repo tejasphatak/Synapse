@@ -627,8 +627,11 @@ export class SynapseNode {
     try {
       const tokenIds = msg.tokenIds;
 
-      // Embed all tokens
-      let hidden = await this.pipeline.embed(tokenIds);
+      // Embed all tokens — arch-specific path.
+      const arch0 = this.loader?.manifest?.arch;
+      let hidden = arch0 === "gemma"
+        ? await this.pipeline.gemmaEmbed(tokenIds)
+        : await this.pipeline.embed(tokenIds);
 
       // Diagnostic: stats of embedding output. If NaN here, embed kernel
       // is broken. If clean here but NaN after forwardLayersPrefill, the
@@ -663,6 +666,7 @@ export class SynapseNode {
       const arch = this.loader?.manifest?.arch;
       if (arch === "gemma") {
         const m = this.loader.manifest;
+        const qAttn = m.query_pre_attn_scalar || m.head_dim;
         const cfg = {
           hiddenSize:       m.hidden_size,
           numQHeads:        m.num_attention_heads,
@@ -672,12 +676,18 @@ export class SynapseNode {
           windowSize:       m.sliding_window || 0,
           rmsEps:           m.rms_norm_eps || 1e-6,
           vocabSize:        m.vocab_size,
+          invSqrtScale:     1.0 / Math.sqrt(qAttn),
+          layerTypes:       m.layer_types || null,
         };
-        const cos = this.loader.ropeCosBuffer;
-        const sin = this.loader.ropeSinBuffer;
-        if (!cos || !sin) throw new Error("Gemma forward: RoPE cos/sin buffers not loaded");
+        const ropeBufs = {
+          cos:      this.loader.ropeCosBuffer,
+          sin:      this.loader.ropeSinBuffer,
+          cosLocal: this.loader.ropeCosLocalBuffer || null,
+          sinLocal: this.loader.ropeSinLocalBuffer || null,
+        };
+        if (!ropeBufs.cos || !ropeBufs.sin) throw new Error("Gemma forward: RoPE cos/sin buffers not loaded");
         hidden = await this.pipeline.forwardLayersGemmaPrefill(
-          hidden, this.layerStart, this.layerEnd, cfg, cos, sin
+          hidden, this.layerStart, this.layerEnd, cfg, ropeBufs
         );
       } else {
         hidden = await this.pipeline.forwardLayersPrefill(

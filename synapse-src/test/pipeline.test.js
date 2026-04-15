@@ -192,6 +192,8 @@ describe("Pipeline", () => {
         "matmul", "matmul_transB", "attention", "attention_cached",
         "layernorm", "gelu", "residual_add", "embed", "bias_add",
         "head_slice", "head_concat",
+        // Gemma-family kernels
+        "rmsnorm", "rope", "elementwise_mul", "attention_gqa",
       ];
       for (const name of expected) {
         assert.ok(pipeline.shaderModules[name], `shader ${name} should be loaded`);
@@ -211,7 +213,7 @@ describe("Pipeline", () => {
         return { text: async () => "// mock WGSL" };
       };
       await pipeline.init();
-      assert.equal(fetched.length, 11);
+      assert.equal(fetched.length, 15);
       for (const url of fetched) {
         assert.match(url, /\/node\/kernels\/\w+\.wgsl\?v=\d+/);
       }

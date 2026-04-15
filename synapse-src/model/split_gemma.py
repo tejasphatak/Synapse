@@ -105,16 +105,15 @@ def compute_rope_cache(max_pos, head_dim, base=10000.0):
     """
     Return (cos, sin) each shape [max_pos, head_dim / 2], float32.
 
-    Gemma uses the "interleaved pairs" layout: rotations apply to dim pairs
-    (0,1), (2,3), ... so the cache indexes pair i = 0 .. head_dim/2 - 1.
+    HF Gemma 3 uses the "rotate_half" layout (concat halves, not interleaved pairs):
+      out[:, :half] = x[:, :half] * cos - x[:, half:] * sin
+      out[:, half:] = x[:, half:] * cos + x[:, :half] * sin
 
-    Formula: θ_i(p) = p * base^(-2i / head_dim)
+    Formula: θ_i(p) = p * base^(-2i / head_dim), i in [0, head_dim/2)
     """
     assert head_dim % 2 == 0, f"head_dim must be even, got {head_dim}"
     half = head_dim // 2
-    # freqs[i] = base ^ (-2i / head_dim)  for i in [0, half)
     freqs = base ** (-2.0 * np.arange(half, dtype=np.float64) / head_dim)
-    # positions [max_pos, 1] * freqs [1, half] → [max_pos, half]
     positions = np.arange(max_pos, dtype=np.float64).reshape(-1, 1)
     angles = positions * freqs.reshape(1, -1)
     return np.cos(angles).astype(np.float32), np.sin(angles).astype(np.float32)
@@ -123,10 +122,16 @@ def compute_rope_cache(max_pos, head_dim, base=10000.0):
 # ─── Download & convert ───────────────────────────────────────────
 
 def download_model(hf_id, token):
-    """Pull config + weights from HF to local cache. Returns (config dict, weights file path)."""
-    config_path = hf_hub_download(hf_id, "config.json", token=token)
-    with open(config_path) as f:
-        config = json.load(f)
+    """Pull config + weights from HF to local cache. Returns (config dict, weights file path).
+
+    Uses transformers AutoConfig so fields that the architecture fills in at
+    runtime (layer_types, rope_scaling dual bases) are populated, not just
+    the raw JSON which omits them.
+    """
+    from transformers import AutoConfig
+    auto = AutoConfig.from_pretrained(hf_id, token=token)
+    tc = getattr(auto, "text_config", auto)
+    config = tc.to_dict() if hasattr(tc, "to_dict") else dict(tc)
 
     # Find the actual safetensors file(s)
     files = list_repo_files(hf_id, token=token)
@@ -175,7 +180,7 @@ def extract_gemma_text_config(config):
     Pull the text transformer config out of either a Gemma-3-text-only
     config (flat) or a Gemma-4 multi-modal config (nested under text_config).
     """
-    tc = config.get("text_config", config)
+    tc = config.get("text_config", config) if isinstance(config, dict) else config
     fields = {
         "vocab_size":                tc.get("vocab_size"),
         "hidden_size":               tc.get("hidden_size"),
@@ -186,13 +191,16 @@ def extract_gemma_text_config(config):
         "intermediate_size":         tc.get("intermediate_size"),
         "max_position_embeddings":   tc.get("max_position_embeddings", 8192),
         "rope_theta":                tc.get("rope_theta", 10000.0),
-        "rope_scaling":              tc.get("rope_scaling", None),
+        "rope_scaling":              tc.get("rope_scaling") or tc.get("rope_parameters"),
         "sliding_window":            tc.get("sliding_window", None),
         "rms_norm_eps":              tc.get("rms_norm_eps", 1e-6),
         "hidden_activation":         tc.get("hidden_activation", "gelu_pytorch_tanh"),
         "attn_logit_softcapping":    tc.get("attn_logit_softcapping", None),
         "final_logit_softcapping":   tc.get("final_logit_softcapping", None),
         "tie_word_embeddings":       tc.get("tie_word_embeddings", True),
+        "query_pre_attn_scalar":     tc.get("query_pre_attn_scalar", tc.get("head_dim")),
+        "layer_types":               tc.get("layer_types", None),
+        "sliding_window_pattern":    tc.get("sliding_window_pattern", None),
     }
     # Derive head_dim if missing
     if not fields["head_dim"]:
@@ -242,6 +250,10 @@ def build_shards(tensor_refs, text_cfg, num_shards, dtype="float16"):
         "vocab_size": text_cfg["vocab_size"],
         "max_seq_len": text_cfg["max_position_embeddings"],
         "rope_theta": text_cfg["rope_theta"],
+        "rope_scaling": text_cfg.get("rope_scaling"),
+        "query_pre_attn_scalar": text_cfg["query_pre_attn_scalar"],
+        "layer_types": text_cfg.get("layer_types"),
+        "sliding_window_pattern": text_cfg.get("sliding_window_pattern"),
         "sliding_window": text_cfg["sliding_window"],
         "rms_norm_eps": text_cfg["rms_norm_eps"],
         "hidden_activation": text_cfg["hidden_activation"],
@@ -259,6 +271,8 @@ def build_shards(tensor_refs, text_cfg, num_shards, dtype="float16"):
         "shared_dtype": dtype,
         "rope_cos_file": "rope_cos.bin",
         "rope_sin_file": "rope_sin.bin",
+        "rope_cos_local_file": "rope_cos_local.bin",
+        "rope_sin_local_file": "rope_sin_local.bin",
         "tensors": [],
     }
 
@@ -312,16 +326,21 @@ def build_shards(tensor_refs, text_cfg, num_shards, dtype="float16"):
                 off += written
         print(f"    {off / 1024 / 1024:.1f} MB")
 
-    # Write RoPE cos/sin caches
-    print(f"  computing RoPE cache (max_pos={text_cfg['max_position_embeddings']}, head_dim={text_cfg['head_dim']}, theta={text_cfg['rope_theta']})")
-    cos, sin = compute_rope_cache(
-        text_cfg["max_position_embeddings"],
-        text_cfg["head_dim"],
-        base=text_cfg["rope_theta"],
-    )
-    (SHARDS_DIR / "rope_cos.bin").write_bytes(cos.astype(np.float32).tobytes())
-    (SHARDS_DIR / "rope_sin.bin").write_bytes(sin.astype(np.float32).tobytes())
-    print(f"    rope_cos: {cos.nbytes / 1024:.1f} KB  rope_sin: {sin.nbytes / 1024:.1f} KB")
+    # Write RoPE cos/sin caches — global (full_attention) + local (sliding_attention)
+    rs = text_cfg.get("rope_scaling") or {}
+    theta_full  = (rs.get("full_attention")    or {}).get("rope_theta", text_cfg["rope_theta"])
+    theta_local = (rs.get("sliding_attention") or {}).get("rope_theta", text_cfg["rope_theta"])
+    max_pos, head_dim = text_cfg["max_position_embeddings"], text_cfg["head_dim"]
+
+    print(f"  computing RoPE caches (max_pos={max_pos}, head_dim={head_dim}, theta_full={theta_full}, theta_local={theta_local})")
+    cos_full, sin_full = compute_rope_cache(max_pos, head_dim, base=theta_full)
+    (SHARDS_DIR / "rope_cos.bin").write_bytes(cos_full.tobytes())
+    (SHARDS_DIR / "rope_sin.bin").write_bytes(sin_full.tobytes())
+    cos_loc, sin_loc = compute_rope_cache(max_pos, head_dim, base=theta_local)
+    (SHARDS_DIR / "rope_cos_local.bin").write_bytes(cos_loc.tobytes())
+    (SHARDS_DIR / "rope_sin_local.bin").write_bytes(sin_loc.tobytes())
+    print(f"    rope (full):  {cos_full.nbytes / 1024:.1f} KB × 2")
+    print(f"    rope (local): {cos_loc.nbytes / 1024:.1f} KB × 2")
 
     with open(SHARDS_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
