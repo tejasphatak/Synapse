@@ -134,6 +134,31 @@ export class ShardLoader {
       onProgress?.(uploadCount, totalTensors, "upload");
     }
 
+    // Gemma-family: also fetch precomputed RoPE cos/sin caches and upload
+    // as GPU buffers. Only present when split_gemma.py produced the
+    // manifest (manifest.rope_cos_file is set). GPT-2 path ignores this.
+    if (this.manifest.rope_cos_file && this.manifest.rope_sin_file) {
+      try {
+        const base = shardUrl.substring(0, shardUrl.lastIndexOf("/") + 1);
+        const cosUrl = base + this.manifest.rope_cos_file;
+        const sinUrl = base + this.manifest.rope_sin_file;
+        const [cosData, sinData] = await Promise.all([
+          this._fetchWithCache(cosUrl, `${cachePrefix}:${cosUrl}`, () => {}),
+          this._fetchWithCache(sinUrl, `${cachePrefix}:${sinUrl}`, () => {}),
+        ]);
+        // Both caches are raw float32, [max_pos, head_dim/2]. Upload
+        // directly as GPUBuffers and expose via this.ropeCosBuffer /
+        // this.ropeSinBuffer for the pipeline to bind.
+        const cosF32 = new Float32Array(cosData);
+        const sinF32 = new Float32Array(sinData);
+        this.ropeCosBuffer = this._createGPUBuffer("rope_cos", cosF32, [cosF32.length]);
+        this.ropeSinBuffer = this._createGPUBuffer("rope_sin", sinF32, [sinF32.length]);
+        console.log(`[shard-loader] uploaded RoPE caches (${cosF32.length} f32 each)`);
+      } catch (e) {
+        console.warn(`[shard-loader] RoPE cache load failed: ${e.message}`);
+      }
+    }
+
     return {
       shardId,
       layerStart: shardConfig.layer_start,
