@@ -8,39 +8,66 @@
   <link rel="icon" href="assets/favicon.ico">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    :root{--purple:#7c5cff;--green:#00ff88;--teal:#4ecdc4;--bg:#0a0a0f;--surface:#111118;--surface2:#16161f;--border:#1e1e2a;--text:#e0e0e0;--muted:#888;--dim:#555}
+    :root{
+      --bg: #fafaf7;          /* warm paper white */
+      --surface: #ffffff;     /* clean card */
+      --surface2: #f4f3ee;    /* subtle grey-warm */
+      --border: #e6e3da;      /* soft divider */
+      --text: #23262b;        /* near-black with warmth */
+      --muted: #6a6a67;       /* calm grey */
+      --dim: #9a9a96;
+      --green: #3f8f5c;       /* forest */
+      --green-soft: #6aa96a;  /* leaf */
+      --teal: #3a8f87;
+      --accent: #b86b3e;      /* terracotta, sparing */
+    }
     *{margin:0;padding:0;box-sizing:border-box}
     html{scroll-behavior:smooth}
-    body{font-family:'Inter',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
-    nav{position:fixed;top:0;width:100%;z-index:100;background:rgba(10,10,15,0.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:16px 24px}
+    body{
+      font-family:'Inter',-apple-system,system-ui,sans-serif;
+      background: var(--bg);
+      background-image:
+        radial-gradient(900px 600px at 85% 0%, rgba(106,169,106,0.08), transparent 60%),
+        radial-gradient(800px 500px at 15% 100%, rgba(58,143,135,0.06), transparent 55%);
+      background-attachment: fixed;
+      color: var(--text);
+      line-height: 1.7;
+    }
+    nav{position:fixed;top:0;width:100%;z-index:100;background:rgba(250,250,247,0.88);backdrop-filter:blur(14px);border-bottom:1px solid var(--border);padding:16px 24px}
     nav .inner{max-width:1100px;margin:0 auto;display:flex;justify-content:space-between;align-items:center}
-    nav .logo{font-weight:800;font-size:1.1rem;letter-spacing:0.08em;background:linear-gradient(135deg,var(--purple),var(--green));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    nav .logo{font-weight:800;font-size:1.1rem;letter-spacing:0.08em;color:var(--green)}
     nav .links a{color:var(--muted);text-decoration:none;font-size:0.85rem;font-weight:500;margin-left:28px;transition:color 0.2s}
-    nav .links a:hover{color:#fff}
-    main{max-width:880px;margin:120px auto 80px;padding:0 24px}
-    h1{font-size:2.6rem;font-weight:900;background:linear-gradient(135deg,var(--purple),var(--teal));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:0.6rem;letter-spacing:-0.02em}
-    .lede{color:var(--muted);font-size:1.05rem;margin-bottom:3rem;max-width:640px}
-    h2{font-size:1.45rem;font-weight:700;margin:2.4rem 0 1rem;color:#fff;letter-spacing:-0.01em}
-    h3{font-size:1.05rem;font-weight:600;margin:1.4rem 0 0.5rem;color:var(--teal)}
+    nav .links a:hover{color:var(--text)}
+    main{max-width:820px;margin:120px auto 80px;padding:0 24px}
+    h1{font-size:2.6rem;font-weight:800;color:var(--text);margin-bottom:0.6rem;letter-spacing:-0.02em}
+    h1::after{content:"";display:block;width:56px;height:3px;background:var(--green-soft);border-radius:2px;margin-top:0.6rem}
+    .lede{color:var(--muted);font-size:1.05rem;margin-bottom:2.6rem;max-width:640px}
+    h2{font-size:1.45rem;font-weight:700;margin:2.6rem 0 1rem;color:var(--text);letter-spacing:-0.01em}
+    h3{font-size:1.03rem;font-weight:600;margin:1.3rem 0 0.5rem;color:var(--green)}
     p{color:var(--text);margin-bottom:0.9rem}
     ul{color:var(--text);padding-left:1.2rem;margin-bottom:1rem}
     li{margin-bottom:0.35rem}
+    code{background:var(--surface2);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:0.85em;color:var(--accent)}
     .pill{display:inline-block;font-size:0.72rem;padding:2px 10px;border-radius:999px;font-weight:600;letter-spacing:0.04em;vertical-align:middle;margin-right:8px}
-    .p-now{background:rgba(0,255,136,0.12);color:var(--green);border:1px solid rgba(0,255,136,0.3)}
-    .p-next{background:rgba(124,92,255,0.12);color:var(--purple);border:1px solid rgba(124,92,255,0.3)}
-    .p-later{background:rgba(78,205,196,0.1);color:var(--teal);border:1px solid rgba(78,205,196,0.25)}
-    .p-risk{background:rgba(255,100,100,0.1);color:#ff8080;border:1px solid rgba(255,100,100,0.25)}
-    .block{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.3rem 1.5rem;margin:1rem 0}
-    .block strong{color:#fff}
-    .tagline{color:var(--muted);font-size:0.9rem;font-style:italic;border-left:2px solid var(--purple);padding-left:0.9rem;margin:1.2rem 0}
-    footer{max-width:880px;margin:4rem auto 2rem;padding:0 24px;color:var(--dim);font-size:0.8rem;text-align:center}
-    a{color:var(--teal)}
+    .p-now{background:rgba(63,143,92,0.12);color:var(--green);border:1px solid rgba(63,143,92,0.28)}
+    .p-next{background:rgba(58,143,135,0.12);color:var(--teal);border:1px solid rgba(58,143,135,0.3)}
+    .p-later{background:rgba(184,107,62,0.1);color:var(--accent);border:1px solid rgba(184,107,62,0.28)}
+    .p-risk{background:rgba(180,120,40,0.08);color:#a0672b;border:1px solid rgba(180,120,40,0.25)}
+    .block{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.25rem 1.4rem;margin:1rem 0;box-shadow:0 2px 12px rgba(70,80,60,0.04)}
+    .block strong{color:var(--text)}
+    .tagline{color:var(--muted);font-size:0.95rem;font-style:italic;border-left:3px solid var(--green-soft);padding-left:0.95rem;margin:1.2rem 0}
+    footer{max-width:820px;margin:4rem auto 2rem;padding:0 24px;color:var(--muted);font-size:0.8rem;text-align:center}
+    a{color:var(--green);text-decoration:none;border-bottom:1px dotted rgba(63,143,92,0.4)}
+    a:hover{color:var(--text);border-bottom-color:var(--text)}
   </style>
 </head>
 <body>
   <nav>
     <div class="inner">
-      <a href="/" style="text-decoration:none" class="logo">SYNAPSE</a>
+      <a href="/" style="text-decoration:none;border:0;display:inline-flex;align-items:center;gap:0.55rem">
+        <img src="assets/synapse-logo.svg" alt="Synapse" width="28" height="28" style="border-radius:7px">
+        <span class="logo">SYNAPSE</span>
+      </a>
       <div class="links">
         <a href="/#how">How It Works</a>
         <a href="vision.html" style="color:#fff">Vision</a>
@@ -62,6 +89,22 @@
       The bet: useful AI will run on the devices we already own, not in rented data centres.
     </div>
 
+    <div class="block" style="border-color:rgba(0,255,136,0.35);background:linear-gradient(180deg,rgba(0,255,136,0.06),rgba(78,205,196,0.04))">
+      <h3 style="color:var(--green);margin-top:0">🌱 Running on idle GPUs you already paid for</h3>
+      <p style="margin-bottom:0.4rem">
+        Every hyperscale AI query today spins up a new rack in a data centre that costs power,
+        water, and concrete to build and run. Synapse runs on devices that are <em>already on,
+        already plugged in, already idle</em>. A phone unlocked on your desk. A laptop watching YouTube.
+        An Xbox between matches. The <strong>marginal energy</strong> for them to contribute a few
+        tokens is the delta between idle-GPU and busy-GPU — orders of magnitude less than waking a
+        dedicated accelerator from zero.
+      </p>
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:0">
+        No new silicon fab. No new water for cooling. No new power line to the data centre.
+        Just compute that was going to happen anyway, pointed at something useful.
+      </p>
+    </div>
+
     <div class="block" style="border-color:rgba(124,92,255,0.3);background:rgba(124,92,255,0.05)">
       <h3 style="color:var(--purple);margin-top:0">A P2P network for intelligence, not piracy</h3>
       <p style="margin-bottom:0.4rem">
@@ -78,9 +121,38 @@
 
     <div class="block">
       <h3><span class="pill p-now">live</span> Gemma 3 1B across browser GPUs</h3>
-      <p>End-to-end inference in under 100MB per-device shards. <strong>99.99% numerical parity</strong>
-      with HuggingFace reference — validated layer-by-layer, committed in
-      <a href="https://github.com/tejasphatak/Synapse/tree/main/research/gemma_parity">research/gemma_parity</a>.</p>
+      <p>End-to-end inference with <strong>99.99% numerical parity</strong> against the
+      HuggingFace reference — validated layer-by-layer, committed in
+      <a href="https://github.com/tejasphatak/Synapse/tree/main/research/gemma_parity">research/gemma_parity</a>.
+      The port took five distinct bugs to land at that number: matmul layout, GELU return
+      capture, attention bind-group index, embedding buffer size, int8 wire quantization.
+      Each fix has a public commit and a numpy golden vector.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-now">measured</span> Where the numbers actually are (2026-04-15)</h3>
+      <ul style="margin-top:0.4rem">
+        <li><strong>Parity vs HuggingFace:</strong> max |Δlogit| = <code>0.0001</code>, top-5 tokens
+        identical in order. 20/20 of top-20 shared.</li>
+        <li><strong>Decode throughput:</strong> <code>0.4–0.5 tok/s</code> on a heterogeneous
+        phone fleet (Qualcomm Pixel + Samsung + Apple + Xbox via Edge). Governed by mobile GPU
+        compute on the slowest shard, not network.</li>
+        <li><strong>Prefill:</strong> <code>~7 s</code> for a 4-token prompt across three shards
+        cold. Warm: ~1 s.</li>
+        <li><strong>Per-token GPU time:</strong> <code>~300 ms</code> per 8-layer forward on a
+        mid-range mobile GPU. Network + serialization: <code>~20 ms</code> per hop with P2P.</li>
+        <li><strong>Shard sizes:</strong> 576 MB shared (embeddings, norm) + 3× ~410–512 MB
+        per-device (8–10 layers each). Cached in IndexedDB so first-load is the only hurt.</li>
+        <li><strong>Fleet vendors observed in-session:</strong> qualcomm, nvidia, intel, arm,
+        img-tec, apple, and Xbox (reporting 2 GB WebGPU buffer).</li>
+        <li><strong>Wire:</strong> fp32 activations, 4.6 KB/hop, reliable ordered WebRTC data
+        channel (with coord relay as fallback). int8 quantization was tried and reverted —
+        crushed Gemma's wide dynamic range.</li>
+      </ul>
+      <p style="margin-top:0.6rem;color:var(--muted);font-size:0.88rem">
+        These numbers are from a real fleet of user devices, not a lab bench. They move with
+        every commit. Anything older than this page's last-updated date is history, not status.
+      </p>
     </div>
 
     <div class="block">
@@ -253,12 +325,34 @@
 
     <h2>Principles</h2>
     <ul>
+      <li><strong>Be good.</strong> No weapons work. No surveillance plumbing. No dark patterns. Refuse the missions that shouldn't be accepted.</li>
       <li><strong>No sales.</strong> This is a research + access project. Money is a byproduct if it ever shows up.</li>
+      <li><strong>Free forever.</strong> Same code, same license, for everyone. No community-vs-enterprise tiers.</li>
       <li><strong>No PII on the wire.</strong> Vendor tags and shard IDs yes; IPs and prompts never.</li>
       <li><strong>No dark defaults.</strong> Contribute is opt-in visible. A background tab never does computation the user didn't see.</li>
       <li><strong>Rigor over vibes.</strong> Every kernel has a numpy reference. Every claim has a test. Every commit has a why.</li>
       <li><strong>Open by default.</strong> Source, research, and findings are public. Private is an exception that needs a reason.</li>
     </ul>
+
+    <h2 style="margin-top:3rem">Got questions?</h2>
+    <div class="block" style="border-color:rgba(0,255,136,0.35);background:linear-gradient(180deg,rgba(0,255,136,0.06),rgba(78,205,196,0.04));text-align:center">
+      <p style="font-size:1.05rem;margin-bottom:1rem">
+        Ask Synapse. No, literally — ask <em>Synapse itself</em>.
+      </p>
+      <p style="margin-bottom:1rem">
+        The fleet you just read about will try to answer you. It runs on real volunteer browsers
+        with real GPUs. Tokens stream through phones you don't own, rendered in a tab you do.
+      </p>
+      <p style="margin-bottom:1.2rem">
+        <a href="https://synapse.webmind.sh"
+           style="display:inline-block;padding:0.7rem 1.4rem;background:linear-gradient(135deg,var(--green),var(--teal));color:#0a0a0f;font-weight:700;border-radius:10px;text-decoration:none;letter-spacing:0.03em">
+          Go ask Synapse →
+        </a>
+      </p>
+      <p style="color:var(--muted);font-size:0.85rem;margin-bottom:0">
+        Full circle: a page about distributed LLM inference, fielded by distributed LLM inference.
+      </p>
+    </div>
   </main>
 
   <footer>
@@ -266,6 +360,7 @@
       Synapse is experimental infrastructure. Built as a research project.
       <a href="https://github.com/tejasphatak/Synapse">Source on GitHub</a>.
     </p>
+    <p style="margin-top:0.5rem;color:var(--dim)">Last updated 2026-04-15 · living document · open-source</p>
   </footer>
 </body>
 </html>
