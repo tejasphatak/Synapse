@@ -404,7 +404,7 @@ export class SynapseNode {
       );
 
       if (this.isLastNode) {
-        await this._produceOutput(hidden, msg.requestId);
+        await this._produceOutput(hidden, msg.requestId, msg.temperature ?? 1.0);
       } else {
         // Include seqPos so downstream nodes know the sequence length
         await this._sendActivation(hidden, msg.requestId, tokenIds.length);
@@ -449,7 +449,7 @@ export class SynapseNode {
       );
 
       if (this.isLastNode) {
-        await this._produceOutput(hidden, msg.requestId);
+        await this._produceOutput(hidden, msg.requestId, msg.temperature ?? 1.0);
       } else {
         await this._sendActivation(hidden, msg.requestId, msg.seqPos + 1);
       }
@@ -656,9 +656,9 @@ export class SynapseNode {
   /**
    * Produce final output: run output head, sample token, send OUTPUT.
    */
-  async _produceOutput(hidden, requestId) {
+  async _produceOutput(hidden, requestId, temperature = 1.0) {
     const logitsTensor = await this.pipeline.outputHead(hidden);
-    const tokenId = await this.pipeline.sampleToken(logitsTensor, 0.8);
+    const tokenId = await this.pipeline.sampleToken(logitsTensor, temperature);
 
     if (this.useBinaryProtocol) {
       const numericId = requestIdToUint32(requestId);

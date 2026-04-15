@@ -434,12 +434,13 @@ function wsConnectionHandler(ws, req) {
 
       if (msg.type === "PROMPT_INFER") {
         const maxTokens = msg.maxTokens || 30;
+        const temperature = msg.temperature; // may be undefined; defaults downstream
         const genId = `gen-${++requestCounter}-${Date.now()}`;
 
         const gen = generations.create(genId, msg.tokenIds, maxTokens);
         gen.promptWs = ws;
 
-        const result = startInference(msg.tokenIds, genId);
+        const result = startInference(msg.tokenIds, genId, { temperature });
         if (result.ok) {
           promptClients.get(ws)?.pendingRequests.set(genId, true);
           ws.send(JSON.stringify({ type: "INFER_STARTED", requestId: genId }));
@@ -861,7 +862,7 @@ function tryAssignShards() {
 
 // ─── Inference Trigger ────────────────────────────────────────────
 
-function startInference(tokenIds, generationId) {
+function startInference(tokenIds, generationId, options = {}) {
   if (!topology.isPipelineReady()) {
     return { ok: false, error: "Pipeline not ready — waiting for all nodes" };
   }
@@ -881,8 +882,13 @@ function startInference(tokenIds, generationId) {
   const gen = generations.get(requestId);
   if (gen) gen._binaryReqId = binaryReqId;
 
-  const msg = createInferenceRequestMessage(requestId, tokenIds);
+  const msg = createInferenceRequestMessage(requestId, tokenIds, {
+    temperature: options.temperature,
+  });
   msg.binaryRequestId = binaryReqId; // nodes use this for binary wire format
+
+  // Stash temperature on the generation so continueGeneration can reuse it for decode steps
+  if (gen && options.temperature !== undefined) gen._temperature = options.temperature;
 
   firstNode.ws.send(JSON.stringify(msg));
 
@@ -931,6 +937,7 @@ function continueGeneration(genId, tokenId, seqPos) {
     binaryRequestId: binaryReqId || null,
     timestamp: Date.now(),
   };
+  if (gen && gen._temperature !== undefined) msg.temperature = gen._temperature;
 
   firstNode.ws.send(JSON.stringify(msg));
 

@@ -38,9 +38,23 @@ try {
 
 const COORD = process.env.COORD || "http://localhost:8080";
 const WS_URL = COORD.replace(/^http/, "ws") + "/?type=prompt";
-const PROMPT = process.argv[2] || "The universe is";
-const MAX_TOKENS = parseInt(process.argv[3] || "20", 10);
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || "180000", 10);
+
+// Parse positional prompt + max_tokens + optional --temperature flag
+const args = process.argv.slice(2);
+let TEMPERATURE;
+const positional = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--temperature" || args[i] === "-t") {
+    TEMPERATURE = parseFloat(args[++i]);
+  } else if (args[i].startsWith("--temperature=")) {
+    TEMPERATURE = parseFloat(args[i].split("=")[1]);
+  } else {
+    positional.push(args[i]);
+  }
+}
+const PROMPT = positional[0] || "The universe is";
+const MAX_TOKENS = parseInt(positional[1] || "20", 10);
 
 async function http(path, body) {
   const r = await fetch(`${COORD}${path}`, {
@@ -87,13 +101,15 @@ ws.on("message", async (data) => {
       console.log(`NODES: ${summary}`);
       console.log(`\nOUTPUT:`);
       t_infer_start = Date.now();
-      ws.send(
-        JSON.stringify({
-          type: "PROMPT_INFER",
-          tokenIds: tok.tokenIds,
-          maxTokens: MAX_TOKENS,
-        }),
-      );
+      const request = {
+        type: "PROMPT_INFER",
+        tokenIds: tok.tokenIds,
+        maxTokens: MAX_TOKENS,
+      };
+      if (TEMPERATURE !== undefined && !Number.isNaN(TEMPERATURE)) {
+        request.temperature = TEMPERATURE;
+      }
+      ws.send(JSON.stringify(request));
     }
     return;
   }

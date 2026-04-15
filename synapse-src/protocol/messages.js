@@ -119,14 +119,18 @@ export function createTopologyUpdateMessage(nodes, pipeline) {
 
 /**
  * Coordinator sends an inference request to the first node in the pipeline.
+ * Optional `options.temperature` controls sampling softness on the last node
+ * (1.0 = raw softmax, <1 sharpens toward argmax, >1 softens/diversifies).
  */
-export function createInferenceRequestMessage(requestId, tokenIds) {
-  return {
+export function createInferenceRequestMessage(requestId, tokenIds, options = {}) {
+  const msg = {
     type: MessageType.INFERENCE_REQUEST,
     requestId,
     tokenIds,
     timestamp: Date.now(),
   };
+  if (options.temperature !== undefined) msg.temperature = options.temperature;
+  return msg;
 }
 
 /**
@@ -234,11 +238,16 @@ export function validateMessage(msg) {
     return { valid: false, error: "Message must be a non-null object" };
   }
 
-  if (!msg.type || !REQUIRED_FIELDS[msg.type]) {
-    return { valid: false, error: `Unknown message type: ${msg.type}` };
+  if (!msg.type) {
+    return { valid: false, error: "Missing message type" };
   }
 
+  // Unknown types pass validation — coordinator switch/default handles them
   const required = REQUIRED_FIELDS[msg.type];
+  if (!required) {
+    return { valid: true, error: null };
+  }
+
   for (const field of required) {
     if (msg[field] === undefined || msg[field] === null) {
       return { valid: false, error: `Missing required field '${field}' for ${msg.type}` };
