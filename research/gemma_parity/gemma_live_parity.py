@@ -67,19 +67,33 @@ def main():
     # 2) fire an inference (one-shot blocking HTTP path)
     t0 = time.time()
     result = http_post(f"{args.coord}/api/infer",
-                       {"prompt": args.prompt, "maxTokens": args.tokens, "temperature": 1.0})
+                       {"tokenIds": input_ids.tolist()})
     dt = time.time() - t0
     print(f"  /api/infer completed in {dt:.2f}s")
     print(f"  result: {json.dumps(result)[:200]}")
 
-    # 3) fetch sample_top5 logs for this request
-    # The coord exposes /api/logs?event=sample_top5&since=<ts>
+    # 3) fetch sample_top5 logs — /api/infer is fire-and-forget, so poll.
+    # Coord emits a short "req-N" form and a full "req-N-<ts>" form; match
+    # by short prefix so both shapes are accepted.
+    req_id = result.get("requestId", "")
+    short_id = req_id.split("-")
+    short_id = "-".join(short_id[:2]) if len(short_id) >= 2 else req_id
     logs_url = f"{args.coord}/api/logs?event=sample_top5"
-    logs = http_get(logs_url)
-    # Most-recent N entries
-    entries = logs[-args.tokens:] if isinstance(logs, list) else logs.get("logs", [])[-args.tokens:]
+    entries = []
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        logs = http_get(logs_url)
+        pool = logs if isinstance(logs, list) else logs.get("logs", [])
+        matched = [
+            l for l in pool
+            if str((l.get("data", {}) if isinstance(l, dict) else {}).get("requestId", "")).startswith(short_id)
+        ]
+        if matched:
+            entries = matched
+            break
+        time.sleep(2)
     if not entries:
-        print("  ✗ no sample_top5 log events found — is the coord logging at perf level?")
+        print("  ✗ no sample_top5 log events seen within 90s — did inference fire? check coord logs.")
         sys.exit(2)
 
     # 4) numpy full-forward on the input_ids
