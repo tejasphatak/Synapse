@@ -61,3 +61,14 @@ claude-daemon.sh
 vm-backup.sh
 .backups/
 certs/
+
+# MoEfication research — local weight files, don't commit
+research/moefication/model.safetensors
+research/moefication/model-*.safetensors
+research/moefication/tokenizer.json
+research/moefication/tokenizer_config.json
+research/moefication/config.json
+research/moefication/generation_config.json
+synapse-src/model/gemma*/
+synapse-src/model/gemma4-e2b-it/
+synapse-src/model/gemma3-1b-it/
