@@ -163,7 +163,10 @@ describe("SynapseNode Constructor", () => {
     const node = makeNode();
     assert.equal(node.useBinaryProtocol, false);
     assert.equal(node.useQuantization, true);
-    assert.equal(node.useDeltaEncoding, true);
+    // useDeltaEncoding disabled 2026-04-15 — sender/receiver state desync bug.
+    // See commit "disable-delta-encoding-drift-fix". Change the default back
+    // once the dequant-before-store fix lands.
+    assert.equal(node.useDeltaEncoding, false);
     assert.equal(node.useSpeculation, true);
     assert.equal(node.useP2P, true);
     assert.equal(node.useAdaptivePrecision, true);
@@ -874,8 +877,13 @@ describe("SynapseNode Send Activation", () => {
     );
 
     assert.ok(p2pSent !== null, "P2P channel should have been used");
-    // WS should NOT have received it (P2P succeeded)
-    assert.equal(ws._sent.length, 0);
+    // WS may still receive diagnostic NODE_LOG messages (shard_output_stats)
+    // emitted by _sendActivation for perf telemetry. The invariant is that
+    // no ACTIVATION binary frame went over WS when P2P succeeded.
+    const activationFrames = ws._sent.filter(m =>
+      m instanceof ArrayBuffer || (m && typeof m === "object" && m.buffer)
+    );
+    assert.equal(activationFrames.length, 0, "no ACTIVATION over WS when P2P succeeded");
   });
 
   it("falls back to WS when P2P send fails", async () => {

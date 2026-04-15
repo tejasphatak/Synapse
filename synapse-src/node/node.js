@@ -655,10 +655,35 @@ export class SynapseNode {
       // can find where Intel introduces NaN regardless of which shard it's on.
       this.pipeline._subKernelTrace = [];
 
-      // Run assigned layers with KV cache prefill
-      hidden = await this.pipeline.forwardLayersPrefill(
-        hidden, this.layerStart, this.layerEnd, msg.requestId
-      );
+      // Run assigned layers — branch on architecture. Gemma-family models
+      // use a different layer composition (RMSNorm + RoPE + GQA + gated MLP)
+      // so route to forwardLayersGemmaPrefill when manifest.arch === "gemma".
+      // KV cache for Gemma's MQA/GQA is a separate feature to ship; for now
+      // prefill-only on Gemma (no per-token decode yet).
+      const arch = this.loader?.manifest?.arch;
+      if (arch === "gemma") {
+        const m = this.loader.manifest;
+        const cfg = {
+          hiddenSize:       m.hidden_size,
+          numQHeads:        m.num_attention_heads,
+          numKvHeads:       m.num_key_value_heads,
+          headDim:          m.head_dim,
+          intermediateSize: m.intermediate_size,
+          windowSize:       m.sliding_window || 0,
+          rmsEps:           m.rms_norm_eps || 1e-6,
+          vocabSize:        m.vocab_size,
+        };
+        const cos = this.loader.ropeCosBuffer;
+        const sin = this.loader.ropeSinBuffer;
+        if (!cos || !sin) throw new Error("Gemma forward: RoPE cos/sin buffers not loaded");
+        hidden = await this.pipeline.forwardLayersGemmaPrefill(
+          hidden, this.layerStart, this.layerEnd, cfg, cos, sin
+        );
+      } else {
+        hidden = await this.pipeline.forwardLayersPrefill(
+          hidden, this.layerStart, this.layerEnd, msg.requestId
+        );
+      }
 
       if (this.pipeline._nanTrace) {
         this._sendLog("perf", "per_layer_nan_trace", {
