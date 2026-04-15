@@ -564,6 +564,19 @@ export class SynapseNode {
       this._setStatus("error", `Failed to load shard: ${err.message}`);
       this._sendLog("error", "shard_load_error", { error: err.message });
       console.error("[node] Shard load error:", err);
+
+      // Auto-retry: truncation errors and transient network issues are
+      // commonly self-healing on a clean fetch. Retry up to 3 times with
+      // exponential backoff before giving up. The truncation guard in
+      // shard-loader.js ensures bad bytes aren't cached, so retries are safe.
+      this._shardLoadAttempts = (this._shardLoadAttempts || 0) + 1;
+      if (this._shardLoadAttempts <= 3) {
+        const delay = 2000 * Math.pow(2, this._shardLoadAttempts - 1); // 2s, 4s, 8s
+        console.log(`[node] Retrying shard load in ${delay}ms (attempt ${this._shardLoadAttempts + 1}/4)`);
+        setTimeout(() => this._handleAssignShard(msg), delay);
+      } else {
+        this._sendLog("error", "shard_load_abandoned", { shardId: msg.shardId, attempts: this._shardLoadAttempts });
+      }
     }
   }
 

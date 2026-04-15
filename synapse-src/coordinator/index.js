@@ -11,7 +11,7 @@
 
 import { createServer } from "http";
 import { createServer as createHttpsServer } from "https";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, statSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { encode as gptEncode, decode as gptDecode } from "gpt-tokenizer/model/text-davinci-001";
@@ -70,6 +70,20 @@ function loadShardConfig() {
 }
 
 const SHARD_CONFIG = loadShardConfig();
+
+// Shard URL version: uses manifest file mtime so each re-split generates a
+// distinct URL query, bypassing browser HTTP cache that may hold stale
+// responses (with old content + Content-Length) for a given shard path.
+// Cache-Control: no-store prevents future caching but does NOT invalidate
+// existing cached responses. URL versioning is the only reliable bust.
+function shardVersion() {
+  try {
+    const mp = join(SHARDS_DIR, "manifest.json");
+    return String(statSync(mp).mtimeMs | 0);
+  } catch { return String(Date.now()); }
+}
+const SHARD_VERSION = shardVersion();
+console.log(`[coordinator] Shard version: ${SHARD_VERSION}`);
 
 // ─── State ────────────────────────────────────────────────────────
 
@@ -299,8 +313,8 @@ function requestHandler(req, res) {
           config.shardId,
           config.layerStart,
           config.layerEnd,
-          `/shards/${config.file}`,
-          "/shards/shared.bin",
+          `/shards/${config.file}?v=${SHARD_VERSION}`,
+          `/shards/shared.bin?v=${SHARD_VERSION}`,
         );
         node.ws.send(JSON.stringify(assignMsg));
         broadcastTopology();
@@ -947,8 +961,8 @@ function tryAssignShards() {
       config.shardId,
       config.layerStart,
       config.layerEnd,
-      `/shards/${config.file}`,
-      "/shards/shared.bin"
+      `/shards/${config.file}?v=${SHARD_VERSION}`,
+      `/shards/shared.bin?v=${SHARD_VERSION}`
     );
 
     node.ws.send(JSON.stringify(assignMsg));
