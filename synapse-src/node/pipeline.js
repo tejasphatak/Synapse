@@ -44,14 +44,29 @@ export class Pipeline {
     const shaderNames = [
       "matmul", "matmul_transB", "attention", "attention_cached", "layernorm", "gelu",
       "residual_add", "embed", "bias_add", "head_slice", "head_concat",
+      // Gemma-family kernels (rmsnorm, rope, elementwise_mul, attention_gqa).
+      // Safe to load unconditionally — each compiles once and incurs zero
+      // runtime cost until its JS wrapper is called. Fetch errors are
+      // swallowed so older deployments without the files don't break.
+      "rmsnorm", "rope", "elementwise_mul", "attention_gqa",
     ];
 
     for (const name of shaderNames) {
-      const code = await (await fetch(`/node/kernels/${name}.wgsl?v=${Date.now()}`)).text();
-      this.shaderModules[name] = this.device.createShaderModule({
-        label: name,
-        code,
-      });
+      try {
+        const resp = await fetch(`/node/kernels/${name}.wgsl?v=${Date.now()}`);
+        if (!resp.ok) {
+          console.warn(`[pipeline] skipping kernel ${name}: ${resp.status}`);
+          continue;
+        }
+        const code = await resp.text();
+        this.shaderModules[name] = this.device.createShaderModule({
+          label: name,
+          code,
+        });
+      } catch (e) {
+        console.warn(`[pipeline] kernel ${name} compile failed: ${e.message}`);
+        continue;
+      }
     }
 
     this._initialized = true;
@@ -1096,6 +1111,128 @@ export class Pipeline {
     this.device.queue.submit([encoder.finish()]);
 
     return outputBuf;
+  }
+
+  // ─── Gemma-family kernels ───────────────────────────────────
+  // Thin JS wrappers over rmsnorm.wgsl, rope.wgsl, elementwise_mul.wgsl,
+  // attention_gqa.wgsl. Each is independently testable — the full Gemma
+  // forward loop calls them in sequence in a later method.
+
+  /**
+   * RMSNorm: y[i] = x[i] / sqrt(mean(x[i]^2) + eps) * gamma[i].
+   * Drop-in for Gemma / Llama / Qwen / Mistral (replaces LayerNorm).
+   */
+  async _rmsNorm(inputBuf, seqLen, hiddenSize, gammaBuf, eps = 1e-6) {
+    const outputBuf = this._createBuffer("rms_out", seqLen * hiddenSize * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    const params = new ArrayBuffer(16);
+    const view = new DataView(params);
+    view.setUint32(0, seqLen, true);
+    view.setUint32(4, hiddenSize, true);
+    view.setFloat32(8, eps, true);
+    view.setUint32(12, 0, true);
+    const paramBuf = this._createBuffer("rms_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, new Uint8Array(params));
+
+    const pipeline = this._getOrCreatePipeline("rmsnorm", "rmsnorm", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+    ]);
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: inputBuf } },
+        { binding: 1, resource: { buffer: gammaBuf } },
+        { binding: 2, resource: { buffer: outputBuf } },
+        { binding: 3, resource: { buffer: paramBuf } },
+      ],
+    });
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(seqLen); // one workgroup per row
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+    return outputBuf;
+  }
+
+  /**
+   * RoPE (in-place): rotates pairs of dimensions in Q or K by precomputed
+   * cos/sin angles. xBuf shape [seq, num_heads, head_dim]. Interleaved pairs.
+   * startPos = position offset for cached-step decode (0 for prefill).
+   */
+  async _rope(xBuf, seqLen, numHeads, headDim, cosCacheBuf, sinCacheBuf, startPos = 0) {
+    if (headDim % 2 !== 0) throw new Error(`head_dim must be even, got ${headDim}`);
+    const params = new ArrayBuffer(16);
+    const v = new DataView(params);
+    v.setUint32(0, seqLen, true);
+    v.setUint32(4, numHeads, true);
+    v.setUint32(8, headDim, true);
+    v.setUint32(12, startPos, true);
+    const paramBuf = this._createBuffer("rope_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, new Uint8Array(params));
+
+    const pipeline = this._getOrCreatePipeline("rope", "rope", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+    ]);
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: xBuf } },
+        { binding: 1, resource: { buffer: cosCacheBuf } },
+        { binding: 2, resource: { buffer: sinCacheBuf } },
+        { binding: 3, resource: { buffer: paramBuf } },
+      ],
+    });
+    const totalPairs = seqLen * numHeads * (headDim / 2);
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(totalPairs / 256));
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+    return xBuf; // in-place
+  }
+
+  /** c = a * b (elementwise). Same-length 1D buffers, optionally in-place (c===a). */
+  async _elementwiseMul(aBuf, bBuf, length, outBuf = null) {
+    const resultBuf = outBuf ?? this._createBuffer("emul_out", length * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    const params = new ArrayBuffer(16);
+    new DataView(params).setUint32(0, length, true);
+    const paramBuf = this._createBuffer("emul_params", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(paramBuf, 0, new Uint8Array(params));
+
+    const pipeline = this._getOrCreatePipeline("elementwise_mul", "elementwise_mul", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+    ]);
+    const bindGroup = this.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: aBuf } },
+        { binding: 1, resource: { buffer: bBuf } },
+        { binding: 2, resource: { buffer: resultBuf } },
+        { binding: 3, resource: { buffer: paramBuf } },
+      ],
+    });
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(length / 256));
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+    return resultBuf;
   }
 
   async _matmul(inputBuf, M, K, weightBuf, _K, N) {
