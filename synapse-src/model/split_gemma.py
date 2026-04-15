@@ -142,10 +142,14 @@ def download_model(hf_id, token):
 
 
 def load_all_tensors(paths):
-    """Open all safetensors files and return a combined name → (np array, file) map."""
+    """Open all safetensors files and return a combined name → (raw name, file) map.
+
+    Uses framework="pt" because Gemma weights are bfloat16 which numpy
+    doesn't recognize natively. PyTorch handles bf16 and we convert on fetch.
+    """
     tensor_refs = {}
     for path in paths:
-        with safe_open(path, framework="numpy") as f:
+        with safe_open(path, framework="pt") as f:
             for name in f.keys():
                 clean = strip_multimodal_prefix(name)
                 tensor_refs[clean] = (name, path)
@@ -154,20 +158,14 @@ def load_all_tensors(paths):
 
 def fetch_tensor(tensor_refs, name):
     """Materialise a tensor as float32 numpy array."""
+    import torch
     if name not in tensor_refs:
         return None
     raw_name, path = tensor_refs[name]
-    with safe_open(path, framework="numpy") as f:
+    with safe_open(path, framework="pt") as f:
         t = f.get_tensor(raw_name)
-    if t.dtype == np.float16 or t.dtype == np.float32:
-        return t.astype(np.float32)
-    # bfloat16 stored as uint16 via safetensors
-    if t.dtype == np.uint16 or str(t.dtype) == "bfloat16":
-        # Convert bf16 bits → fp32
-        u16 = t.view(np.uint16)
-        u32 = (u16.astype(np.uint32)) << 16
-        return u32.view(np.float32).reshape(t.shape)
-    return t.astype(np.float32)
+    # Upcast any dtype (bfloat16, float16, int8) to float32 via torch
+    return t.to(torch.float32).cpu().numpy()
 
 
 # ─── Pick Gemma config fields ─────────────────────────────────────
