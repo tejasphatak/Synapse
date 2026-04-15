@@ -462,8 +462,35 @@
       window.__synapseContributing = false;
     }
     contribBtn.addEventListener("click", () => {
-      if (contribFrame) stopContribute(); else startContribute();
+      if (contribFrame) {
+        stopContribute();
+        // Explicit user opt-out — persist so we don't auto-rejoin next load.
+        localStorage.setItem(CONTRIB_STATE_KEY, "off");
+      } else {
+        startContribute();
+        localStorage.setItem(CONTRIB_STATE_KEY, "on");
+      }
     });
+
+    // Auto-start contribution on page load unless the user previously
+    // opted out. Contribution is the whole point — default ON.
+    // The Contribute button stays visible + one-tap off per UX Advisor
+    // faculty requirement (no sneaky background work).
+    const CONTRIB_STATE_KEY = "synapse_contribute_state";
+    const userOptedOut = localStorage.getItem(CONTRIB_STATE_KEY) === "off";
+    if (!userOptedOut) {
+      // small delay so page render + WS handshake happen first
+      setTimeout(() => { if (!contribFrame) startContribute(); }, 800);
+    }
+
+    // Keep-alive: periodic ping from the main tab to the iframe so background
+    // tab throttling doesn't starve the compute node's event loop. This is
+    // on top of the node's own 15s WS heartbeat.
+    setInterval(() => {
+      if (contribFrame && contribFrame.contentWindow) {
+        try { contribFrame.contentWindow.postMessage({ type: "SYN_KEEPALIVE", ts: Date.now() }, "*"); } catch {}
+      }
+    }, 10000);
 
     // ── Contribute prompt: soft ask + blocking-when-empty behaviour.
     // Shows once per 7 days unless user contributes. When fleet is empty,

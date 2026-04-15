@@ -328,6 +328,20 @@
     // Expose node globally for debugging
     window.synapseNode = node;
 
+    // Keep-alive from parent tab (when this page is loaded in the
+    // Contribute iframe). Parent posts SYN_KEEPALIVE every 10s; we
+    // respond with a best-effort no-op that keeps the event loop warm
+    // and, if the WS is idle, opportunistically pings coord.
+    window.addEventListener("message", (e) => {
+      if (!e.data || e.data.type !== "SYN_KEEPALIVE") return;
+      try {
+        if (node?.ws?.readyState === 1) {
+          // Piggyback on existing ping channel rather than adding a new msg.
+          node.ws.send(JSON.stringify({ type: "PING", ts: Date.now(), keepAlive: true }));
+        }
+      } catch {}
+    });
+
     // ─── Mobile protections ───────────��───────────────────
     // Prevent accidental refresh/navigation once shard is loading
     window.addEventListener("beforeunload", (e) => {
