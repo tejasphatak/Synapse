@@ -240,6 +240,84 @@ function requestHandler(req, res) {
     return;
   }
 
+  // API: admin shard assignment — explicitly assign a shard to a specific
+  // (currently connected, unassigned) node. Useful when a late-arriving
+  // higher-capability node should take over before a natural disconnect.
+  //
+  // Auth: require X-Admin-Token header to match NEX_ADMIN_TOKEN env (if set).
+  // If NEX_ADMIN_TOKEN is unset, endpoint is disabled — fail closed.
+  //
+  // Body: {"nodeId":"node-abc...","shardId":0}  or  {"nodeId":"...","unassign":true}
+  if (req.url === "/api/assign" && req.method === "POST") {
+    const expectedToken = process.env.NEX_ADMIN_TOKEN;
+    if (!expectedToken) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "admin endpoint disabled (no NEX_ADMIN_TOKEN)" }));
+      return;
+    }
+    const tokenHeader = req.headers["x-admin-token"];
+    if (tokenHeader !== expectedToken) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const { nodeId, shardId, unassign } = JSON.parse(body);
+        if (!nodeId) throw new Error("nodeId required");
+        const node = topology.getNode(nodeId);
+        if (!node) throw new Error(`node not found: ${nodeId}`);
+
+        if (unassign) {
+          // Clear this node's shard assignment. Node keeps connection; future
+          // tryAssignShards may re-assign. Pipeline rebuilds to exclude it.
+          node.shardId = null;
+          node.layerStart = null;
+          node.layerEnd = null;
+          node.status = "connected";
+          topology._rebuildPipeline();
+          broadcastTopology();
+          console.log(`[coordinator] admin: unassigned ${nodeId}`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, action: "unassign", nodeId, topology: topology.toSnapshot() }));
+          return;
+        }
+
+        if (typeof shardId !== "number") throw new Error("shardId (number) required unless unassign:true");
+        const config = SHARD_CONFIG.find((c) => c.shardId === shardId);
+        if (!config) throw new Error(`unknown shardId: ${shardId}`);
+        if (node.shardId !== null && node.shardId !== shardId) {
+          throw new Error(`node already holds shard ${node.shardId}; unassign first`);
+        }
+
+        const ok = topology.assignShard(nodeId, shardId, config.layerStart, config.layerEnd);
+        if (!ok) throw new Error("assignShard failed");
+
+        const assignMsg = createAssignShardMessage(
+          config.shardId,
+          config.layerStart,
+          config.layerEnd,
+          `/shards/${config.file}`,
+          "/shards/shared.bin",
+        );
+        node.ws.send(JSON.stringify(assignMsg));
+        broadcastTopology();
+        console.log(
+          `[coordinator] admin: assigned shard ${shardId} (layers ${config.layerStart}-${config.layerEnd}) to ${nodeId}`,
+        );
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, action: "assign", nodeId, shardId, topology: topology.toSnapshot() }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   // API: trigger inference
   if (req.url === "/api/infer" && req.method === "POST") {
     let body = "";
