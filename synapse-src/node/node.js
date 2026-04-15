@@ -618,6 +618,35 @@ export class SynapseNode {
    * Handle an inference request — prefill (only received by the first node).
    * Processes the full token sequence and populates the KV cache.
    */
+  /**
+   * Assemble the Gemma cfg + ropeBufs once per call. Cheap object creation,
+   * read-only views into loader buffers — safe to recompute every invocation.
+   */
+  _buildGemmaRuntime() {
+    const m = this.loader.manifest;
+    const qAttn = m.query_pre_attn_scalar || m.head_dim;
+    const cfg = {
+      hiddenSize:       m.hidden_size,
+      numQHeads:        m.num_attention_heads,
+      numKvHeads:       m.num_key_value_heads,
+      headDim:          m.head_dim,
+      intermediateSize: m.intermediate_size,
+      windowSize:       m.sliding_window || 0,
+      rmsEps:           m.rms_norm_eps || 1e-6,
+      vocabSize:        m.vocab_size,
+      invSqrtScale:     1.0 / Math.sqrt(qAttn),
+      layerTypes:       m.layer_types || null,
+    };
+    const ropeBufs = {
+      cos:      this.loader.ropeCosBuffer,
+      sin:      this.loader.ropeSinBuffer,
+      cosLocal: this.loader.ropeCosLocalBuffer || null,
+      sinLocal: this.loader.ropeSinLocalBuffer || null,
+    };
+    if (!ropeBufs.cos || !ropeBufs.sin) throw new Error("Gemma: RoPE cos/sin buffers not loaded");
+    return { cfg, ropeBufs };
+  }
+
   async _handleInferenceRequest(msg) {
     if (!this.pipeline) return;
 
@@ -665,27 +694,7 @@ export class SynapseNode {
       // prefill-only on Gemma (no per-token decode yet).
       const arch = this.loader?.manifest?.arch;
       if (arch === "gemma") {
-        const m = this.loader.manifest;
-        const qAttn = m.query_pre_attn_scalar || m.head_dim;
-        const cfg = {
-          hiddenSize:       m.hidden_size,
-          numQHeads:        m.num_attention_heads,
-          numKvHeads:       m.num_key_value_heads,
-          headDim:          m.head_dim,
-          intermediateSize: m.intermediate_size,
-          windowSize:       m.sliding_window || 0,
-          rmsEps:           m.rms_norm_eps || 1e-6,
-          vocabSize:        m.vocab_size,
-          invSqrtScale:     1.0 / Math.sqrt(qAttn),
-          layerTypes:       m.layer_types || null,
-        };
-        const ropeBufs = {
-          cos:      this.loader.ropeCosBuffer,
-          sin:      this.loader.ropeSinBuffer,
-          cosLocal: this.loader.ropeCosLocalBuffer || null,
-          sinLocal: this.loader.ropeSinLocalBuffer || null,
-        };
-        if (!ropeBufs.cos || !ropeBufs.sin) throw new Error("Gemma forward: RoPE cos/sin buffers not loaded");
+        const { cfg, ropeBufs } = this._buildGemmaRuntime();
         hidden = await this.pipeline.forwardLayersGemmaPrefill(
           hidden, this.layerStart, this.layerEnd, cfg, ropeBufs
         );
@@ -751,13 +760,23 @@ export class SynapseNode {
     const startTime = performance.now();
 
     try {
-      // Embed single token at the given position
-      let hidden = await this.pipeline.embedSingle(msg.tokenId, msg.seqPos);
+      const archStep = this.loader?.manifest?.arch;
+      let hidden;
 
-      // Run layers with KV cache
-      hidden = await this.pipeline.forwardLayersCached(
-        hidden, this.layerStart, this.layerEnd, msg.requestId, msg.seqPos
-      );
+      if (archStep === "gemma") {
+        const { cfg, ropeBufs } = this._buildGemmaRuntime();
+        hidden = await this.pipeline.gemmaEmbedSingle(msg.tokenId);
+        hidden = await this.pipeline.forwardLayersGemmaCached(
+          hidden, this.layerStart, this.layerEnd, cfg, ropeBufs, msg.requestId, msg.seqPos,
+        );
+      } else {
+        // Embed single token at the given position
+        hidden = await this.pipeline.embedSingle(msg.tokenId, msg.seqPos);
+        // Run layers with KV cache
+        hidden = await this.pipeline.forwardLayersCached(
+          hidden, this.layerStart, this.layerEnd, msg.requestId, msg.seqPos
+        );
+      }
 
       if (this.isLastNode) {
         await this._produceOutput(hidden, msg.requestId, msg.temperature ?? 1.0);
@@ -842,9 +861,16 @@ export class SynapseNode {
         }
 
         // Prefill: full sequence, populate KV cache — no speculation on prefill
-        hidden = await this.pipeline.forwardLayersPrefill(
-          hidden, this.layerStart, this.layerEnd, requestId
-        );
+        if (this.loader?.manifest?.arch === "gemma") {
+          const { cfg, ropeBufs } = this._buildGemmaRuntime();
+          hidden = await this.pipeline.forwardLayersGemmaPrefill(
+            hidden, this.layerStart, this.layerEnd, cfg, ropeBufs
+          );
+        } else {
+          hidden = await this.pipeline.forwardLayersPrefill(
+            hidden, this.layerStart, this.layerEnd, requestId
+          );
+        }
 
         if (traceEnabled && this.pipeline._nanTrace) {
           this._sendLog("perf", "per_layer_nan_trace", {
@@ -932,9 +958,16 @@ export class SynapseNode {
         }
 
         if (!usedSpeculative) {
-          hidden = await this.pipeline.forwardLayersCached(
-            hidden, this.layerStart, this.layerEnd, requestId, seqPos
-          );
+          if (this.loader?.manifest?.arch === "gemma") {
+            const { cfg, ropeBufs } = this._buildGemmaRuntime();
+            hidden = await this.pipeline.forwardLayersGemmaCached(
+              hidden, this.layerStart, this.layerEnd, cfg, ropeBufs, requestId, seqPos,
+            );
+          } else {
+            hidden = await this.pipeline.forwardLayersCached(
+              hidden, this.layerStart, this.layerEnd, requestId, seqPos
+            );
+          }
         }
       }
 
@@ -977,15 +1010,30 @@ export class SynapseNode {
     try {
       let hidden = this.pipeline.deserializeTensor(msg.tensor);
 
+      const archJson = this.loader?.manifest?.arch;
       if (isPrefill) {
-        hidden = await this.pipeline.forwardLayersPrefill(
-          hidden, this.layerStart, this.layerEnd, msg.requestId
-        );
+        if (archJson === "gemma") {
+          const { cfg, ropeBufs } = this._buildGemmaRuntime();
+          hidden = await this.pipeline.forwardLayersGemmaPrefill(
+            hidden, this.layerStart, this.layerEnd, cfg, ropeBufs
+          );
+        } else {
+          hidden = await this.pipeline.forwardLayersPrefill(
+            hidden, this.layerStart, this.layerEnd, msg.requestId
+          );
+        }
       } else {
         const seqPos = seqLen - 1;
-        hidden = await this.pipeline.forwardLayersCached(
-          hidden, this.layerStart, this.layerEnd, msg.requestId, seqPos
-        );
+        if (archJson === "gemma") {
+          const { cfg, ropeBufs } = this._buildGemmaRuntime();
+          hidden = await this.pipeline.forwardLayersGemmaCached(
+            hidden, this.layerStart, this.layerEnd, cfg, ropeBufs, msg.requestId, seqPos,
+          );
+        } else {
+          hidden = await this.pipeline.forwardLayersCached(
+            hidden, this.layerStart, this.layerEnd, msg.requestId, seqPos
+          );
+        }
       }
 
       if (this.isLastNode) {
@@ -1034,7 +1082,18 @@ export class SynapseNode {
       });
     } catch (_) { /* ignore */ }
 
-    const logitsTensor = await this.pipeline.outputHead(hidden);
+    const archOut = this.loader?.manifest?.arch;
+    let logitsTensor;
+    if (archOut === "gemma") {
+      // Gemma: tied lm_head → weight is embed_tokens.weight.
+      const { cfg } = this._buildGemmaRuntime();
+      const normGamma = this.loader.getBuffer("model.norm.weight");
+      const headWeight = this.loader.getBuffer("model.embed_tokens.weight");
+      if (!normGamma || !headWeight) throw new Error("Gemma output: model.norm or embed_tokens not loaded");
+      logitsTensor = await this.pipeline.gemmaFinalNormAndLmHead(hidden, cfg, normGamma, headWeight);
+    } else {
+      logitsTensor = await this.pipeline.outputHead(hidden);
+    }
     const tokenId = await this.pipeline.sampleToken(logitsTensor, temperature);
 
     // Drift diagnostic: emit top-5 tokens + logit range so we can see if

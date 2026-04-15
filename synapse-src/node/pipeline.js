@@ -524,14 +524,31 @@ export class Pipeline {
   /**
    * Get or create a KV cache for a generation request.
    */
-  getOrCreateKVCache(requestId, layerStart, numLayers) {
+  getOrCreateKVCache(requestId, layerStart, numLayers, kvHiddenSize = null) {
     if (!this.kvCaches.has(requestId)) {
       const { hiddenSize, maxSeqLen } = this.config;
       this.kvCaches.set(requestId, new KVCache(
-        this.device, numLayers, layerStart, hiddenSize, maxSeqLen
+        this.device, numLayers, layerStart, hiddenSize, maxSeqLen,
+        kvHiddenSize ?? hiddenSize,
       ));
     }
     return this.kvCaches.get(requestId);
+  }
+
+  /**
+   * Gemma-specific cached-decode multi-layer orchestrator. Single-token
+   * step across the [layerStart, layerEnd] range, using a KVCache sized
+   * for numKvHeads * headDim.
+   */
+  async forwardLayersGemmaCached(hidden, layerStart, layerEnd, cfg, ropeBufs, requestId, seqPos) {
+    const numLayers = layerEnd - layerStart + 1;
+    const kvHidden = cfg.numKvHeads * cfg.headDim;
+    const kvCache = this.getOrCreateKVCache(requestId, layerStart, numLayers, kvHidden);
+    let cur = hidden.buffer;
+    for (let l = layerStart; l <= layerEnd; l++) {
+      cur = await this.forwardLayerGemmaCached(cur, l, seqPos, cfg, ropeBufs, kvCache);
+    }
+    return { buffer: cur, shape: [1, cfg.hiddenSize] };
   }
 
   /**
