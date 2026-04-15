@@ -364,6 +364,49 @@ function requestHandler(req, res) {
     return;
   }
 
+  // API: admin-triggered HOT reload. Broadcasts HOT_RELOAD to browser nodes.
+  // Browser dynamically re-imports node.js + instance-swaps while keeping the
+  // WebGPU device + shard buffers alive. No page reload, no user tap required.
+  // Body: {"reason":"deploy-xyz", "targetShardId":0}
+  if (req.url === "/api/hot-reload" && req.method === "POST") {
+    const expectedToken = process.env.NEX_ADMIN_TOKEN;
+    if (!expectedToken) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "admin endpoint disabled (no NEX_ADMIN_TOKEN)" }));
+      return;
+    }
+    if (req.headers["x-admin-token"] !== expectedToken) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const opts = body ? JSON.parse(body) : {};
+        const reason = opts.reason ?? "admin-triggered";
+        const targetShardId = opts.targetShardId;
+        const msg = JSON.stringify({ type: "HOT_RELOAD", reason, ts: Date.now() });
+        let sent = 0;
+        for (const [, node] of topology.nodes) {
+          if (targetShardId !== undefined && node.shardId !== targetShardId) continue;
+          if (node.ws?.readyState === 1) {
+            node.ws.send(msg);
+            sent++;
+          }
+        }
+        console.log(`[coordinator] admin: HOT_RELOAD broadcast to ${sent} node(s) (reason="${reason}")`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, action: "hot-reload", nodesNotified: sent, reason }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   // API: trigger inference
   if (req.url === "/api/infer" && req.method === "POST") {
     let body = "";
@@ -392,6 +435,12 @@ function requestHandler(req, res) {
       res.writeHead(200, {
         "Content-Type": getMimeType(filename),
         "Content-Length": data.length,
+        // Shard contents change with split config (num_shards, dtype). Without
+        // no-store the browser HTTP cache serves stale/truncated older-config
+        // bytes, causing opaque "exceeds source buffer" errors. IndexedDB
+        // layer in shard-loader.js does versioned caching properly; HTTP
+        // layer shouldn't double-cache.
+        "Cache-Control": "no-store",
       });
       res.end(data);
       return;

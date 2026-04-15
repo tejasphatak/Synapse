@@ -41,6 +41,12 @@ export const MessageType = {
   // changes take effect without manual refresh. Honored by browser nodes
   // via location.reload(). Headless / CLI clients may log + ignore.
   CLIENT_RELOAD: "CLIENT_RELOAD",
+
+  // Admin: transparent hot-reload — browser node dynamically re-imports
+  // node.js and instance-swaps while keeping the WebGPU device + shard
+  // buffers alive. No page reload, no user tap required. Falls back to
+  // CLIENT_RELOAD on failure.
+  HOT_RELOAD: "HOT_RELOAD",
 };
 
 // Protocol version capability flag

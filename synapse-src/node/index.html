@@ -171,7 +171,10 @@
   <div class="log-panel" id="logPanel"></div>
 
   <script type="module">
-    import { SynapseNode } from "./node.js?v=20260413b";
+    // Start with a static import for the first load. Hot reload will
+    // re-import with a cache-busting query param.
+    let NodeModule = await import("./node.js?v=20260413b");
+    let SynapseNode = NodeModule.SynapseNode;
 
     // Remote console — streams errors back to coordinator
     const _origConsole = { log: console.log, error: console.error, warn: console.warn };
@@ -240,8 +243,28 @@
     const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProtocol}//${location.host}`;
 
-    const node = new SynapseNode(updateStatus);
+    let node = new SynapseNode(updateStatus);
     document.getElementById("nodeId").textContent = node.nodeId;
+
+    // Hot-reload listener: dynamically re-import node.js and swap the
+    // instance while keeping the WebGPU device + shard buffers alive.
+    window.addEventListener("synapse:hot-reload", async (e) => {
+      try {
+        log(`Hot-reload: ${e.detail.reason}`, "info");
+        const fresh = await import(`./node.js?hr=${Date.now()}`);
+        const state = node.extractHotReloadState();
+        node.softShutdown();
+        const newNode = new fresh.SynapseNode(updateStatus, state);
+        await newNode.start(wsUrl);
+        node = newNode;
+        window.synapseNode = node;
+        SynapseNode = fresh.SynapseNode;
+        log("Hot-reload complete — GPU state preserved", "success");
+      } catch (err) {
+        log(`Hot-reload failed: ${err.message} — falling back to full reload`, "error");
+        setTimeout(() => window.location.reload(), 500);
+      }
+    });
 
     // Check WebGPU and device info
     if (navigator.gpu) {

@@ -73,8 +73,12 @@ export class ShardLoader {
     // Open IndexedDB cache
     try { this._cacheDB = await openCacheDB(); } catch { this._cacheDB = null; }
 
-    // Cache key includes model name + dtype + version so stale shards aren't reused
-    const cachePrefix = `${this.manifest.model}:${this.manifest.dtype}:v4`;
+    // Cache key includes model name + dtype + num_shards + version so stale
+    // shards aren't reused across different split configurations. Without
+    // num_shards in the key, a browser that cached 2-shard shard_0.bin (layers
+    // 0-5) would reuse it when the server switched to a 4-shard config where
+    // shard_0.bin has layers 0-2 at different offsets → garbage tensor reads.
+    const cachePrefix = `${this.manifest.model}:${this.manifest.dtype}:n${this.manifest.num_shards}:v6`;
 
     // Track combined download progress across both files
     const progress = { shardLoaded: 0, shardTotal: 0, sharedLoaded: 0, sharedTotal: 0 };
@@ -242,6 +246,16 @@ export class ShardLoader {
       offset += chunk.byteLength;
     }
 
+    // Sanity check: the reader can end normally on connection drop, delivering
+    // fewer bytes than Content-Length promised. Without this guard, the
+    // truncated buffer gets cached and loaded as-if-complete, causing
+    // opaque "Invalid typed array length" errors downstream.
+    if (contentLength > 0 && loaded !== contentLength) {
+      throw new Error(
+        `Truncated fetch of ${url}: got ${loaded} bytes, expected ${contentLength}`
+      );
+    }
+
     return result;
   }
 
@@ -251,6 +265,18 @@ export class ShardLoader {
    */
   _dequantizeTensor(sourceData, entry) {
     const dtype = entry.dtype;
+    // Defensive: typed-array construction throws an opaque "Invalid typed
+    // array length" when offset+size exceeds the source buffer. Explicit
+    // check gives a useful diagnostic.
+    const bufByteLen = sourceData.byteLength ?? 0;
+    if (entry.offset + entry.size > bufByteLen) {
+      throw new Error(
+        `Tensor ${entry.name} offset=${entry.offset} size=${entry.size} ` +
+        `exceeds source buffer (${bufByteLen} bytes). ` +
+        `File=${entry.file}, shape=${JSON.stringify(entry.shape)}, dtype=${dtype}. ` +
+        `Likely cause: stale cached shard doesn't match current manifest.`
+      );
+    }
     const raw = new Uint8Array(sourceData, entry.offset, entry.size);
 
     if (dtype === "float32") {

@@ -11,7 +11,7 @@
  * 6. Process INFERENCE_REQUEST / ACTIVATION messages → run pipeline → send output
  */
 
-import { ShardLoader } from "./shard-loader.js?v=20260413b";
+import { ShardLoader } from "./shard-loader.js?v=20260415-hr1";
 import { Pipeline } from "./pipeline.js?v=20260413b";
 import {
   MessageType,
@@ -64,8 +64,12 @@ function _randomUUID() {
 }
 
 export class SynapseNode {
-  constructor(statusCallback = null) {
-    this.nodeId = `node-${_randomUUID().slice(0, 8)}`;
+  constructor(statusCallback = null, inherit = null) {
+    // If `inherit` is provided, adopt state from a previous SynapseNode
+    // instance (hot-reload path). Keeps WebGPU device, shard buffers, and
+    // KV caches alive so we skip 10-30s of tensor re-upload.
+    this._inherited = inherit;
+    this.nodeId = inherit?.nodeId ?? `node-${_randomUUID().slice(0, 8)}`;
     this.ws = null;
     this.device = null;
     this.loader = null;
@@ -107,10 +111,142 @@ export class SynapseNode {
   }
 
   /**
+   * Resume from inherited state (hot reload path). Adopts the previous
+   * instance's WebGPU device, shard pipeline, and WebSocket. Re-binds
+   * WS event handlers to THIS instance. Skips the 10-30s shard upload.
+   */
+  async _resumeFromInherited(coordinatorUrl) {
+    const inh = this._inherited;
+    this.device = inh.device;
+    // Build a FRESH ShardLoader from the currently-imported class so any
+    // bug-fixes/cache-key bumps in shard-loader.js take effect for future
+    // loadShard() calls. The pipeline's GPU buffers are already populated and
+    // unaffected by loader lifecycle.
+    this.loader = new ShardLoader(this.device);
+    try { await this.loader.loadManifest(coordinatorUrl.replace(/^ws/, "http")); } catch (_) {}
+    this.pipeline = inh.pipeline;
+    this.shardId = inh.shardId;
+    this.layerStart = inh.layerStart;
+    this.layerEnd = inh.layerEnd;
+    this.isFirstNode = inh.isFirstNode;
+    this.isLastNode = inh.isLastNode;
+    this.topology = inh.topology;
+    this.adaptivePrecision = inh.adaptivePrecision;
+    this.gpuInfo = {
+      isMobile: this._isMobile(),
+      vendor: this.device?.adapterInfo?.vendor || "unknown",
+    };
+
+    // Rebuild speculative controller on top of the kept pipeline so it picks
+    // up any behavior changes in the new module.
+    if (this.useSpeculation && this.pipeline) {
+      this.speculative = new SpeculativeController(this.pipeline);
+      this.speculative.enabled = false;
+      this.speculative.warmupSteps = 5;
+      this.speculative.enableThreshold = 0.99;
+    }
+
+    // Adopt existing WebSocket if still open — no reconnect needed.
+    if (inh.ws && inh.ws.readyState === 1) {
+      this.ws = inh.ws;
+      this.ws.onmessage = (event) => this._handleMessage(event.data);
+      this.ws.onclose = () => {
+        this._setStatus("disconnected");
+        clearInterval(this.pingInterval);
+        setTimeout(() => {
+          if (this.status === "disconnected") {
+            this._setStatus("reconnecting");
+            this._connect(coordinatorUrl);
+          }
+        }, 3000);
+      };
+      this.ws.onerror = () => this._setStatus("error", "WebSocket error");
+      // Restart heartbeat on the adopted socket.
+      this.pingInterval = setInterval(() => {
+        if (this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify(createPingMessage()));
+        }
+      }, 15000);
+      this._sendLog("info", "hot_reload_resumed", { shardId: this.shardId });
+
+      // If the node was assigned a shard but the pipeline is empty (prior
+      // load had failed), request coord to re-send ASSIGN_SHARD so we
+      // retry from clean state with the fresh code. Proxy-check by looking
+      // at the old status — ready means shard loaded; anything else didn't.
+      const pipelineLoaded = inh.status === "ready" || inh.status === "computing";
+      if (this.shardId !== null && !pipelineLoaded) {
+        console.log(`[node] hot-reload: shard ${this.shardId} was unloaded, requesting reassignment`);
+        this._sendLog("info", "hot_reload_reassign_requested", { shardId: this.shardId });
+        // Ask coord to reassign by un-assigning then letting tryAssignShards refill
+        this.shardId = null;
+        this.layerStart = null;
+        this.layerEnd = null;
+        // Send a fresh JOIN to trigger reassignment
+        this.ws.send(JSON.stringify(createJoinMessage(this.nodeId, {
+          webgpu: true, maxLayers: 6,
+          mobile: this.gpuInfo?.isMobile || false,
+          gpuVendor: this.gpuInfo?.vendor || "unknown",
+          maxBufferMB: Math.round((this.device?.limits?.maxBufferSize || 0) / 1024 / 1024),
+          userAgent: navigator.userAgent,
+          protocolV2: true,
+        })));
+        this._setStatus("connected", "awaiting reassignment post hot-reload");
+      } else {
+        this._setStatus("ready", "hot-reload resumed");
+      }
+      return true;
+    }
+
+    // WebSocket was closed during handoff — fall back to fresh connect but
+    // keep device/pipeline so we still skip the heavy re-upload.
+    return this._connect(coordinatorUrl);
+  }
+
+  /**
+   * Extract state for hot reload. Returns a plain object with references to
+   * the expensive-to-recreate pieces (device, pipeline, shard assignment).
+   * The new instance will adopt these via the `inherit` constructor arg.
+   */
+  extractHotReloadState() {
+    return {
+      nodeId: this.nodeId,
+      ws: this.ws,
+      device: this.device,
+      loader: this.loader,
+      pipeline: this.pipeline,
+      shardId: this.shardId,
+      layerStart: this.layerStart,
+      layerEnd: this.layerEnd,
+      isFirstNode: this.isFirstNode,
+      isLastNode: this.isLastNode,
+      topology: this.topology,
+      adaptivePrecision: this.adaptivePrecision,
+      status: this.status,
+    };
+  }
+
+  /**
+   * Shutdown without tearing down WebGPU state. Called on the OLD instance
+   * before the NEW instance adopts its state. Stops timers, releases event
+   * handlers, but leaves device + buffers alive for the successor.
+   */
+  softShutdown() {
+    if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
+    if (this.ws) { this.ws.onmessage = null; this.ws.onclose = null; this.ws.onerror = null; }
+    this.status = "handoff";
+  }
+
+  /**
    * Initialize WebGPU and connect to the coordinator.
    */
   async start(coordinatorUrl) {
     this.baseUrl = coordinatorUrl.replace(/^ws/, "http");
+
+    // Hot-reload fast path: if `inherit` state was passed to the constructor,
+    // skip WebGPU init + shard download and resume from the existing pipeline.
+    if (this._inherited) {
+      return await this._resumeFromInherited(coordinatorUrl);
+    }
 
     // Step 1: Initialize WebGPU
     this._setStatus("checking_webgpu");
@@ -349,6 +485,21 @@ export class SynapseNode {
         this._sendLog("info", "client_reload", { reason: msg.reason ?? "admin-triggered" });
         if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
           setTimeout(() => window.location.reload(), msg.delayMs ?? 1000);
+        }
+        break;
+
+      case MessageType.HOT_RELOAD:
+        // Transparent hot-reload: dynamically re-import node.js and instance-
+        // swap while keeping the WebGPU device + shard buffers alive. The
+        // index.html host listens for this event and drives the swap because
+        // it owns the class binding — the module itself can't replace its
+        // own instance reference.
+        console.log(`[node] HOT_RELOAD received — requesting in-place swap (reason: ${msg.reason})`);
+        this._sendLog("info", "hot_reload_requested", { reason: msg.reason ?? "admin-triggered" });
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+          window.dispatchEvent(new CustomEvent("synapse:hot-reload", {
+            detail: { reason: msg.reason ?? "admin-triggered", ts: msg.ts },
+          }));
         }
         break;
 
