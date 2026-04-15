@@ -1235,6 +1235,126 @@ export class Pipeline {
     return resultBuf;
   }
 
+  /**
+   * GQA / MQA attention with optional sliding-window causal mask.
+   * Three-pass kernel: qk_scores → softmax_rows → attend.
+   *
+   * Q: [seq, num_q_heads, head_dim]
+   * K: [seq, num_kv_heads, head_dim]
+   * V: [seq, num_kv_heads, head_dim]
+   * Returns: [seq, num_q_heads, head_dim] (same shape as Q).
+   *
+   * numKvHeads === numQHeads → standard MHA.
+   * numKvHeads <  numQHeads  → GQA.
+   * numKvHeads === 1          → MQA (Gemma 3 1B default).
+   * windowSize === 0         → pure causal (no sliding window).
+   * windowSize  > 0           → sliding-window causal (Gemma 3 uses 512 on some layers).
+   */
+  async _attentionGqa(qBuf, kBuf, vBuf, seqLen, numQHeads, numKvHeads, headDim, windowSize = 0) {
+    // Scores buffer: [numQHeads, seqLen, seqLen]
+    const scoresBuf = this._createBuffer("gqa_scores", numQHeads * seqLen * seqLen * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    const outputBuf = this._createBuffer("gqa_out", seqLen * numQHeads * headDim * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+    // Pass 1: Q·Kᵀ/√d, causal + sliding mask. Params1: [S,HQ,HK,D,W,0,0,0] → 32 bytes.
+    const p1 = new ArrayBuffer(32);
+    const v1 = new DataView(p1);
+    v1.setUint32(0, seqLen, true);
+    v1.setUint32(4, numQHeads, true);
+    v1.setUint32(8, numKvHeads, true);
+    v1.setUint32(12, headDim, true);
+    v1.setUint32(16, windowSize, true);
+    const p1Buf = this._createBuffer("gqa_p1", 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(p1Buf, 0, new Uint8Array(p1));
+
+    const pipe1 = this._getOrCreatePipeline("attention_gqa_p1", "qk_scores", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+    ], "attention_gqa");
+    const bg1 = this.device.createBindGroup({
+      layout: pipe1.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: qBuf } },
+        { binding: 1, resource: { buffer: kBuf } },
+        { binding: 2, resource: { buffer: scoresBuf } },
+        { binding: 3, resource: { buffer: p1Buf } },
+      ],
+    });
+
+    // Pass 2: softmax over rows. Params2: [S,0,0,0] → 16 bytes.
+    const p2 = new ArrayBuffer(16);
+    new DataView(p2).setUint32(0, seqLen, true);
+    const p2Buf = this._createBuffer("gqa_p2", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(p2Buf, 0, new Uint8Array(p2));
+
+    const pipe2 = this._getOrCreatePipeline("attention_gqa_p2", "softmax_rows", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+    ], "attention_gqa");
+    const bg2 = this.device.createBindGroup({
+      layout: pipe2.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: scoresBuf } },
+        { binding: 1, resource: { buffer: p2Buf } },
+      ],
+    });
+
+    // Pass 3: attend — weighted sum of V. Params3: [S,HQ,HK,D] → 16 bytes.
+    const p3 = new ArrayBuffer(16);
+    const v3v = new DataView(p3);
+    v3v.setUint32(0, seqLen, true);
+    v3v.setUint32(4, numQHeads, true);
+    v3v.setUint32(8, numKvHeads, true);
+    v3v.setUint32(12, headDim, true);
+    const p3Buf = this._createBuffer("gqa_p3", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(p3Buf, 0, new Uint8Array(p3));
+
+    const pipe3 = this._getOrCreatePipeline("attention_gqa_p3", "attend", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+    ], "attention_gqa");
+    const bg3 = this.device.createBindGroup({
+      layout: pipe3.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: scoresBuf } },
+        { binding: 1, resource: { buffer: vBuf } },
+        { binding: 2, resource: { buffer: outputBuf } },
+        { binding: 3, resource: { buffer: p3Buf } },
+      ],
+    });
+
+    // Chain all three passes in one encoder submission to avoid sync stalls.
+    const enc = this.device.createCommandEncoder();
+    const pass1 = enc.beginComputePass();
+    pass1.setPipeline(pipe1);
+    pass1.setBindGroup(0, bg1);
+    // 8x8x1 workgroup — dispatch ceil(S/8) × ceil(S/8) × HQ
+    pass1.dispatchWorkgroups(Math.ceil(seqLen / 8), Math.ceil(seqLen / 8), numQHeads);
+    pass1.end();
+
+    const pass2 = enc.beginComputePass();
+    pass2.setPipeline(pipe2);
+    pass2.setBindGroup(0, bg2);
+    // one workgroup per (row, head). dispatch = [seqLen, numQHeads, 1]
+    pass2.dispatchWorkgroups(seqLen, numQHeads, 1);
+    pass2.end();
+
+    const pass3 = enc.beginComputePass();
+    pass3.setPipeline(pipe3);
+    pass3.setBindGroup(0, bg3);
+    // 8x8x1 — dispatch ceil(S/8) × ceil(D/8) × HQ
+    pass3.dispatchWorkgroups(Math.ceil(seqLen / 8), Math.ceil(headDim / 8), numQHeads);
+    pass3.end();
+
+    this.device.queue.submit([enc.finish()]);
+    return outputBuf;
+  }
+
   async _matmul(inputBuf, M, K, weightBuf, _K, N) {
     const outputBuf = this._createBuffer("mm_out", M * N * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -1668,16 +1788,18 @@ export class Pipeline {
   /**
    * Get or create a cached compute pipeline.
    */
-  _getOrCreatePipeline(shaderName, entryPoint, layoutEntries) {
+  _getOrCreatePipeline(shaderName, entryPoint, layoutEntries, moduleNameOverride) {
     const key = `${shaderName}:${entryPoint}`;
     if (this.pipelines[key]) return this.pipelines[key];
 
     // Map pipeline keys to their shader module names
-    let moduleName = shaderName;
-    if (shaderName === "attention_softmax" || shaderName === "attention_ws") {
-      moduleName = "attention";
-    } else if (shaderName === "attention_cached_softmax" || shaderName === "attention_cached_ws") {
-      moduleName = "attention_cached";
+    let moduleName = moduleNameOverride || shaderName;
+    if (!moduleNameOverride) {
+      if (shaderName === "attention_softmax" || shaderName === "attention_ws") {
+        moduleName = "attention";
+      } else if (shaderName === "attention_cached_softmax" || shaderName === "attention_cached_ws") {
+        moduleName = "attention_cached";
+      }
     }
 
     const bindGroupLayout = this.device.createBindGroupLayout({
