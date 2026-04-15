@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-bufpool";
+import { Pipeline } from "./pipeline.js?v=20260415-batchenc";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -117,10 +117,10 @@ export class SynapseNode {
         && new URLSearchParams(location.search).get("debug") === "1";
     } catch { this.debugProfile = false; }
 
-    // AOP perf aspect — same shape as pipeline._perfCounters. Installed
-    // below after all methods are defined on the prototype chain.
+    // AOP perf aspect — disabled by default. Opt in via debugProfile flag
+    // (URL ?debug=1). Avoids wrapping every method in a timer in steady state.
     this._perfCounters = {};
-    this._installPerfAspect();
+    if (this.debugProfile) this._installPerfAspect();
     if (typeof window !== "undefined" && window.location) {
       const params = new URLSearchParams(window.location.search);
       const q = params.get("quant");
@@ -593,6 +593,7 @@ export class SynapseNode {
 
       // Initialize the compute pipeline
       this.pipeline = new Pipeline(this.device, this.loader);
+      if (this.debugProfile) this.pipeline.enableDebugProfile();
       await this.pipeline.init();
 
       // Gemma activations have much wider dynamic range than GPT-2
@@ -1038,16 +1039,18 @@ export class SynapseNode {
       const elapsed = performance.now() - startTime;
       this.pipeline._cleanupTempBuffers();
       this._setStatus("ready", `Processed in ${elapsed.toFixed(0)}ms`);
-      // Ship per-method perf snapshot from BOTH pipeline + node AOP counters.
-      // Reset so next step is counted in isolation.
-      this._sendLog("perf", "gemma_perf_breakdown", {
-        requestId, shardId: this.shardId, phase: isPrefill ? "prefill" : "step",
-        elapsedMs: +elapsed.toFixed(2),
-        pipeline: this.pipeline._perfSnapshot ? this.pipeline._perfSnapshot() : {},
-        node: this._perfSnapshot(),
-      });
-      this.pipeline._perfReset && this.pipeline._perfReset();
-      this._perfReset();
+      // Ship per-method perf snapshot — only when debug mode on; otherwise
+      // the aspect isn't installed so counters are empty anyway.
+      if (this.debugProfile) {
+        this._sendLog("perf", "gemma_perf_breakdown", {
+          requestId, shardId: this.shardId, phase: isPrefill ? "prefill" : "step",
+          elapsedMs: +elapsed.toFixed(2),
+          pipeline: this.pipeline._perfSnapshot ? this.pipeline._perfSnapshot() : {},
+          node: this._perfSnapshot(),
+        });
+        this.pipeline._perfReset && this.pipeline._perfReset();
+        this._perfReset();
+      }
       this._sendLog("perf", isPrefill ? "binary_prefill" : "binary_step", {
         requestId,
         durationMs: +elapsed.toFixed(2),

@@ -36,9 +36,55 @@ export class Pipeline {
       (buffer, offset, size) => this._readBuffer(buffer, offset, size),
     );
     // Per-method cumulative timing (AOP — wraps every method at construction).
-    // Caller resets via _perfReset() and harvests via _perfSnapshot().
+    // Caller must opt in via enableDebugProfile() before first forward —
+    // otherwise methods run at native speed without per-call instrumentation.
     this._perfCounters = {};
-    this._installPerfAspect();
+  }
+
+  enableDebugProfile() { this._installPerfAspect(); }
+
+  /**
+   * Run a closure with a shared command encoder. Every kernel dispatched
+   * inside `fn` attaches its compute pass to the shared encoder instead
+   * of submitting its own — collapsing N submit fences into 1. Caller
+   * returns a value from fn (typically the final buffer).
+   */
+  async _withBatchedEncoder(fn) {
+    if (this._currentEncoder) return fn(); // already batched by outer scope
+    this._currentEncoder = this.device.createCommandEncoder();
+    try {
+      const r = await fn();
+      this.device.queue.submit([this._currentEncoder.finish()]);
+      return r;
+    } finally {
+      this._currentEncoder = null;
+    }
+  }
+
+  /**
+   * Add a compute pass to the shared encoder when batching is active; else
+   * create a one-shot encoder + submit. All kernel JS wrappers route
+   * through this instead of inlining encoder/pass boilerplate.
+   */
+  _dispatch(pipeline, bindGroup, wx, wy = 1, wz = 1) {
+    const own = !this._currentEncoder;
+    const enc = this._currentEncoder || this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(wx, wy, wz);
+    pass.end();
+    if (own) this.device.queue.submit([enc.finish()]);
+  }
+
+  /**
+   * Attach a buffer-to-buffer copy to the shared encoder or submit one-off.
+   */
+  _copyBuffer(src, srcOffset, dst, dstOffset, size) {
+    const own = !this._currentEncoder;
+    const enc = this._currentEncoder || this.device.createCommandEncoder();
+    enc.copyBufferToBuffer(src, srcOffset, dst, dstOffset, size);
+    if (own) this.device.queue.submit([enc.finish()]);
   }
 
   _perfReset() { this._perfCounters = {}; }
@@ -360,14 +406,8 @@ export class Pipeline {
         { binding: 3, resource: { buffer: outputBuf } },
       ],
     });
-    const enc = this.device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipe);
-    pass.setBindGroup(0, bg);
     const total = seqLen * hiddenSize;
-    pass.dispatchWorkgroups(Math.ceil(total / 256));
-    pass.end();
-    this.device.queue.submit([enc.finish()]);
+    this._dispatch(pipe, bg, Math.ceil(total / 256));
     return { buffer: outputBuf, shape: [seqLen, hiddenSize] };
   }
 
@@ -627,7 +667,9 @@ export class Pipeline {
     const kvCache = this.getOrCreateKVCache(requestId, layerStart, numLayers, kvHidden);
     let cur = hidden.buffer;
     for (let l = layerStart; l <= layerEnd; l++) {
-      cur = await this.forwardLayerGemmaCached(cur, l, seqPos, cfg, ropeBufs, kvCache);
+      cur = await this._withBatchedEncoder(
+        () => this.forwardLayerGemmaCached(cur, l, seqPos, cfg, ropeBufs, kvCache)
+      );
     }
     return { buffer: cur, shape: [1, cfg.hiddenSize] };
   }
@@ -1290,13 +1332,7 @@ export class Pipeline {
         { binding: 3, resource: { buffer: paramBuf } },
       ],
     });
-    const enc = this.device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(seqLen); // one workgroup per row
-    pass.end();
-    this.device.queue.submit([enc.finish()]);
+    this._dispatch(pipeline, bindGroup, seqLen); // one workgroup per row
     return outputBuf;
   }
 
@@ -1332,13 +1368,7 @@ export class Pipeline {
       ],
     });
     const totalPairs = seqLen * numHeads * (headDim / 2);
-    const enc = this.device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(totalPairs / 256));
-    pass.end();
-    this.device.queue.submit([enc.finish()]);
+    this._dispatch(pipeline, bindGroup, Math.ceil(totalPairs / 256));
     return xBuf; // in-place
   }
 
@@ -1366,13 +1396,7 @@ export class Pipeline {
         { binding: 3, resource: { buffer: paramBuf } },
       ],
     });
-    const enc = this.device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(length / 256));
-    pass.end();
-    this.device.queue.submit([enc.finish()]);
+    this._dispatch(pipeline, bindGroup, Math.ceil(length / 256));
     return resultBuf;
   }
 
@@ -1470,30 +1494,11 @@ export class Pipeline {
       ],
     });
 
-    // Chain all three passes in one encoder submission to avoid sync stalls.
-    const enc = this.device.createCommandEncoder();
-    const pass1 = enc.beginComputePass();
-    pass1.setPipeline(pipe1);
-    pass1.setBindGroup(0, bg1);
-    // 8x8x1 workgroup — dispatch ceil(S/8) × ceil(S/8) × HQ
-    pass1.dispatchWorkgroups(Math.ceil(seqLen / 8), Math.ceil(seqLen / 8), numQHeads);
-    pass1.end();
-
-    const pass2 = enc.beginComputePass();
-    pass2.setPipeline(pipe2);
-    pass2.setBindGroup(0, bg2);
-    // one workgroup per (row, head). dispatch = [seqLen, numQHeads, 1]
-    pass2.dispatchWorkgroups(seqLen, numQHeads, 1);
-    pass2.end();
-
-    const pass3 = enc.beginComputePass();
-    pass3.setPipeline(pipe3);
-    pass3.setBindGroup(0, bg3);
-    // 8x8x1 — dispatch ceil(S/8) × ceil(D/8) × HQ
-    pass3.dispatchWorkgroups(Math.ceil(seqLen / 8), Math.ceil(headDim / 8), numQHeads);
-    pass3.end();
-
-    this.device.queue.submit([enc.finish()]);
+    // Three passes routed through _dispatch so they attach to the outer
+    // shared encoder when the layer is batched.
+    this._dispatch(pipe1, bg1, Math.ceil(seqLen / 8), Math.ceil(seqLen / 8), numQHeads);
+    this._dispatch(pipe2, bg2, seqLen, numQHeads, 1);
+    this._dispatch(pipe3, bg3, Math.ceil(seqLen / 8), Math.ceil(headDim / 8), numQHeads);
     return outputBuf;
   }
 
@@ -1675,9 +1680,7 @@ export class Pipeline {
       // Extract Q head slice from the flat [numQHeads*headDim] buffer.
       const qHead = this._createBuffer(`gemma_qcached_h${h}`, headDim * 4,
         GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-      const enc0 = this.device.createCommandEncoder();
-      enc0.copyBufferToBuffer(qBuf, h * headDim * 4, qHead, 0, headDim * 4);
-      this.device.queue.submit([enc0.finish()]);
+      this._copyBuffer(qBuf, h * headDim * 4, qHead, 0, headDim * 4);
 
       // Slice K and V cache rows [cacheStart, cacheLenFull) for kvH.
       const kSlice = await this._extractHeadSlice(fullK, cacheLen, kvHidden, cacheStart, kvH, headDim, numKvHeads);
@@ -1730,19 +1733,10 @@ export class Pipeline {
         { binding: 3, resource: { buffer: headOut } },
       ]});
 
-      const enc = this.device.createCommandEncoder();
-      let pass = enc.beginComputePass(); pass.setPipeline(scorePipe); pass.setBindGroup(0, bg1);
-      pass.dispatchWorkgroups(Math.ceil(cacheLen / 256)); pass.end();
-      pass = enc.beginComputePass(); pass.setPipeline(smPipe); pass.setBindGroup(0, bg2);
-      pass.dispatchWorkgroups(1); pass.end();
-      pass = enc.beginComputePass(); pass.setPipeline(wsPipe); pass.setBindGroup(0, bg3);
-      pass.dispatchWorkgroups(Math.ceil(headDim / 256)); pass.end();
-      this.device.queue.submit([enc.finish()]);
-
-      // Concat head output back into aggregate.
-      const encC = this.device.createCommandEncoder();
-      encC.copyBufferToBuffer(headOut, 0, outputBuf, h * headDim * 4, headDim * 4);
-      this.device.queue.submit([encC.finish()]);
+      this._dispatch(scorePipe, bg1, Math.ceil(cacheLen / 256));
+      this._dispatch(smPipe, bg2, 1);
+      this._dispatch(wsPipe, bg3, Math.ceil(headDim / 256));
+      this._copyBuffer(headOut, 0, outputBuf, h * headDim * 4, headDim * 4);
     }
 
     return outputBuf;
@@ -1821,9 +1815,7 @@ export class Pipeline {
    *  overwrites inputBuf via copy after norm. */
   async _rmsNormInPlace(buf, rows, cols, gammaBuf, eps, gammaBias = 0.0) {
     const out = await this._rmsNorm(buf, rows, cols, gammaBuf, eps, gammaBias);
-    const enc = this.device.createCommandEncoder();
-    enc.copyBufferToBuffer(out, 0, buf, 0, rows * cols * 4);
-    this.device.queue.submit([enc.finish()]);
+    this._copyBuffer(out, 0, buf, 0, rows * cols * 4);
     return buf;
   }
 
@@ -1852,7 +1844,11 @@ export class Pipeline {
     if (wantStats && !this._layerStats) this._layerStats = [];
 
     for (let l = layerStart; l <= layerEnd; l++) {
-      cur = await this.forwardLayerGemmaPrefill(cur, l, seqLen, cfg, ropeBufs);
+      // Batch every kernel dispatch in this layer into ONE GPU submit —
+      // collapses ~16 queue.submit fences into 1.
+      cur = await this._withBatchedEncoder(
+        () => this.forwardLayerGemmaPrefill(cur, l, seqLen, cfg, ropeBufs)
+      );
 
       if (wantStats) {
         const sz = seqLen * cfg.hiddenSize * 4;
@@ -1901,11 +1897,11 @@ export class Pipeline {
    */
   async gemmaFinalNormAndLmHead(hidden, cfg, normGamma, headWeight) {
     const seqLen = hidden.shape[0];
-    // Gemma 3: final RMSNorm also uses (1 + gamma).
-    const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps, 1.0);
-    // lm_head.weight shape: [vocab, hidden]. matmul_transB runs input @ W.T.
-    const logits = await this._matmulTransB(normed, seqLen, cfg.hiddenSize, headWeight, cfg.vocabSize);
-    return { buffer: logits, shape: [seqLen, cfg.vocabSize] };
+    return this._withBatchedEncoder(async () => {
+      const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps, 1.0);
+      const logits = await this._matmulTransB(normed, seqLen, cfg.hiddenSize, headWeight, cfg.vocabSize);
+      return { buffer: logits, shape: [seqLen, cfg.vocabSize] };
+    });
   }
 
   async _matmul(inputBuf, M, K, weightBuf, _K, N) {
@@ -1973,15 +1969,7 @@ export class Pipeline {
         { binding: 3, resource: { buffer: outputBuf } },
       ],
     });
-
-    const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(M / 8), Math.ceil(N / 8));
-    pass.end();
-    this.device.queue.submit([encoder.finish()]);
-
+    this._dispatch(pipeline, bindGroup, Math.ceil(M / 8), Math.ceil(N / 8));
     return outputBuf;
   }
 
@@ -2142,14 +2130,7 @@ export class Pipeline {
       ],
     });
 
-    const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(totalElements / 256));
-    pass.end();
-    this.device.queue.submit([encoder.finish()]);
-
+    this._dispatch(pipeline, bindGroup, Math.ceil(totalElements / 256));
     return outputBuf;
   }
 
@@ -2177,15 +2158,7 @@ export class Pipeline {
         { binding: 3, resource: { buffer: outputBuf } },
       ],
     });
-
-    const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(totalElements / 256));
-    pass.end();
-    this.device.queue.submit([encoder.finish()]);
-
+    this._dispatch(pipeline, bindGroup, Math.ceil(totalElements / 256));
     return outputBuf;
   }
 
@@ -2255,15 +2228,7 @@ export class Pipeline {
         { binding: 3, resource: { buffer: outputBuf } },
       ],
     });
-
-    const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(total / 256));
-    pass.end();
-    this.device.queue.submit([encoder.finish()]);
-
+    this._dispatch(pipeline, bindGroup, Math.ceil(total / 256));
     return outputBuf;
   }
 

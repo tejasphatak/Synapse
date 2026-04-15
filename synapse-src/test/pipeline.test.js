@@ -361,12 +361,18 @@ describe("Pipeline", () => {
   });
 
   describe("_cleanupTempBuffers", () => {
-    it("destroys all temp buffers", () => {
+    it("returns temp buffers to the pool (not destroyed)", () => {
+      // Post-bufferpool change: buffers are recycled instead of destroyed.
+      // Destruction only happens when a pool bucket overflows (cap 32) or
+      // _drainBufferPool is called.
       const a = pipeline._createBuffer("a", 100, 0x80);
       const b = pipeline._createBuffer("b", 200, 0x80);
       pipeline._cleanupTempBuffers();
-      assert.equal(a.destroyed, true);
-      assert.equal(b.destroyed, true);
+      assert.equal(a.destroyed, false);
+      assert.equal(b.destroyed, false);
+      // Next request with same (size, usage) pulls from pool → no new alloc.
+      const a2 = pipeline._createBuffer("a2", 100, 0x80);
+      assert.equal(a2, a, "bucket should reuse the matching buffer");
     });
 
     it("clears the temp buffer list", () => {
