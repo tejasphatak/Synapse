@@ -18,6 +18,8 @@ import { encode as gptEncode, decode as gptDecode } from "gpt-tokenizer/model/te
 import { WebSocketServer } from "ws";
 import { Topology } from "./topology.js";
 import { Router } from "./router.js";
+import { decideResplit } from "./auto-resplit.js";
+import { spawn } from "child_process";
 import {
   parseMessage,
   MessageType,
@@ -1194,6 +1196,74 @@ setInterval(() => {
     }
   }
 }, 60000);
+
+// ─── Elastic N-shard auto-resplit ─────────────────────────────────
+// Every 45s: if the fleet size has changed enough to justify a different
+// shard count, re-run split.py + exit cleanly so systemd restarts the
+// coord with the new manifest. Clients reconnect, self-test, auto-assign.
+//
+// Gated on:
+//   - no active generations (in-flight requests would die)
+//   - 120s cooldown since last resplit (no oscillation)
+//   - hysteresis of ≥1 shard (small fluctuations ignored)
+//
+// Set AUTO_RESPLIT=0 env var to disable (useful for manual shard control
+// during debugging). Default is on.
+
+let lastResplitAt = 0;
+let resplitInFlight = false;
+
+if (process.env.AUTO_RESPLIT !== "0") {
+  setInterval(() => {
+    if (resplitInFlight) return;
+    const readyCount = [...topology.nodes.values()]
+      .filter(n => n.status === "ready").length;
+    const decision = decideResplit({
+      readyCount,
+      currentShards: SHARD_CONFIG.length,
+      numLayers: 12, // GPT-2 small; TODO read from manifest for larger models
+      activeGenerations: generations.size,
+      lastResplitAt,
+    });
+    if (!decision.shouldResplit) return;
+    resplitInFlight = true;
+    lastResplitAt = Date.now();
+    const target = decision.targetShards;
+    console.log(`[coordinator] auto-resplit: ${SHARD_CONFIG.length} → ${target} shards (fleet=${readyCount} ready)`);
+    addLog({
+      nodeId: "coordinator", level: "info", event: "auto_resplit_started",
+      data: { from: SHARD_CONFIG.length, to: target, readyCount },
+      timestamp: Date.now(),
+    });
+    const splitScript = join(ROOT_DIR, "model", "split.py");
+    const child = spawn("python3", [splitScript, "--num-shards", String(target), "--dtype", "float16"], {
+      cwd: ROOT_DIR, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", d => { stderr += d.toString(); });
+    child.on("close", code => {
+      if (code !== 0) {
+        console.error(`[coordinator] split.py failed with code ${code}: ${stderr.slice(0, 400)}`);
+        addLog({
+          nodeId: "coordinator", level: "error", event: "auto_resplit_failed",
+          data: { code, stderr: stderr.slice(0, 200) },
+          timestamp: Date.now(),
+        });
+        resplitInFlight = false;
+        return;
+      }
+      console.log(`[coordinator] auto-resplit succeeded, exiting for systemd restart to pick up new manifest`);
+      addLog({
+        nodeId: "coordinator", level: "info", event: "auto_resplit_complete",
+        data: { newShards: target },
+        timestamp: Date.now(),
+      });
+      // Exit cleanly. systemd (Restart=always in unit file) brings us back
+      // with the new manifest. Clients reconnect within ~5s.
+      setTimeout(() => process.exit(0), 500);
+    });
+  }, 45000);
+}
 
 setInterval(() => {
   const stale = topology.getStaleNodes(60000);
