@@ -673,6 +673,51 @@ function handleJoin(ws, msg) {
   const protoV2 = capabilities.protocolV2 ? " [proto_v2]" : "";
   console.log(`[coordinator] Node ${nodeId} joined (webgpu: ${capabilities.webgpu}${protoV2})`);
 
+  // Self-test telemetry: if the device reported failures, log them to a
+  // pending-fix registry. The self-healing loop reads this registry and
+  // proposes kernel patches. Append-only; each record timestamped.
+  const st = capabilities.selfTest;
+  if (st && st.pass === false && Array.isArray(st.failures) && st.failures.length > 0) {
+    const record = {
+      ts: Date.now(),
+      nodeId,
+      gpuVendor: capabilities.gpuVendor || "unknown",
+      userAgent: (capabilities.userAgent || "").slice(0, 120),
+      mobile: !!capabilities.mobile,
+      failures: st.failures,
+    };
+    try {
+      const logPath = join(ROOT_DIR, "logs", "pending_self_test_fixes.jsonl");
+      const logDir = join(ROOT_DIR, "logs");
+      if (!existsSync(logDir)) {
+        // best-effort mkdir
+        try { require("fs").mkdirSync(logDir, { recursive: true }); } catch (_) {}
+      }
+      writeFileSync(logPath, JSON.stringify(record) + "\n", { flag: "a" });
+    } catch (e) {
+      console.warn(`[coordinator] failed to write pending_fix record: ${e.message}`);
+    }
+    addLog({
+      nodeId,
+      level: "warn",
+      event: "self_test_failed",
+      data: { vendor: capabilities.gpuVendor, failures: st.failures },
+      timestamp: Date.now(),
+    });
+    console.warn(`[coordinator] Node ${nodeId} (${capabilities.gpuVendor}) failed self-test: ${st.failures.map(f => f.kernel).join(", ")}`);
+    // Policy: failing devices are STILL added to topology but won't get shards
+    // assigned by tryAssignShards. This gives visibility without breaking the
+    // inference pool. Future: auto-exclude once auto-fix loop is in place.
+  } else if (st && st.pass === true) {
+    addLog({
+      nodeId,
+      level: "info",
+      event: "self_test_passed",
+      data: { vendor: capabilities.gpuVendor },
+      timestamp: Date.now(),
+    });
+  }
+
   topology.addNode(nodeId, ws, capabilities);
   tryAssignShards();
   broadcastTopology();

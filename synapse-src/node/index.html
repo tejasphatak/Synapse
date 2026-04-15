@@ -173,7 +173,9 @@
   <script type="module">
     // Start with a static import for the first load. Hot reload will
     // re-import with a cache-busting query param.
-    let NodeModule = await import("./node.js?v=20260413b");
+    // Timestamp on first load guarantees fresh fetch even when served from
+    // stale HTML cache. Hot-reload uses its own query inside node.js.
+    let NodeModule = await import(`./node.js?v=${Date.now()}`);
     let SynapseNode = NodeModule.SynapseNode;
 
     // Remote console — streams errors back to coordinator

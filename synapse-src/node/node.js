@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-hr1";
-import { Pipeline } from "./pipeline.js?v=20260415-selftest";
+import { Pipeline } from "./pipeline.js?v=20260415-chain";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -304,11 +304,16 @@ export class SynapseNode {
       this.selfTestResult = result;
       testPipeline._cleanupTempBuffers();
       if (!result.pass) {
-        this._setStatus("error", `Self-test failed: ${result.failures.map(f => f.kernel).join(", ")}`);
-        console.error("[node] Self-test failed — refusing to join pool:", result.failures);
-        return false;
+        // Still connect + send JOIN so coord can log the failure and feed the
+        // self-healing loop. Coord policy: failing nodes appear in topology
+        // but don't get shards assigned. Clear UI status for the user.
+        const kernels = result.failures.map(f => f.kernel).join(", ");
+        this._setStatus("error", `Self-test failed: ${kernels} (reporting to coord)`);
+        console.warn("[node] Self-test failed — will connect + report:", result.failures);
+        // Fall through to _connect — coord gets the failure via JOIN.capabilities.selfTest.
+      } else {
+        console.log("[node] Self-test passed");
       }
-      console.log("[node] Self-test passed");
     } catch (err) {
       this._setStatus("error", `Self-test crashed: ${err.message}`);
       return false;

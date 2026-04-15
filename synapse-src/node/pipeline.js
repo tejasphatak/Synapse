@@ -17,7 +17,11 @@ export class Pipeline {
   constructor(device, shardLoader) {
     this.device = device;
     this.loader = shardLoader;
-    this.config = shardLoader.getModelConfig();
+    // shardLoader may be null for self-test / pre-assignment path. Use a
+    // GPT-2 117M default config — kernels only need shape info, not weights.
+    this.config = shardLoader
+      ? shardLoader.getModelConfig()
+      : { vocabSize: 50257, hiddenSize: 768, numHeads: 12, headDim: 64, maxSeqLen: 1024, numLayers: 12 };
     this.pipelines = {};   // cached compute pipelines
     this.shaderModules = {}; // cached shader modules
     this._initialized = false;
@@ -60,8 +64,10 @@ export class Pipeline {
    */
   async runSelfTest() {
     const failures = [];
+    // Use the real model's hidden size so kernel workgroup assumptions hold.
+    // layernorm.wgsl dispatches workgroup_size=256 expecting hiddenSize elements.
     const seqLen = 4;
-    const hiddenSize = 16;
+    const hiddenSize = this.config.hiddenSize || 768;
 
     const mkBuf = (label, bytes, usage) => this._createBuffer(label, bytes,
       usage ?? (GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC));
@@ -122,6 +128,60 @@ export class Pipeline {
       }
     } catch (e) {
       failures.push({ kernel: "matmul", error: String(e.message || e) });
+    }
+
+    // Test 4: Chained multi-kernel pipeline. Some device bugs only manifest
+    // when kernels feed each other's intermediate state (e.g., Intel
+    // 2026-04-15: individual kernels pass, but chaining layernorm →
+    // matmul → residual → gelu produces NaN). Simulate the core of a
+    // transformer layer without weights: three sequential layernorm +
+    // matmul ops against identity-ish matrices, checking for NaN/Inf
+    // and sane magnitude growth at each step.
+    try {
+      const input = new Float32Array(seqLen * hiddenSize);
+      for (let i = 0; i < input.length; i++) input[i] = Math.sin(i * 0.01) * 0.5;
+      let curBuf = mkBuf("st_chain_in", input.byteLength);
+      this.device.queue.writeBuffer(curBuf, 0, input);
+
+      const gamma = new Float32Array(hiddenSize).fill(1.0);
+      const gammaBuf = mkBuf("st_chain_g", gamma.byteLength);
+      this.device.queue.writeBuffer(gammaBuf, 0, gamma);
+      const beta = new Float32Array(hiddenSize).fill(0.0);
+      const betaBuf = mkBuf("st_chain_b", beta.byteLength);
+      this.device.queue.writeBuffer(betaBuf, 0, beta);
+
+      // Identity-like matrix (diagonal 1.0) lets us preserve signal through
+      // matmul so we can detect NaN introduction without weight noise.
+      const wId = new Float32Array(hiddenSize * hiddenSize);
+      for (let i = 0; i < hiddenSize; i++) wId[i * hiddenSize + i] = 1.0;
+      const wBuf = mkBuf("st_chain_w", wId.byteLength);
+      this.device.queue.writeBuffer(wBuf, 0, wId);
+
+      let chainFailed = false;
+      for (let step = 0; step < 3 && !chainFailed; step++) {
+        const lnOut = await this._layerNorm(curBuf, seqLen, hiddenSize, gammaBuf, betaBuf);
+        const mmOut = await this._matmul(lnOut, seqLen, hiddenSize, wBuf, hiddenSize, hiddenSize);
+        const out = new Float32Array(await this._readBuffer(mmOut, 0, seqLen * hiddenSize * 4));
+        let nans = 0, sum2 = 0;
+        for (let i = 0; i < out.length; i++) {
+          const v = out[i];
+          if (Number.isNaN(v) || !Number.isFinite(v)) nans++;
+          else sum2 += v * v;
+        }
+        const rms = Math.sqrt(sum2 / Math.max(1, out.length - nans));
+        if (nans > 0) {
+          failures.push({ kernel: "chain_nan", step, nans, sampleIdx: Array.from(out.slice(0, 4)) });
+          chainFailed = true;
+        } else if (rms > 100 || rms < 0.001) {
+          // Post-layernorm + identity-matmul rms should be ~1. Extreme values
+          // indicate broken layernorm or matmul numerics.
+          failures.push({ kernel: "chain_rms_out_of_range", step, rms: +rms.toFixed(3) });
+          chainFailed = true;
+        }
+        curBuf = mmOut;
+      }
+    } catch (e) {
+      failures.push({ kernel: "chain", error: String(e.message || e) });
     }
 
     return { pass: failures.length === 0, failures };
