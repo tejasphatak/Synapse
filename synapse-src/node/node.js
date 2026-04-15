@@ -43,9 +43,29 @@ import { AdaptivePrecisionSelector } from "../protocol/adaptive-precision.js";
 import { SpeculativeController } from "./speculative.js";
 import { P2PChannel } from "./p2p.js";
 
+// Polyfill: crypto.randomUUID is only available in secure contexts (HTTPS)
+// and on Chrome 92+. Headless Chrome on HTTP / older builds lack it. Fall back
+// to crypto.getRandomValues-based RFC-4122 v4 UUID so nodes can join from
+// insecure contexts during development and from older substrates.
+function _randomUUID() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const b = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(b);
+  } else {
+    for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  }
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // variant RFC 4122
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 export class SynapseNode {
   constructor(statusCallback = null) {
-    this.nodeId = `node-${crypto.randomUUID().slice(0, 8)}`;
+    this.nodeId = `node-${_randomUUID().slice(0, 8)}`;
     this.ws = null;
     this.device = null;
     this.loader = null;
