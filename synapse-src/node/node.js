@@ -1102,6 +1102,7 @@ export class SynapseNode {
       this._sendLog("perf", "sample_top5", {
         requestId, tokenId,
         top: this.pipeline._lastSampleTop.top,
+        top20: this.pipeline._lastSampleTop.top20, // [[tokenId, rawLogit], ...] — for parity cross-checks
         logitRange: [
           +this.pipeline._lastSampleTop.minLogit.toFixed(3),
           +this.pipeline._lastSampleTop.maxLogit.toFixed(3),

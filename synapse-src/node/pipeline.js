@@ -473,6 +473,10 @@ export class Pipeline {
     const logits = await this._readBuffer(logitsTensor.buffer, offset, vocabSize * 4);
     const logitsF32 = new Float32Array(logits);
 
+    // Snapshot raw (pre-temperature) logits so the parity verifier can
+    // compare against HF/numpy output without having to re-apply temperature.
+    const rawLogits = Float32Array.from(logitsF32);
+
     // Temperature scaling
     for (let i = 0; i < logitsF32.length; i++) {
       logitsF32[i] /= temperature;
@@ -500,13 +504,18 @@ export class Pipeline {
     if (this._sampleCallCount === undefined) this._sampleCallCount = 0;
     this._sampleCallCount++;
     if (this._sampleCallCount <= 8 || this._sampleCallCount % 10 === 0) {
-      const top = Array.from(probs.keys())
-        .sort((a, b) => probs[b] - probs[a])
-        .slice(0, 5)
-        .map((i) => `${i}:${probs[i].toFixed(3)}`);
-      const maxLogitValPre = Math.max(...logitsF32);
-      const minLogitValPre = Math.min(...logitsF32);
-      this._lastSampleTop = { top, maxLogit: maxLogitValPre, minLogit: minLogitValPre };
+      // Rank by RAW (pre-temperature) logits so ordering and values are
+      // directly comparable to HF / numpy reference output.
+      const order = Array.from(rawLogits.keys()).sort((a, b) => rawLogits[b] - rawLogits[a]);
+      const top5 = order.slice(0, 5).map((i) => `${i}:${probs[i].toFixed(3)}`);
+      const top20 = order.slice(0, 20).map((i) => [i, +rawLogits[i].toFixed(4)]);
+      let maxL = -Infinity, minL = Infinity;
+      for (let i = 0; i < rawLogits.length; i++) {
+        const v = rawLogits[i];
+        if (v > maxL) maxL = v;
+        if (v < minL) minL = v;
+      }
+      this._lastSampleTop = { top: top5, top20, maxLogit: maxL, minLogit: minL };
     }
 
     // Multinomial sample
