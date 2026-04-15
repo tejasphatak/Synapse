@@ -296,6 +296,40 @@
     </div>
   </div>
 
+  <!--
+    Contribute prompt: soft ask that becomes assertive only when the fleet
+    is empty (no GPUs → chat is unusable anyway, so a blocker is the right
+    call). When fleet has GPUs but the visitor isn't contributing, show a
+    dismissible banner with a 7-day cooldown. Framing avoids guilt —
+    "make the network faster" over "we need you".
+  -->
+  <div id="contribAsk" role="dialog" aria-hidden="true" style="
+    position: fixed; left: 50%; bottom: 5rem; transform: translateX(-50%);
+    background: var(--bg-alt); border: 1px solid var(--accent);
+    border-radius: 12px; padding: 1rem 1.25rem;
+    max-width: min(480px, 92vw); width: min(480px, 92vw);
+    box-shadow: 0 8px 32px rgba(124, 92, 255, 0.25);
+    display: none; z-index: 30; font-size: 0.88rem; line-height: 1.5;
+  ">
+    <div style="display: flex; gap: 0.75rem; align-items: flex-start;">
+      <div style="flex: 1 1 auto; min-width: 0;">
+        <div style="font-weight: 700; color: var(--accent-2); margin-bottom: 0.35rem;"
+             id="contribAskTitle">Make the network faster</div>
+        <div style="color: var(--text); margin-bottom: 0.75rem;"
+             id="contribAskBody">Synapse runs on volunteers' GPUs. Lend yours for a few minutes and every chat across the fleet gets faster — yours included.</div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button class="btn-icon" id="contribAskYes"
+                  style="background: var(--accent); color: white; border-color: var(--accent); padding: 0.4rem 0.9rem;">
+            Contribute my GPU
+          </button>
+          <button class="btn-icon" id="contribAskLater" style="padding: 0.4rem 0.9rem;">
+            Maybe later
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Log drawer: slides in from right. Shows last N events from a circular buffer. -->
   <aside class="log-drawer" id="logDrawer" aria-hidden="true">
     <div class="log-header">
@@ -340,24 +374,102 @@
     // This keeps the integration surgical — zero changes needed inside the node code.
     const contribBtn = document.getElementById("contribBtn");
     let contribFrame = null;
+    function startContribute() {
+      if (contribFrame) return;
+      contribFrame = document.createElement("iframe");
+      contribFrame.src = "/node/index.html";
+      contribFrame.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;border:0";
+      contribFrame.setAttribute("aria-hidden", "true");
+      document.body.appendChild(contribFrame);
+      contribBtn.classList.add("on");
+      contribBtn.textContent = "Contributing";
+      appendLog("ok", "Contribute: device joining the pool");
+      window.__synapseContributing = true;
+    }
+    function stopContribute() {
+      if (!contribFrame) return;
+      contribFrame.remove();
+      contribFrame = null;
+      contribBtn.classList.remove("on");
+      contribBtn.textContent = "Contribute";
+      appendLog("info", "Contribute: off");
+      window.__synapseContributing = false;
+    }
     contribBtn.addEventListener("click", () => {
-      if (contribFrame) {
-        contribFrame.remove();
-        contribFrame = null;
-        contribBtn.classList.remove("on");
-        contribBtn.textContent = "Contribute";
-        appendLog("info", "Contribute: off");
-      } else {
-        contribFrame = document.createElement("iframe");
-        contribFrame.src = "/node/index.html";
-        contribFrame.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;border:0";
-        contribFrame.setAttribute("aria-hidden", "true");
-        document.body.appendChild(contribFrame);
-        contribBtn.classList.add("on");
-        contribBtn.textContent = "Contributing";
-        appendLog("ok", "Contribute: device joining the pool");
-      }
+      if (contribFrame) stopContribute(); else startContribute();
     });
+
+    // ── Contribute prompt: soft ask + blocking-when-empty behaviour.
+    // Shows once per 7 days unless user contributes. When fleet is empty,
+    // ask becomes stronger (copy changes, dismissal is still possible).
+    const ask = document.getElementById("contribAsk");
+    const askTitle = document.getElementById("contribAskTitle");
+    const askBody = document.getElementById("contribAskBody");
+    const DISMISS_KEY = "synapse_contribute_dismissed_at";
+    const COOLDOWN_DAYS = 7;
+
+    function dismissedRecently() {
+      const ts = parseInt(localStorage.getItem(DISMISS_KEY) || "0", 10);
+      if (!ts) return false;
+      return (Date.now() - ts) < COOLDOWN_DAYS * 24 * 3600 * 1000;
+    }
+    function showAsk(fleetEmpty) {
+      if (window.__synapseContributing) return;
+      // Fleet-empty state always shows (chat unusable anyway).
+      // Non-empty state respects the dismissal cooldown.
+      if (!fleetEmpty && dismissedRecently()) return;
+      ask.style.display = "block";
+      ask.setAttribute("aria-hidden", "false");
+      if (fleetEmpty) {
+        askTitle.textContent = "The network needs GPUs to answer";
+        askBody.textContent = "No compute nodes online right now. Contribute this device's GPU to bring the network live — chat works as soon as someone joins.";
+      } else {
+        askTitle.textContent = "Make the network faster";
+        askBody.textContent = "Synapse runs on volunteers' GPUs. Lend yours for a few minutes and every chat across the fleet gets faster — yours included.";
+      }
+    }
+    function hideAsk() {
+      ask.style.display = "none";
+      ask.setAttribute("aria-hidden", "true");
+    }
+
+    document.getElementById("contribAskYes").addEventListener("click", () => {
+      startContribute();
+      hideAsk();
+      // Contributing = implicit consent; clear the cooldown timestamp.
+      localStorage.removeItem(DISMISS_KEY);
+    });
+    document.getElementById("contribAskLater").addEventListener("click", () => {
+      localStorage.setItem(DISMISS_KEY, Date.now().toString());
+      hideAsk();
+      appendLog("info", "Contribute ask dismissed (7-day cooldown)");
+    });
+
+    // Surface the ask shortly after load — give the page a beat to
+    // render + connect before asking anything of the user.
+    setTimeout(() => {
+      if (window.__synapseContributing) return;
+      const fleetText = document.getElementById("fleetSummary")?.textContent || "";
+      const fleetEmpty = !fleetText || /0\s+GPU/i.test(fleetText);
+      showAsk(fleetEmpty);
+    }, 1500);
+
+    // Re-evaluate whenever the fleet summary changes (pipeline topology
+    // broadcast updates it). If fleet drops to 0 while page is open,
+    // re-prompt even if recently dismissed.
+    const fleetEl = document.getElementById("fleetSummary");
+    if (fleetEl && typeof MutationObserver !== "undefined") {
+      let wasEmpty = true;
+      new MutationObserver(() => {
+        const txt = fleetEl.textContent || "";
+        const isEmpty = !txt || /0\s+GPU/i.test(txt);
+        if (!wasEmpty && isEmpty) {
+          // transitioned 1+ → 0: blocker mode, show even if dismissed.
+          showAsk(true);
+        }
+        wasEmpty = isEmpty;
+      }).observe(fleetEl, { characterData: true, childList: true, subtree: true });
+    }
   </script>
 
   <script type="module">
