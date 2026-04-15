@@ -93,6 +93,17 @@ export class SynapseNode {
     this.useP2P = true;
     this.adaptivePrecision = null; // initialized when layer range is known
     this.useAdaptivePrecision = true;
+    // Wire quant override: URL param ?quant=int4 forces INT4 on the wire
+    // (bypassing adaptive selector). Default: INT8 + adaptive promotion.
+    // Used for A/B bandwidth measurement. See 2026-04-15 int4 finding.
+    this.forceQuantMode = null;
+    if (typeof window !== "undefined" && window.location) {
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get("quant");
+      if (q === "int4") this.forceQuantMode = "int4";
+      else if (q === "int8") this.forceQuantMode = "int8";
+      else if (q === "none") this.forceQuantMode = "none";
+    }
   }
 
   /**
@@ -729,9 +740,15 @@ export class SynapseNode {
       let flags = 0;
       let serialized;
 
-      // Determine quantization mode — adaptive precision overrides default INT8
+      // Determine quantization mode. Priority:
+      //   1. URL param ?quant=... (forces mode for A/B measurement)
+      //   2. Adaptive precision selector (per-layer promotion)
+      //   3. Default INT8 (or NONE if useQuantization=false)
       let quantMode = this.useQuantization ? QuantMode.INT8 : QuantMode.NONE;
-      if (this.adaptivePrecision) {
+      if (this.forceQuantMode === "int4") quantMode = QuantMode.INT4;
+      else if (this.forceQuantMode === "int8") quantMode = QuantMode.INT8;
+      else if (this.forceQuantMode === "none") quantMode = QuantMode.NONE;
+      else if (this.adaptivePrecision) {
         quantMode = this.adaptivePrecision.getMode(0);
       }
 
