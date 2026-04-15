@@ -584,6 +584,9 @@ function wsConnectionHandler(ws, req) {
     if (nodeId) {
       console.log(`[coordinator] Node ${nodeId} disconnected`);
       topology.removeNode(nodeId);
+      // Refill any shard slot the disconnected node was holding from the
+      // unassigned pool, otherwise new connects sit idle as "waiting".
+      tryAssignShards();
       broadcastTopology();
     }
   });
@@ -1049,14 +1052,46 @@ function broadcastToDashboards(data) {
 
 // ─── Heartbeat Check ──────────────────────────────────────────────
 
+// Coord-initiated PING: every 10s, poke every connected node so idle/backgrounded
+// tabs keep their WebSocket warm (mobile browsers throttle TX but still RX).
 setInterval(() => {
-  const stale = topology.getStaleNodes(30000);
+  const pingMsg = JSON.stringify({ type: "PING" });
+  for (const node of topology.nodes.values()) {
+    if (node.ws && node.ws.readyState === 1) {
+      try { node.ws.send(pingMsg); } catch (_) { /* ignore */ }
+    }
+  }
+}, 10000);
+
+// Coord self-audit: every 60s, if any nodes are connected but unassigned,
+// call tryAssignShards() as a backstop for missed assign opportunities.
+// This is the paranoid belt-and-suspenders fix for the "waiting for assignment"
+// bug — even if some disconnect path misses calling tryAssignShards, this
+// sweep catches it within a minute.
+setInterval(() => {
+  const unassignedCount = topology.getUnassignedNodes().length;
+  if (unassignedCount > 0) {
+    const beforeReady = [...topology.nodes.values()].filter(n => n.shardId !== null).length;
+    tryAssignShards();
+    const afterReady = [...topology.nodes.values()].filter(n => n.shardId !== null).length;
+    if (afterReady > beforeReady) {
+      console.log(`[coordinator] self-audit: assigned ${afterReady - beforeReady} shard(s) to previously-unassigned nodes`);
+      broadcastTopology();
+    }
+  }
+}, 60000);
+
+setInterval(() => {
+  const stale = topology.getStaleNodes(60000);
   for (const node of stale) {
     console.log(`[coordinator] Node ${node.nodeId} stale — removing`);
     if (node.ws) node.ws.terminate();
     topology.removeNode(node.nodeId);
   }
-  if (stale.length > 0) broadcastTopology();
+  if (stale.length > 0) {
+    tryAssignShards(); // refill any shard slots vacated by the sweep
+    broadcastTopology();
+  }
   router.cleanupOldRequests();
 
   // Sweep timed-out generations — prevents memory leaks from orphaned requests

@@ -30,6 +30,10 @@ export class SpeculativeController {
     // Key: requestId, Value: [{ promise, prediction, seqPos, estimatedComputeMs }, ...]
     this.pendingBatch = new Map();
 
+    // Pending shadow predictions (warmup-only, no GPU work)
+    // Key: requestId, Value: { prediction, seqPos }
+    this.pendingShadow = new Map();
+
     // Whether speculation is enabled (can be toggled at runtime)
     this.enabled = true;
 
@@ -85,6 +89,19 @@ export class SpeculativeController {
     }
     // Step 1b: Fall back to single pending speculation
     else {
+      // Shadow-mode: cheap predict + verify only (no GPU work, no acceptance).
+      // This is what populates hits/misses during warmup so auto-enable can fire.
+      // Expose the per-step cosine via stats so the node can emit a log event —
+      // turns shadow mode into a predictor-quality measurement harness.
+      const shadow = this.pendingShadow.get(requestId);
+      if (shadow && shadow.seqPos === seqPos) {
+        const v = this.predictor.verify(shadow.prediction, activationFloat32);
+        this.lastShadowCosine = v.cosine;
+        this.pendingShadow.delete(requestId);
+      } else {
+        this.lastShadowCosine = null;
+      }
+
       const pendingSpec = this.pending.get(requestId);
       if (pendingSpec && pendingSpec.seqPos === seqPos) {
         const verification = this.predictor.verify(pendingSpec.prediction, activationFloat32);
@@ -111,17 +128,30 @@ export class SpeculativeController {
     // Step 2: Record observation for future predictions
     this.predictor.observe(requestId, activationFloat32);
 
-    // Step 3: Predict next step(s) and kick off speculative compute.
-    // Always runs during warmup so verify() can accumulate stats and the
-    // auto-enable check has data to act on. Without this, the controller
-    // deadlocks: enabled requires warmup, warmup requires verify, verify
-    // requires pending speculations, pending requires enabled.
-    if (this.enabled || !this._warmupExhausted) {
+    // Step 3: Predict next step(s).
+    //
+    // Two modes:
+    //   - enabled=true → real GPU speculation (allocates buffer, launches
+    //     forwardLayersCached, gated on confidence ≥ 0.9)
+    //   - shadow mode (during warmup) → predict + stash for verify only.
+    //     No GPU work, no confidence gate. Pure CPU. Lets verify() populate
+    //     hits/misses so auto-enable / warmup-exhausted has data to decide on.
+    //
+    // The first-pass shadow fix gated only on `enabled`, but `_speculateNext`
+    // itself silently dropped low-confidence predictions, so warmup never
+    // accumulated stats. Same bootstrap-deadlock pattern, one layer down.
+    if (this.enabled) {
       if (this.batchDepth > 1) {
         this._speculateNextBatch(requestId, seqPos + 1, this.batchDepth, layerStart, layerEnd);
       } else {
         this._speculateNext(requestId, seqPos + 1, layerStart, layerEnd);
       }
+    } else {
+      // Measurement mode: always shadow-predict while disabled. The auto-enable
+      // check inside the node will flip `enabled=true` if hitRate clears the
+      // threshold. Otherwise shadow mode just keeps emitting cosine samples
+      // so we get a full predictor-quality distribution across runs.
+      this._shadowPredict(requestId, seqPos + 1);
     }
 
     return { useSpeculative, speculativeHidden, acceptedSteps, rollbackPos };
@@ -309,11 +339,30 @@ export class SpeculativeController {
   }
 
   /**
+   * Shadow prediction: predict the next activation but DON'T launch GPU compute.
+   * Just stash the predicted Float32Array so the next onActivationReceived call
+   * can verify it against the real activation. Cheap path that populates
+   * hits/misses during warmup without burning GPU.
+   *
+   * No confidence gate — we want stats even on low-confidence predictions to
+   * decide whether the predictor is good enough to enable real speculation.
+   */
+  _shadowPredict(requestId, nextSeqPos) {
+    const prediction = this.predictor.predict(requestId);
+    if (!prediction) return; // not enough history yet (n < 2)
+    this.pendingShadow.set(requestId, {
+      prediction: prediction.prediction,
+      seqPos: nextSeqPos,
+    });
+  }
+
+  /**
    * Clear state for a completed generation.
    */
   clear(requestId) {
     this.pending.delete(requestId);
     this.pendingBatch.delete(requestId);
+    this.pendingShadow.delete(requestId);
     this.predictor.clear(requestId);
   }
 

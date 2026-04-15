@@ -181,6 +181,10 @@ export class SynapseNode {
           }
         }, 15000);
 
+        // Browser-keepalive (wakeLock + silent audio) reverted 2026-04-15
+        // pending coherence-regression bisect. Coord-initiated PING every 10s
+        // + 60s stale threshold already handles most mobile bg-throttling.
+
         resolve(true);
       };
 
@@ -290,6 +294,14 @@ export class SynapseNode {
 
       case MessageType.PONG:
         // Heartbeat acknowledged
+        break;
+
+      case MessageType.PING:
+        // Coord-initiated keepalive — reply with PONG. Receiving the frame
+        // keeps the WS warm even if our outbound timers are throttled.
+        if (this.ws.readyState === 1) {
+          this.ws.send(JSON.stringify({ type: MessageType.PONG }));
+        }
         break;
 
       case "P2P_SIGNAL":
@@ -558,6 +570,17 @@ export class SynapseNode {
           const result = await this.speculative.onActivationReceived(
             requestId, hiddenFloat32, hidden, seqPos, this.layerStart, this.layerEnd
           );
+
+          // Instrumentation: if shadow mode just verified a prediction, emit
+          // the per-step cosine so we can build a predictor-quality histogram
+          // across many generations without needing warmup to finish.
+          if (this.speculative.lastShadowCosine != null) {
+            this._sendLog("perf", "speculation_cosine_sample", {
+              shardId: this.shardId,
+              seqPos,
+              cosine: +this.speculative.lastShadowCosine.toFixed(4),
+            });
+          }
 
           if (this.speculative.enabled && result.useSpeculative) {
             hidden = result.speculativeHidden;
