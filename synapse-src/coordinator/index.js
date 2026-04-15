@@ -463,7 +463,13 @@ function requestHandler(req, res) {
 
   // Serve static files from project root (strip query string)
   const urlPath = decodeURIComponent(req.url.split("?")[0]);
-  let filePath = urlPath === "/" ? "/ui/home.html" : urlPath === "/chat" ? "/ui/prompt.html" : urlPath;
+  // Root and /chat both serve the unified prompt-default page. The old
+  // home.html is still reachable at /home for legacy links. Prompt page
+  // hosts both the chat UI and an opt-in "Contribute" toggle that loads
+  // the node page inside a hidden iframe — one URL for both roles.
+  let filePath = (urlPath === "/" || urlPath === "/chat")
+    ? "/ui/prompt.html"
+    : urlPath === "/home" ? "/ui/home.html" : urlPath;
   const fullPath = resolve(ROOT_DIR, filePath.startsWith("/") ? filePath.slice(1) : filePath);
 
   // Path traversal guard: resolved path must stay within ROOT_DIR
