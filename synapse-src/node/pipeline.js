@@ -48,7 +48,7 @@ export class Pipeline {
       // Safe to load unconditionally — each compiles once and incurs zero
       // runtime cost until its JS wrapper is called. Fetch errors are
       // swallowed so older deployments without the files don't break.
-      "rmsnorm", "rope", "elementwise_mul", "attention_gqa",
+      "rmsnorm", "rope", "elementwise_mul", "attention_gqa", "gemma_embed",
     ];
 
     for (const name of shaderNames) {
@@ -272,30 +272,50 @@ export class Pipeline {
   async gemmaEmbed(tokenIds) {
     const { hiddenSize } = this.config;
     const seqLen = tokenIds.length;
-    const name = "model.embed_tokens.weight";
-    const meta = this.loader.getTensorMeta ? this.loader.getTensorMeta(name) : null;
-    const gpuBuf = this.loader.getBuffer(name);
-    if (!gpuBuf) throw new Error(`Gemma embed: ${name} not loaded`);
+    const embedBuf = this.loader.getBuffer("model.embed_tokens.weight");
+    if (!embedBuf) throw new Error("Gemma embed: model.embed_tokens.weight not loaded");
 
-    // Read back only the rows we need. Read full embed matrix once (small
-    // relative to attention buffers), gather in JS.
-    const vocabSize = this.loader?.manifest?.vocab_size;
-    if (!vocabSize) throw new Error("Gemma embed: manifest.vocab_size missing");
-    const embedBytes = vocabSize * hiddenSize * 4; // f32 after upload
-    const raw = await this._readBuffer(gpuBuf, 0, embedBytes);
-    const embed = new Float32Array(raw);
+    // Upload token IDs and dispatch gemma_embed.wgsl. Gather runs on-GPU
+    // so we don't need to read back the (huge) embedding matrix.
+    const tokBuf = this._createBuffer("gemma_embed_tokids", seqLen * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(tokBuf, 0, new Uint32Array(tokenIds));
 
-    const scale = Math.sqrt(hiddenSize);
-    const out = new Float32Array(seqLen * hiddenSize);
-    for (let i = 0; i < seqLen; i++) {
-      const row = tokenIds[i] * hiddenSize;
-      const dst = i * hiddenSize;
-      for (let j = 0; j < hiddenSize; j++) out[dst + j] = embed[row + j] * scale;
-    }
-
-    const outputBuf = this._createBuffer("gemma_embed_out", out.byteLength,
+    const outputBuf = this._createBuffer("gemma_embed_out", seqLen * hiddenSize * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(outputBuf, 0, out);
+
+    const params = new ArrayBuffer(16);
+    const v = new DataView(params);
+    v.setUint32(0, seqLen, true);
+    v.setUint32(4, hiddenSize, true);
+    v.setFloat32(8, Math.sqrt(hiddenSize), true);
+    const pBuf = this._createBuffer("gemma_embed_params", 16,
+      GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(pBuf, 0, new Uint8Array(params));
+
+    const pipe = this._getOrCreatePipeline("gemma_embed", "gemma_embed", [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ]);
+    const bg = this.device.createBindGroup({
+      layout: pipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: pBuf } },
+        { binding: 1, resource: { buffer: tokBuf } },
+        { binding: 2, resource: { buffer: embedBuf } },
+        { binding: 3, resource: { buffer: outputBuf } },
+      ],
+    });
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipe);
+    pass.setBindGroup(0, bg);
+    const total = seqLen * hiddenSize;
+    pass.dispatchWorkgroups(Math.ceil(total / 256));
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
     return { buffer: outputBuf, shape: [seqLen, hiddenSize] };
   }
 
@@ -1529,24 +1549,9 @@ export class Pipeline {
    * handles one token_id → one row, with the same sqrt(hidden) scale.
    */
   async gemmaEmbedSingle(tokenId) {
-    const { hiddenSize } = this.config;
-    const vocabSize = this.loader?.manifest?.vocab_size;
-    if (!vocabSize) throw new Error("gemmaEmbedSingle: manifest.vocab_size missing");
-    const gpuBuf = this.loader.getBuffer("model.embed_tokens.weight");
-    if (!gpuBuf) throw new Error("gemmaEmbedSingle: embed_tokens not loaded");
-
-    // Read only the one row we need — much cheaper than the full 576MB table.
-    const rowBytes = hiddenSize * 4;
-    const raw = await this._readBuffer(gpuBuf, tokenId * rowBytes, rowBytes);
-    const row = new Float32Array(raw);
-    const scale = Math.sqrt(hiddenSize);
-    const out = new Float32Array(hiddenSize);
-    for (let j = 0; j < hiddenSize; j++) out[j] = row[j] * scale;
-
-    const outputBuf = this._createBuffer("gemma_embed_single", out.byteLength,
-      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-    this.device.queue.writeBuffer(outputBuf, 0, out);
-    return { buffer: outputBuf, shape: [1, hiddenSize] };
+    // Single-token case is just gemmaEmbed with a 1-element token list —
+    // keeps one on-GPU code path.
+    return this.gemmaEmbed([tokenId]);
   }
 
   /**
