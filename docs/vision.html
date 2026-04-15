@@ -146,6 +146,61 @@
       one hop from someone else's fleet.</p>
     </div>
 
+    <h2>Private deployments</h2>
+    <p>
+      Synapse doesn't need to be a single public network. The same code can be
+      stood up inside a company, a lab, a school, a home. When you run it yourself,
+      your data never touches anyone else's infrastructure — because there isn't any.
+    </p>
+
+    <div class="block">
+      <h3><span class="pill p-later">shape</span> Your fleet, your perimeter</h3>
+      <p>Run the coordinator on your own network. Your browsers join <em>your</em>
+      coordinator. Prompts, activations, logs — all stay where your devices can see
+      them. No SaaS in the middle, no telemetry phoning home, no vendor to trust.
+      If it's air-gapped, it's air-gapped.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-later">shape</span> Tenant isolation on a shared fleet</h3>
+      <p>Alternatively, keep infrastructure shared but isolate routing. A signed
+      tenant id on every JOIN and prompt means your requests never land on someone
+      else's device, even if you share a coordinator. Lighter ops, cryptographic
+      separation.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-later">shape</span> Hybrid by policy</h3>
+      <p>Sensitive work stays inside; low-sensitivity work bursts to the public
+      fleet. A policy engine at the coord picks per-request. "This prompt contains
+      PII → private only" is a one-line rule.</p>
+    </div>
+
+    <h3 style="margin-top:1.8rem">The security primitives that make this possible</h3>
+    <ul>
+      <li><strong>Signed kernel + model bundles.</strong> Every node verifies the WGSL
+      and weights hash at boot. Injected kernels don't run.</li>
+      <li><strong>mTLS between coord and node.</strong> Bring your own CA; devices without
+      a corporate-issued certificate don't assign-shard.</li>
+      <li><strong>End-to-end activation encryption.</strong> Session keys negotiated between
+      the first and last shard; the coord relays ciphertext it cannot read.</li>
+      <li><strong>Metadata-only audit logs.</strong> Tenant id, shard path, latency — never
+      payload. Compliance-ready, privacy-preserving.</li>
+      <li><strong>Egress policy enforcement.</strong> Enterprise nodes pinned to a specific
+      coord URL via systemd drop-in + firewall rules.</li>
+      <li><strong>Optional remote attestation.</strong> WebGPU adapter info + signed device
+      certificate (Windows Hello / TPM) means the coord can require "real corporate
+      hardware" before trusting a node.</li>
+    </ul>
+
+    <p class="tagline">
+      The goal isn't an enterprise tier. The goal is that the same open code is
+      deployable by anyone who needs these properties, without asking us for
+      permission — <strong>and it's free, forever</strong>. No "community edition" vs
+      "enterprise edition." No feature-gated-for-paid users. Same bits, same license,
+      for everyone.
+    </p>
+
     <h2>Open questions</h2>
 
     <div class="block">
