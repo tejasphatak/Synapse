@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Vision — Synapse</title>
+  <meta name="description" content="Where Synapse is heading: the roadmap, the bets, and the open questions.">
+  <link rel="icon" href="assets/favicon.ico">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root{--purple:#7c5cff;--green:#00ff88;--teal:#4ecdc4;--bg:#0a0a0f;--surface:#111118;--surface2:#16161f;--border:#1e1e2a;--text:#e0e0e0;--muted:#888;--dim:#555}
+    *{margin:0;padding:0;box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{font-family:'Inter',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
+    nav{position:fixed;top:0;width:100%;z-index:100;background:rgba(10,10,15,0.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:16px 24px}
+    nav .inner{max-width:1100px;margin:0 auto;display:flex;justify-content:space-between;align-items:center}
+    nav .logo{font-weight:800;font-size:1.1rem;letter-spacing:0.08em;background:linear-gradient(135deg,var(--purple),var(--green));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    nav .links a{color:var(--muted);text-decoration:none;font-size:0.85rem;font-weight:500;margin-left:28px;transition:color 0.2s}
+    nav .links a:hover{color:#fff}
+    main{max-width:880px;margin:120px auto 80px;padding:0 24px}
+    h1{font-size:2.6rem;font-weight:900;background:linear-gradient(135deg,var(--purple),var(--teal));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:0.6rem;letter-spacing:-0.02em}
+    .lede{color:var(--muted);font-size:1.05rem;margin-bottom:3rem;max-width:640px}
+    h2{font-size:1.45rem;font-weight:700;margin:2.4rem 0 1rem;color:#fff;letter-spacing:-0.01em}
+    h3{font-size:1.05rem;font-weight:600;margin:1.4rem 0 0.5rem;color:var(--teal)}
+    p{color:var(--text);margin-bottom:0.9rem}
+    ul{color:var(--text);padding-left:1.2rem;margin-bottom:1rem}
+    li{margin-bottom:0.35rem}
+    .pill{display:inline-block;font-size:0.72rem;padding:2px 10px;border-radius:999px;font-weight:600;letter-spacing:0.04em;vertical-align:middle;margin-right:8px}
+    .p-now{background:rgba(0,255,136,0.12);color:var(--green);border:1px solid rgba(0,255,136,0.3)}
+    .p-next{background:rgba(124,92,255,0.12);color:var(--purple);border:1px solid rgba(124,92,255,0.3)}
+    .p-later{background:rgba(78,205,196,0.1);color:var(--teal);border:1px solid rgba(78,205,196,0.25)}
+    .p-risk{background:rgba(255,100,100,0.1);color:#ff8080;border:1px solid rgba(255,100,100,0.25)}
+    .block{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.3rem 1.5rem;margin:1rem 0}
+    .block strong{color:#fff}
+    .tagline{color:var(--muted);font-size:0.9rem;font-style:italic;border-left:2px solid var(--purple);padding-left:0.9rem;margin:1.2rem 0}
+    footer{max-width:880px;margin:4rem auto 2rem;padding:0 24px;color:var(--dim);font-size:0.8rem;text-align:center}
+    a{color:var(--teal)}
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="inner">
+      <a href="/" style="text-decoration:none" class="logo">SYNAPSE</a>
+      <div class="links">
+        <a href="/#how">How It Works</a>
+        <a href="vision.html" style="color:#fff">Vision</a>
+        <a href="blog/">Blog</a>
+        <a href="https://github.com/tejasphatak/Synapse">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <h1>Vision</h1>
+    <p class="lede">
+      Synapse turns every browser into a compute node for open LLMs. No cloud GPUs. No API keys.
+      Phones, tablets, laptops, gaming consoles — anything with WebGPU can help run a model.
+      This page is a living map of where we are, what we're betting on next, and what's still open.
+    </p>
+
+    <div class="tagline">
+      The bet: useful AI will run on the devices we already own, not in rented data centres.
+    </div>
+
+    <div class="block" style="border-color:rgba(124,92,255,0.3);background:rgba(124,92,255,0.05)">
+      <h3 style="color:var(--purple);margin-top:0">A P2P network for intelligence, not piracy</h3>
+      <p style="margin-bottom:0.4rem">
+        Yes, Synapse looks like a torrent client. Peers, trackers (coordinator), piece verification,
+        seed ratios. The difference: nothing here is someone else's movie. The only thing being
+        shared is <em>compute</em>, and the only thing being produced is <em>a next token</em>.
+      </p>
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:0">
+        No copyright holders to annoy. No DMCA. Just idle GPUs doing math for people who asked a question.
+      </p>
+    </div>
+
+    <h2>Now shipping</h2>
+
+    <div class="block">
+      <h3><span class="pill p-now">live</span> Gemma 3 1B across browser GPUs</h3>
+      <p>End-to-end inference in under 100MB per-device shards. <strong>99.99% numerical parity</strong>
+      with HuggingFace reference — validated layer-by-layer, committed in
+      <a href="https://github.com/tejasphatak/Synapse/tree/main/research/gemma_parity">research/gemma_parity</a>.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-now">live</span> Zero-install contribution</h3>
+      <p>Open the site, tap <em>Contribute</em>, your GPU joins the fleet. No downloads, no accounts.
+      The contribution is transparent — you see it, you can stop it, nothing happens in the background.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-now">live</span> Heterogeneous fleet</h3>
+      <p>Phones (Qualcomm, Apple, Mediatek), laptops (Intel, Apple Silicon, NVIDIA), Android tablets,
+      Xbox via Edge. Same WGSL kernels, different silicon, one pipeline.</p>
+    </div>
+
+    <h2>Next</h2>
+
+    <div class="block">
+      <h3><span class="pill p-next">next</span> Smaller + larger models side-by-side</h3>
+      <p>Gemma 3 270M for mobile-first prompts. Gemma 3 4B when the fleet is big enough to split wider.
+      Model selected per-request based on fleet capacity.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-next">next</span> Shadow replicas — fail-fast fleets</h3>
+      <p>Each shard held by two nodes. Activations race to the coord; first answer wins.
+      A phone going to sleep mid-generation stops being a user-visible event.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-next">next</span> Peer view with live traffic</h3>
+      <p>Torrent-client style pane: see which devices are in the pool, what shard they serve,
+      how fast they're going, up/down bytes, P2P vs relayed. Fun to watch, useful when you're
+      choosing which browser tab to keep open.</p>
+    </div>
+
+    <h2>Further out</h2>
+
+    <div class="block">
+      <h3><span class="pill p-later">later</span> Speculative decoding, validated</h3>
+      <p>Predict k tokens from the activation, let multiple shards verify in parallel.
+      The code is already in the tree — 4 of 5 Phase 2/3/4 optimizations are code-complete
+      but never validated on real phones.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-later">later</span> FP16 wire + fused kernels</h3>
+      <p>Activations move as fp16 not fp32 — halve the bytes on the wire. RMSNorm → matmul →
+      residual fused into one WGSL dispatch — cut VRAM round-trips.
+      Mobile GPUs benefit most.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-later">later</span> Badges, not money</h3>
+      <p>Contribute-minutes earn visible badges ("first thousand tokens served", "multi-day
+      contributor"). Pure recognition, nothing to monetise, nothing to exchange. No crypto,
+      no tokens — just a ledger of who showed up.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-later">later</span> Decentralised coordinator</h3>
+      <p>Today one coord is a single point of failure. A DHT-based signaling layer + federated
+      coords means any operator can stand one up and bridge to others. Synapse is always
+      one hop from someone else's fleet.</p>
+    </div>
+
+    <h2>Open questions</h2>
+
+    <div class="block">
+      <h3><span class="pill p-risk">open</span> Latency vs parity</h3>
+      <p>FP16 on mobile is faster but loses ~2-3 bits of precision per op. At 26 layers that
+      accumulates. How much drift is acceptable before the output is meaningfully different
+      from the reference? We measure, we don't guess.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-risk">open</span> The battery question</h3>
+      <p>Should we auto-pause when the phone is on battery under 30%? Cap minutes/day per
+      device? The right default is "don't drain someone's battery during their commute."
+      Contribute must always feel polite.</p>
+    </div>
+
+    <div class="block">
+      <h3><span class="pill p-risk">open</span> What counts as a contribution?</h3>
+      <p>A phone on a slow connection might produce a valid activation 10s too late. Did they
+      contribute? Credit by work produced, not work attempted — but the UX has to show both.</p>
+    </div>
+
+    <h2>Principles</h2>
+    <ul>
+      <li><strong>No sales.</strong> This is a research + access project. Money is a byproduct if it ever shows up.</li>
+      <li><strong>No PII on the wire.</strong> Vendor tags and shard IDs yes; IPs and prompts never.</li>
+      <li><strong>No dark defaults.</strong> Contribute is opt-in visible. A background tab never does computation the user didn't see.</li>
+      <li><strong>Rigor over vibes.</strong> Every kernel has a numpy reference. Every claim has a test. Every commit has a why.</li>
+      <li><strong>Open by default.</strong> Source, research, and findings are public. Private is an exception that needs a reason.</li>
+    </ul>
+  </main>
+
+  <footer>
+    <p>
+      Synapse is experimental infrastructure. Built as a research project.
+      <a href="https://github.com/tejasphatak/Synapse">Source on GitHub</a>.
+    </p>
+  </footer>
+</body>
+</html>

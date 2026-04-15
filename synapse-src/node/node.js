@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-p2phop";
+import { Pipeline } from "./pipeline.js?v=20260415-stable1";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -607,11 +607,10 @@ export class SynapseNode {
         this.useQuantization = false;
         this.useAdaptivePrecision = false;
         this.forceQuantMode = "none";
-        // Speculation's predictor was tuned on GPT-2 activation shape and
-        // doesn't generalize. Each predict+verify triggers an extra
-        // readback per step. Disable until retrained.
-        this.useSpeculation = false;
-        this.speculative = null;
+        // Re-enabled: predictor is activation-shape-agnostic (operates on
+        // float32 vectors). Shadow mode observes without affecting output
+        // for the first warmupSteps; auto-enables only if hit-rate clears
+        // threshold. If accuracy is poor on Gemma, it self-gates off.
       }
 
       // Initialize speculative execution

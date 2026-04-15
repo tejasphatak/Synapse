@@ -325,10 +325,33 @@
       <span class="status-text" id="fleetSummary"></span>
     </div>
     <div class="actions">
+      <button class="btn-icon" id="fleetBtn" title="Show fleet details">Fleet</button>
       <button class="btn-icon" id="contribBtn" title="Contribute this device's GPU">Contribute</button>
       <button class="btn-icon" id="logBtn" title="Show event log">Log</button>
     </div>
   </header>
+
+  <!-- Fleet panel: slide-up sheet showing connected peers, vendors, shard
+       assignments, and live traffic indicator. Non-intrusive, opens on
+       explicit tap. Torrent-client aesthetic, light/fun palette. -->
+  <aside id="fleetPanel" aria-hidden="true" style="
+    position:fixed;right:1rem;bottom:5.5rem;width:min(380px,calc(100vw - 2rem));
+    max-height:70vh;overflow:auto;background:#fffdfa;border:1px solid #e7e3da;
+    border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.08);
+    padding:0.9rem 1rem;font:13px/1.5 -apple-system,system-ui,sans-serif;
+    color:#2d2a24;display:none;z-index:50">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+      <strong style="font-size:13px">The fleet</strong>
+      <button id="fleetCloseBtn" aria-label="Close"
+        style="border:0;background:none;font-size:18px;cursor:pointer;color:#666">×</button>
+    </div>
+    <div id="fleetSummary2" style="color:#655f55;margin-bottom:0.6rem"></div>
+    <ul id="fleetPeerList" style="list-style:none;padding:0;margin:0"></ul>
+    <div style="margin-top:0.7rem;padding-top:0.6rem;border-top:1px solid #eee4d4;color:#6b6558;font-size:11.5px">
+      <div>Model: <span id="fleetModel">—</span></div>
+      <div>Decode: <span id="fleetTps">— tok/s</span> · Wire: <span id="fleetP2p">—</span></div>
+    </div>
+  </aside>
 
   <div class="main">
     <div class="messages" id="messages">
@@ -434,6 +457,96 @@
       drawer.setAttribute("aria-hidden", drawer.classList.contains("open") ? "false" : "true");
     });
     logCloseBtn.addEventListener("click", () => drawer.classList.remove("open"));
+
+    // ── Fleet panel: live peer list, non-intrusive slide-up.
+    // Pulls /api/topology + /api/p2p-stats every 2s while visible.
+    const fleetBtn = document.getElementById("fleetBtn");
+    const fleetPanel = document.getElementById("fleetPanel");
+    const fleetCloseBtn = document.getElementById("fleetCloseBtn");
+    const fleetPeerList = document.getElementById("fleetPeerList");
+    const fleetSummary2 = document.getElementById("fleetSummary2");
+    const fleetModelEl = document.getElementById("fleetModel");
+    const fleetTpsEl = document.getElementById("fleetTps");
+    const fleetP2pEl = document.getElementById("fleetP2p");
+    let fleetPollTimer = null;
+
+    // Vendor → emoji for a tiny visual torrent-client flavour.
+    function vendorIcon(v) {
+      const k = (v || "").toLowerCase();
+      if (k.includes("nvidia")) return "🟢";
+      if (k.includes("apple"))  return "⚪";
+      if (k.includes("qualcomm")) return "🟠";
+      if (k.includes("arm"))    return "⚫";
+      if (k.includes("intel"))  return "🔵";
+      if (k.includes("img"))    return "🟣";
+      return "🟡";
+    }
+
+    async function refreshFleet() {
+      try {
+        const [topo, p2p] = await Promise.all([
+          fetch("/api/topology").then(r => r.json()).catch(() => null),
+          fetch("/api/p2p-stats?windowMs=60000").then(r => r.json()).catch(() => null),
+        ]);
+        if (!topo) return;
+        const nodes = topo.nodes || [];
+        const ready = nodes.filter(n => n.status === "ready");
+        fleetSummary2.textContent = `${ready.length}/${topo.pipeline?.length ?? "?"} shards live · ${nodes.length} device${nodes.length === 1 ? "" : "s"} connected`;
+
+        const vendorMap = window.__synapseVendorMap || (window.__synapseVendorMap = {});
+        // Best-effort vendor enrichment from log events: watch self_test_passed.
+        fetch("/api/logs?event=self_test_passed&limit=80")
+          .then(r => r.ok ? r.json() : null)
+          .then(d => { for (const e of (d?.logs || [])) vendorMap[e.nodeId] = e.data?.vendor; })
+          .catch(() => {});
+
+        fleetPeerList.innerHTML = nodes.map(n => {
+          const v = vendorMap[n.nodeId] || "?";
+          const badge = n.status === "ready" ? "ready" : n.status || "connecting";
+          const badgeColor = n.status === "ready" ? "#6aa96a"
+                           : n.status === "assigned" ? "#c29a4a" : "#888";
+          const shard = n.shardId != null ? `shard ${n.shardId}` : "idle";
+          return `<li style="display:flex;align-items:center;gap:0.55rem;padding:0.35rem 0;border-bottom:1px dashed #eee4d4">
+            <span style="font-size:14px">${vendorIcon(v)}</span>
+            <span style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:12px">${n.nodeId.slice(0, 14)}</div>
+              <div style="color:#7a7367;font-size:11px">${v} · ${shard}</div>
+            </span>
+            <span style="font-size:10px;padding:2px 6px;border-radius:10px;background:${badgeColor}22;color:${badgeColor};font-weight:600">${badge}</span>
+          </li>`;
+        }).join("");
+
+        if (p2p) {
+          const pct = (p2p.p2pRatio * 100).toFixed(0);
+          fleetP2pEl.textContent = p2p.totalHops
+            ? `${pct}% P2P (${p2p.p2p}/${p2p.totalHops} hops)`
+            : "no traffic yet";
+        }
+        // TPS pulled from last known per-generation stats via statTokens/latency legacy elements
+        const legacyTok = document.getElementById("statTokens")?.textContent;
+        fleetTpsEl.textContent = legacyTok && legacyTok !== "0" ? `${legacyTok} tok` : "— tok/s";
+        fleetModelEl.textContent = topo.model?.name || "Gemma 3 1B";
+      } catch (e) {
+        // silent — this is a live polling loop
+      }
+    }
+
+    function openFleet() {
+      fleetPanel.style.display = "block";
+      fleetPanel.setAttribute("aria-hidden", "false");
+      refreshFleet();
+      if (fleetPollTimer) clearInterval(fleetPollTimer);
+      fleetPollTimer = setInterval(refreshFleet, 2000);
+    }
+    function closeFleet() {
+      fleetPanel.style.display = "none";
+      fleetPanel.setAttribute("aria-hidden", "true");
+      if (fleetPollTimer) { clearInterval(fleetPollTimer); fleetPollTimer = null; }
+    }
+    fleetBtn.addEventListener("click", () => {
+      fleetPanel.style.display === "block" ? closeFleet() : openFleet();
+    });
+    fleetCloseBtn.addEventListener("click", closeFleet);
 
     // ── Contribute toggle: opens an invisible iframe loading /node/index.html.
     // The browser participates as a compute node without leaving the page.
