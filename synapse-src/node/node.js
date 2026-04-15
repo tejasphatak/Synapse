@@ -318,6 +318,17 @@ export class SynapseNode {
         console.error(`[node] Error from coordinator: ${msg.message}`);
         break;
 
+      case MessageType.CLIENT_RELOAD:
+        // Coordinator requested a hot-reload (e.g. after a node-code deploy).
+        // Browser context: reload the page so the new node.js / pipeline.js
+        // code is picked up. Non-browser clients log + ignore.
+        console.log(`[node] CLIENT_RELOAD received — reloading in ${msg.delayMs ?? 1000}ms`);
+        this._sendLog("info", "client_reload", { reason: msg.reason ?? "admin-triggered" });
+        if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
+          setTimeout(() => window.location.reload(), msg.delayMs ?? 1000);
+        }
+        break;
+
       default:
         console.log(`[node] Unhandled message type: ${msg.type}`);
     }

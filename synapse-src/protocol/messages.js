@@ -36,6 +36,11 @@ export const MessageType = {
 
   // Error
   ERROR: "ERROR",
+
+  // Admin: coordinator requests a client to hot-reload its page so code
+  // changes take effect without manual refresh. Honored by browser nodes
+  // via location.reload(). Headless / CLI clients may log + ignore.
+  CLIENT_RELOAD: "CLIENT_RELOAD",
 };
 
 // Protocol version capability flag

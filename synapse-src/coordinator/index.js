@@ -318,6 +318,52 @@ function requestHandler(req, res) {
     return;
   }
 
+  // API: admin-triggered client reload. Broadcasts CLIENT_RELOAD to all
+  // connected nodes so they pick up new node.js/pipeline.js code without
+  // manual browser refresh. Auth: NEX_ADMIN_TOKEN same as /api/assign.
+  //
+  // Body (optional): {"delayMs":1500, "reason":"post-deploy", "targetShardId":0}
+  // Default: reload ALL nodes after 1000ms with reason "admin-triggered".
+  if (req.url === "/api/reload" && req.method === "POST") {
+    const expectedToken = process.env.NEX_ADMIN_TOKEN;
+    if (!expectedToken) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "admin endpoint disabled (no NEX_ADMIN_TOKEN)" }));
+      return;
+    }
+    if (req.headers["x-admin-token"] !== expectedToken) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const opts = body ? JSON.parse(body) : {};
+        const delayMs = opts.delayMs ?? 1000;
+        const reason = opts.reason ?? "admin-triggered";
+        const targetShardId = opts.targetShardId; // undefined = all nodes
+        const msg = JSON.stringify({ type: "CLIENT_RELOAD", delayMs, reason });
+        let sent = 0;
+        for (const [nodeId, node] of topology.nodes) {
+          if (targetShardId !== undefined && node.shardId !== targetShardId) continue;
+          if (node.ws?.readyState === 1) {
+            node.ws.send(msg);
+            sent++;
+          }
+        }
+        console.log(`[coordinator] admin: CLIENT_RELOAD broadcast to ${sent} node(s) (delay=${delayMs}ms, reason="${reason}")`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, action: "reload", nodesNotified: sent, delayMs, reason }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   // API: trigger inference
   if (req.url === "/api/infer" && req.method === "POST") {
     let body = "";
