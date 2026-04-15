@@ -51,6 +51,18 @@ Open **two browser tabs** at `http://localhost:8080/node/index.html`. Each tab l
 
 For phones: deploy to any server with HTTPS and open the node URL on each device.
 
+**CLI tools** (once ≥2 nodes are connected and pipeline is ready):
+
+```bash
+# One-shot inference with streaming tokens
+COORD=http://<coordinator>:8080 node deploy/cli-infer.mjs "The universe is" 20
+
+# Throughput benchmark (9 runs × 3 prompts × 3 lengths)
+COORD=http://<coordinator>:8080 node deploy/bench.mjs > bench.csv
+```
+
+See [`deploy/bench-results-2026-04-15.md`](synapse-src/deploy/bench-results-2026-04-15.md) for a real-hardware baseline (2 Qualcomm Android phones, 0.82 tok/s, 1.2s TTFT).
+
 ---
 
 ## How It Works
