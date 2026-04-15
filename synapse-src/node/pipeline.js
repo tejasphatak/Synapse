@@ -1757,8 +1757,35 @@ export class Pipeline {
     let cur = hidden.buffer;
     const weightBuffers = new Set(this.loader.buffers.values());
 
+    // Layer-level divergence probe: when _nanTrace is enabled by the caller,
+    // also stats every layer's output so we can compare to numpy reference.
+    // Cheap — one readback per layer, logged via _layerStats array.
+    const wantStats = Array.isArray(this._nanTrace);
+    if (wantStats && !this._layerStats) this._layerStats = [];
+
     for (let l = layerStart; l <= layerEnd; l++) {
       cur = await this.forwardLayerGemmaPrefill(cur, l, seqLen, cfg, ropeBufs);
+
+      if (wantStats) {
+        const sz = seqLen * cfg.hiddenSize * 4;
+        const f = new Float32Array(await this._readBuffer(cur, 0, sz));
+        let mn = Infinity, mx = -Infinity, sum2 = 0, nans = 0;
+        // Sample the LAST row (final position) — matches what numpy trace logs.
+        const start = (seqLen - 1) * cfg.hiddenSize;
+        for (let i = start; i < f.length; i++) {
+          const v = f[i];
+          if (Number.isNaN(v)) { nans++; continue; }
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+          sum2 += v * v;
+        }
+        this._layerStats.push({
+          layer: l,
+          min: +mn.toFixed(3), max: +mx.toFixed(3),
+          rms: +Math.sqrt(sum2 / cfg.hiddenSize).toFixed(4),
+          nans,
+        });
+      }
 
       // Clean up temp buffers between layers to bound peak memory on
       // mobile (same pattern as forwardLayersPrefill for GPT-2).

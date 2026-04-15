@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-gemma";
+import { Pipeline } from "./pipeline.js?v=20260415-layerstats";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -719,6 +719,14 @@ export class SynapseNode {
           trace: this.pipeline._nanTrace,
         });
         this.pipeline._nanTrace = null;
+      }
+      if (this.pipeline._layerStats) {
+        this._sendLog("perf", "gemma_layer_stats", {
+          requestId: msg.requestId,
+          shardId: this.shardId,
+          stats: this.pipeline._layerStats,
+        });
+        this.pipeline._layerStats = null;
       }
       if (this.pipeline._subKernelTrace) {
         this._sendLog("perf", "sub_kernel_trace", {
