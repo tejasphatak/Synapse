@@ -54,6 +54,80 @@ export class Pipeline {
   }
 
   /**
+   * Pre-flight self-test: runs synthetic inputs through each kernel and checks
+   * for NaN/Inf/garbage. Devices that fail shouldn't join the inference pool.
+   * Returns {pass: bool, failures: [{kernel, reason}]}.
+   */
+  async runSelfTest() {
+    const failures = [];
+    const seqLen = 4;
+    const hiddenSize = 16;
+
+    const mkBuf = (label, bytes, usage) => this._createBuffer(label, bytes,
+      usage ?? (GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC));
+    const hasBadFloat = (arr) => Array.from(arr).some(v => Number.isNaN(v) || !Number.isFinite(v));
+
+    // Test 1: LayerNorm with near-zero variance (all-ones input). Many GPU
+    // drivers silently produce NaN from divide-by-zero if epsilon is too small
+    // or handled wrong. This is the canonical failure mode.
+    try {
+      const input = new Float32Array(seqLen * hiddenSize).fill(1.0);
+      const inBuf = mkBuf("st_ln_in", input.byteLength);
+      this.device.queue.writeBuffer(inBuf, 0, input);
+      const gamma = new Float32Array(hiddenSize).fill(1.0);
+      const gammaBuf = mkBuf("st_ln_g", gamma.byteLength);
+      this.device.queue.writeBuffer(gammaBuf, 0, gamma);
+      const beta = new Float32Array(hiddenSize).fill(0.0);
+      const betaBuf = mkBuf("st_ln_b", beta.byteLength);
+      this.device.queue.writeBuffer(betaBuf, 0, beta);
+      const outBuf = await this._layerNorm(inBuf, seqLen, hiddenSize, gammaBuf, betaBuf);
+      const out = new Float32Array(await this._readBuffer(outBuf, 0, seqLen * hiddenSize * 4));
+      if (hasBadFloat(out)) failures.push({ kernel: "layernorm_zerovar", sample: Array.from(out.slice(0, 4)) });
+    } catch (e) {
+      failures.push({ kernel: "layernorm", error: String(e.message || e) });
+    }
+
+    // Test 2: GELU at extreme values (tanh overflow, denormals, etc.).
+    try {
+      const input = new Float32Array([
+        -100, -10, -1, -0.5, -0.001, 0, 0.001, 0.5,
+        1, 10, 100, 1000, -1000, 1e20, -1e20, 1.5,
+      ]);
+      const inBuf = mkBuf("st_gelu", input.byteLength);
+      this.device.queue.writeBuffer(inBuf, 0, input);
+      await this._gelu(inBuf, input.length);
+      const out = new Float32Array(await this._readBuffer(inBuf, 0, input.byteLength));
+      if (hasBadFloat(out)) failures.push({ kernel: "gelu_extremes", sample: Array.from(out) });
+    } catch (e) {
+      failures.push({ kernel: "gelu", error: String(e.message || e) });
+    }
+
+    // Test 3: Matmul with known small inputs. Output should equal 16*1.0 = 16.0
+    // for each of the 4 output positions.
+    try {
+      const a = new Float32Array(seqLen * hiddenSize).fill(1.0); // [4, 16]
+      const aBuf = mkBuf("st_mm_a", a.byteLength);
+      this.device.queue.writeBuffer(aBuf, 0, a);
+      const b = new Float32Array(hiddenSize * hiddenSize).fill(1.0); // [16, 16]
+      const bBuf = mkBuf("st_mm_b", b.byteLength);
+      this.device.queue.writeBuffer(bBuf, 0, b);
+      const outBuf = await this._matmul(aBuf, seqLen, hiddenSize, bBuf, hiddenSize, hiddenSize);
+      const out = new Float32Array(await this._readBuffer(outBuf, 0, seqLen * hiddenSize * 4));
+      if (hasBadFloat(out)) {
+        failures.push({ kernel: "matmul_nan", sample: Array.from(out.slice(0, 4)) });
+      } else {
+        const expected = hiddenSize;
+        const err = Math.max(...Array.from(out).map(v => Math.abs(v - expected)));
+        if (err > 0.01) failures.push({ kernel: "matmul_wrong", expected, err: +err.toFixed(4), sample: Array.from(out.slice(0, 4)) });
+      }
+    } catch (e) {
+      failures.push({ kernel: "matmul", error: String(e.message || e) });
+    }
+
+    return { pass: failures.length === 0, failures };
+  }
+
+  /**
    * Run the embedding step: token IDs → hidden state [seq_len, hidden_size].
    * Only called on the first node in the pipeline.
    */
@@ -301,6 +375,22 @@ export class Pipeline {
     }
     for (let i = 0; i < probs.length; i++) {
       probs[i] /= sumExp;
+    }
+
+    // Instrumentation: log top-5 tokens with probabilities. Helps diagnose
+    // drift (if EOT=50256 dominates the softmax, accumulated activation drift
+    // has pushed the logits; if normal tokens dominate but sampler still
+    // picks weirdly, sampler is at fault).
+    if (this._sampleCallCount === undefined) this._sampleCallCount = 0;
+    this._sampleCallCount++;
+    if (this._sampleCallCount <= 8 || this._sampleCallCount % 10 === 0) {
+      const top = Array.from(probs.keys())
+        .sort((a, b) => probs[b] - probs[a])
+        .slice(0, 5)
+        .map((i) => `${i}:${probs[i].toFixed(3)}`);
+      const maxLogitValPre = Math.max(...logitsF32);
+      const minLogitValPre = Math.min(...logitsF32);
+      this._lastSampleTop = { top, maxLogit: maxLogitValPre, minLogit: minLogitValPre };
     }
 
     // Multinomial sample
@@ -686,6 +776,25 @@ export class Pipeline {
 
       const residual2 = await this._residualAdd(residual1, ffnOut, seqLen * hiddenSize);
       h = { buffer: residual2, shape: [seqLen, hiddenSize] };
+
+      // Per-layer NaN trace: expose for node-level logging so we can
+      // pinpoint which layer first introduces NaN in a multi-shard pipeline.
+      if (this._nanTrace) {
+        const sz = seqLen * hiddenSize * 4;
+        const bufData = await this._readBuffer(h.buffer, 0, sz);
+        const f = new Float32Array(bufData);
+        let nans = 0, sum2 = 0;
+        for (let i = 0; i < f.length; i++) {
+          const v = f[i];
+          if (Number.isNaN(v)) nans++;
+          else sum2 += v * v;
+        }
+        this._nanTrace.push({
+          layer: l,
+          nans,
+          rms: +Math.sqrt(sum2 / Math.max(1, f.length - nans)).toFixed(3),
+        });
+      }
 
       // Cleanup temp buffers
       const keep = h.buffer;

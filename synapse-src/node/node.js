@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-hr1";
-import { Pipeline } from "./pipeline.js?v=20260413b";
+import { Pipeline } from "./pipeline.js?v=20260415-selftest";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -292,7 +292,29 @@ export class SynapseNode {
       this._setupMobileHandlers();
     }
 
-    // Step 2: Connect to coordinator
+    // Step 2: Self-test — prove this device's WebGPU stack can run our
+    // kernels without NaN/Inf before joining the inference pool. Found on
+    // 2026-04-15 that some GPUs (initial offender: Intel UHD/Arc) produce
+    // all-NaN activations, corrupting any pipeline they join. Run synthetic
+    // inputs through layernorm/gelu/matmul to catch this proactively.
+    try {
+      const testPipeline = new Pipeline(this.device, null);
+      await testPipeline.init();
+      const result = await testPipeline.runSelfTest();
+      this.selfTestResult = result;
+      testPipeline._cleanupTempBuffers();
+      if (!result.pass) {
+        this._setStatus("error", `Self-test failed: ${result.failures.map(f => f.kernel).join(", ")}`);
+        console.error("[node] Self-test failed — refusing to join pool:", result.failures);
+        return false;
+      }
+      console.log("[node] Self-test passed");
+    } catch (err) {
+      this._setStatus("error", `Self-test crashed: ${err.message}`);
+      return false;
+    }
+
+    // Step 3: Connect to coordinator
     this._setStatus("connecting");
     return this._connect(coordinatorUrl);
   }
@@ -318,6 +340,7 @@ export class SynapseNode {
           maxBufferMB: Math.round((this.gpuInfo?.maxBufferSize || 0) / 1024 / 1024),
           userAgent: navigator.userAgent,
           protocolV2: true,
+          selfTest: { pass: this.selfTestResult?.pass ?? null, failures: this.selfTestResult?.failures || [] },
         });
         this.ws.send(JSON.stringify(msg));
 
@@ -720,10 +743,29 @@ export class SynapseNode {
       }
 
       if (isPrefill) {
+        // Per-layer NaN trace: enable once per node per minute so we can
+        // pinpoint which layer corrupts activation on failing devices.
+        const now = Date.now();
+        const traceEnabled = !this._lastNanTraceAt || (now - this._lastNanTraceAt) > 60000;
+        if (traceEnabled) {
+          this.pipeline._nanTrace = [];
+          this._lastNanTraceAt = now;
+        }
+
         // Prefill: full sequence, populate KV cache — no speculation on prefill
         hidden = await this.pipeline.forwardLayersPrefill(
           hidden, this.layerStart, this.layerEnd, requestId
         );
+
+        if (traceEnabled && this.pipeline._nanTrace) {
+          this._sendLog("perf", "per_layer_nan_trace", {
+            requestId,
+            shardId: this.shardId,
+            layerRange: [this.layerStart, this.layerEnd],
+            trace: this.pipeline._nanTrace,
+          });
+          this.pipeline._nanTrace = null;
+        }
         // Seed the predictor with the prefill output if speculation is active
         if (this.speculative) {
           const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
@@ -878,8 +920,47 @@ export class SynapseNode {
    * Produce final output: run output head, sample token, send OUTPUT.
    */
   async _produceOutput(hidden, requestId, temperature = 1.0) {
+    // Diagnostic: measure hidden state stats before LM head. If these are
+    // zeros/NaN, the upstream pipeline failed. If they look normal but
+    // logits are zero, the LM head itself is broken.
+    try {
+      const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+      const buf = await this.pipeline._readBuffer(hidden.buffer, 0, sz);
+      const f = new Float32Array(buf);
+      let mn = Infinity, mx = -Infinity, nz = 0, sum2 = 0, nans = 0;
+      for (let i = 0; i < f.length; i++) {
+        const v = f[i];
+        if (Number.isNaN(v)) { nans++; continue; }
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+        if (v !== 0) nz++;
+        sum2 += v * v;
+      }
+      this._sendLog("perf", "pre_lmhead_hidden", {
+        requestId,
+        shape: hidden.shape,
+        min: +mn.toFixed(4), max: +mx.toFixed(4),
+        nonZero: nz, nans,
+        rms: +Math.sqrt(sum2 / f.length).toFixed(4),
+      });
+    } catch (_) { /* ignore */ }
+
     const logitsTensor = await this.pipeline.outputHead(hidden);
     const tokenId = await this.pipeline.sampleToken(logitsTensor, temperature);
+
+    // Drift diagnostic: emit top-5 tokens + logit range so we can see if
+    // EOT-spam is argmax-from-drift (one token dominates) or sampler-weird.
+    if (this.pipeline._lastSampleTop) {
+      this._sendLog("perf", "sample_top5", {
+        requestId, tokenId,
+        top: this.pipeline._lastSampleTop.top,
+        logitRange: [
+          +this.pipeline._lastSampleTop.minLogit.toFixed(3),
+          +this.pipeline._lastSampleTop.maxLogit.toFixed(3),
+        ],
+      });
+      this.pipeline._lastSampleTop = null;
+    }
 
     if (this.useBinaryProtocol) {
       const numericId = requestIdToUint32(requestId);
@@ -900,6 +981,31 @@ export class SynapseNode {
    * @param {number} seqLen - Current sequence length (for KV cache coordination)
    */
   async _sendActivation(hidden, requestId, seqLen = 0) {
+    // Diagnostic: measure outgoing activation so we can trace which shard
+    // first introduces NaN in multi-hop pipelines.
+    try {
+      const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
+      const buf = await this.pipeline._readBuffer(hidden.buffer, 0, sz);
+      const f = new Float32Array(buf);
+      let mn = Infinity, mx = -Infinity, nans = 0, sum2 = 0;
+      for (let i = 0; i < f.length; i++) {
+        const v = f[i];
+        if (Number.isNaN(v)) { nans++; continue; }
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+        sum2 += v * v;
+      }
+      this._sendLog("perf", "shard_output_stats", {
+        requestId,
+        shardId: this.shardId,
+        shape: hidden.shape,
+        min: isFinite(mn) ? +mn.toFixed(4) : null,
+        max: isFinite(mx) ? +mx.toFixed(4) : null,
+        nans,
+        rms: +Math.sqrt(sum2 / f.length).toFixed(4),
+      });
+    } catch (_) { /* ignore */ }
+
     if (this.useBinaryProtocol) {
       let flags = 0;
       let serialized;
