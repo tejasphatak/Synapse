@@ -190,6 +190,7 @@
 
     <div class="stats-bar">
       <span>Nodes: <strong id="statNodes">0</strong></span>
+      <span>GPUs: <strong id="statGpus">—</strong></span>
       <span>Pipeline: <strong id="statPipeline">offline</strong></span>
       <span>Tokens generated: <strong id="statTokens">0</strong></span>
       <span>Avg latency: <strong id="statLatency">—</strong></span>
@@ -312,6 +313,21 @@
       }).join(" ");
 
       document.getElementById("statNodes").textContent = totalNodes;
+
+      // GPU vendor breakdown (e.g. "2 Qualcomm, 1 Nvidia, 1 Intel")
+      const vendorCounts = {};
+      let mobileCount = 0;
+      let desktopCount = 0;
+      for (const n of nodes) {
+        const v = n.capabilities?.gpuVendor || "unknown";
+        vendorCounts[v] = (vendorCounts[v] || 0) + 1;
+        if (n.capabilities?.mobile) mobileCount++; else desktopCount++;
+      }
+      const vendorStr = Object.entries(vendorCounts)
+        .map(([v, c]) => `${c} ${v}`)
+        .join(", ") || "—";
+      const formFactor = totalNodes ? ` (${mobileCount}mob/${desktopCount}desk)` : "";
+      document.getElementById("statGpus").textContent = vendorStr + formFactor;
 
       if (pipeline.length >= 2 && activeNodes.length >= 2) {
         updatePipelineStatus("ready", `Pipeline ready (${activeNodes.length} nodes)`);
