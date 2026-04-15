@@ -1355,6 +1355,97 @@ export class Pipeline {
     return outputBuf;
   }
 
+  /**
+   * One transformer layer of Gemma 3 (prefill / no-KV-cache path).
+   *
+   * Composes the four Gemma-family kernels + matmul + residual_add in the
+   * architecture's exact order:
+   *
+   *   residual = x
+   *   h = rmsnorm(x, input_layernorm.weight)
+   *   q = matmul(h, q_proj); k = matmul(h, k_proj); v = matmul(h, v_proj)
+   *   q = rope(q, cos, sin);   k = rope(k, cos, sin)
+   *   attn = attention_gqa(q, k, v, window_size)
+   *   o = matmul(attn, o_proj)
+   *   x = residual_add(residual, o)                              ← residual around attn
+   *   residual = x
+   *   h = rmsnorm(x, post_attention_layernorm.weight)
+   *   gate = matmul(h, gate_proj); up = matmul(h, up_proj)
+   *   gated = elementwise_mul(gelu(gate), up)
+   *   down = matmul(gated, down_proj)
+   *   x = residual_add(residual, down)                            ← residual around mlp
+   *   return x
+   *
+   * Caller owns: reading layer weights off this.loader + uploading cos/sin
+   * buffers once per forward (not per layer). See forwardLayersGemmaPrefill
+   * for that orchestration (shipped separately).
+   *
+   * @param {GPUBuffer} xBuf — [seqLen, hiddenSize] input, fp32
+   * @param {number} l — layer index (for weight lookup)
+   * @param {object} cfg — model config with { hiddenSize, numQHeads, numKvHeads, headDim, intermediateSize, windowSize, rmsEps }
+   * @param {GPUBuffer} cosBuf / sinBuf — precomputed RoPE caches
+   * @returns {Promise<GPUBuffer>} — output buffer [seqLen, hiddenSize]
+   */
+  async forwardLayerGemmaPrefill(xBuf, l, seqLen, cfg, cosBuf, sinBuf) {
+    const { hiddenSize, numQHeads, numKvHeads, headDim, intermediateSize, windowSize, rmsEps } = cfg;
+    const prefix = `model.layers.${l}`;
+    const getW = (name) => {
+      const b = this.loader.getBuffer(`${prefix}.${name}.weight`);
+      if (!b) throw new Error(`missing weight: ${prefix}.${name}.weight`);
+      return b;
+    };
+
+    // ── Attention block ──────────────────────────────────────────
+    const residual1 = xBuf;
+
+    const ln1 = await this._rmsNorm(xBuf, seqLen, hiddenSize,
+      getW("input_layernorm"), rmsEps);
+
+    // Q/K/V projections. Gemma's shapes:
+    //   q_proj.weight: [numQHeads*headDim, hiddenSize] → matmul output [seq, numQHeads*headDim]
+    //   k_proj.weight: [numKvHeads*headDim, hiddenSize]
+    //   v_proj.weight: same as k
+    const qFull = numQHeads * headDim;
+    const kvFull = numKvHeads * headDim;
+    const q = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.q_proj"), hiddenSize, qFull);
+    const k = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.k_proj"), hiddenSize, kvFull);
+    const v = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.v_proj"), hiddenSize, kvFull);
+
+    // RoPE applies to Q and K only, not V. In-place.
+    await this._rope(q, seqLen, numQHeads,  headDim, cosBuf, sinBuf, 0);
+    await this._rope(k, seqLen, numKvHeads, headDim, cosBuf, sinBuf, 0);
+
+    // GQA attention with optional sliding window.
+    const attnOut = await this._attentionGqa(q, k, v, seqLen, numQHeads, numKvHeads, headDim, windowSize || 0);
+
+    // Output projection back to hidden_size.
+    const oProj = await this._matmul(attnOut, seqLen, qFull, getW("self_attn.o_proj"), qFull, hiddenSize);
+
+    const afterAttn = await this._residualAdd(residual1, oProj, seqLen * hiddenSize);
+
+    // ── FFN block ────────────────────────────────────────────────
+    const residual2 = afterAttn;
+    const ln2 = await this._rmsNorm(afterAttn, seqLen, hiddenSize,
+      getW("post_attention_layernorm"), rmsEps);
+
+    // Gated MLP: gate = matmul(h, gate_proj); up = matmul(h, up_proj)
+    const gate = await this._matmul(ln2, seqLen, hiddenSize, getW("mlp.gate_proj"), hiddenSize, intermediateSize);
+    const up   = await this._matmul(ln2, seqLen, hiddenSize, getW("mlp.up_proj"),   hiddenSize, intermediateSize);
+
+    // gelu(gate) in-place
+    const total = seqLen * intermediateSize;
+    await this._gelu(gate, total);
+
+    // gated = gelu(gate) * up
+    const gated = await this._elementwiseMul(gate, up, total);
+
+    // down = matmul(gated, down_proj)
+    const down = await this._matmul(gated, seqLen, intermediateSize, getW("mlp.down_proj"), intermediateSize, hiddenSize);
+
+    const finalOut = await this._residualAdd(residual2, down, seqLen * hiddenSize);
+    return finalOut;
+  }
+
   async _matmul(inputBuf, M, K, weightBuf, _K, N) {
     const outputBuf = this._createBuffer("mm_out", M * N * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
