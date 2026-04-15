@@ -11,8 +11,8 @@
  * 6. Process INFERENCE_REQUEST / ACTIVATION messages → run pipeline → send output
  */
 
-import { ShardLoader } from "./shard-loader.js?v=20260415-hr1";
-import { Pipeline } from "./pipeline.js?v=20260415-subker";
+import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
+import { Pipeline } from "./pipeline.js?v=20260415-gemma";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -128,8 +128,15 @@ export class SynapseNode {
     // bug-fixes/cache-key bumps in shard-loader.js take effect for future
     // loadShard() calls. The pipeline's GPU buffers are already populated and
     // unaffected by loader lifecycle.
-    this.loader = new ShardLoader(this.device);
-    try { await this.loader.loadManifest(coordinatorUrl.replace(/^ws/, "http")); } catch (_) {}
+    // Reuse the inherited loader — it holds the uploaded shard buffers +
+    // (for Gemma) the RoPE cos/sin caches. Replacing it with a fresh
+    // ShardLoader that only has manifest loses those and leaves
+    // pipeline.loader references dangling.
+    this.loader = inh.loader;
+    if (!this.loader) {
+      this.loader = new ShardLoader(this.device);
+      try { await this.loader.loadManifest(coordinatorUrl.replace(/^ws/, "http")); } catch (_) {}
+    }
     this.pipeline = inh.pipeline;
     this.shardId = inh.shardId;
     this.layerStart = inh.layerStart;
@@ -743,9 +750,15 @@ export class SynapseNode {
 
     } catch (err) {
       console.error("[node] Inference error:", err);
-      this._sendLog("error", "prefill_error", { requestId: msg.requestId, error: err.message });
+      const detail = {
+        requestId: msg.requestId,
+        message: err?.message || String(err),
+        name: err?.name || null,
+        stack: (err?.stack || "").split("\n").slice(0, 6).join("\n"),
+      };
+      this._sendLog("error", "prefill_error", detail);
       this.pipeline?._cleanupTempBuffers();
-      this._setStatus("error", `Inference failed: ${err.message}`);
+      this._setStatus("error", `Inference failed: ${detail.message}`);
     }
   }
 
