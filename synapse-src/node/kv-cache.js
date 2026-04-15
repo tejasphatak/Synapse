@@ -18,18 +18,23 @@ export class KVCache {
    * @param {number} layerStart - First layer index this node owns
    * @param {number} hiddenSize - Hidden dimension (768 for GPT-2 small)
    * @param {number} maxSeqLen - Maximum sequence length (1024 for GPT-2)
+   * @param {number} [kvHiddenSize=hiddenSize] - K/V width. For MHA equals
+   *   hiddenSize; for GQA/MQA equals numKvHeads * headDim (e.g. Gemma 3 1B:
+   *   1 kv head * 256 = 256, vs hidden=1152). Separate so the KV buffers
+   *   don't waste memory on K/V shapes narrower than the residual stream.
    */
-  constructor(device, numLayers, layerStart, hiddenSize, maxSeqLen) {
+  constructor(device, numLayers, layerStart, hiddenSize, maxSeqLen, kvHiddenSize = null) {
     this.device = device;
     this.numLayers = numLayers;
     this.layerStart = layerStart;
     this.hiddenSize = hiddenSize;
+    this.kvHiddenSize = kvHiddenSize ?? hiddenSize;
     this.maxSeqLen = maxSeqLen;
     this.seqLen = 0; // current number of cached positions
 
-    // Pre-allocate K and V buffers for each layer
-    // Each buffer: [maxSeqLen, hiddenSize] in float32
-    const bufferSize = maxSeqLen * hiddenSize * 4;
+    // Pre-allocate K and V buffers for each layer.
+    // Shape: [maxSeqLen, kvHiddenSize] in float32.
+    const bufferSize = maxSeqLen * this.kvHiddenSize * 4;
     this.kBuffers = new Map(); // layerIdx -> GPUBuffer
     this.vBuffers = new Map(); // layerIdx -> GPUBuffer
 
@@ -59,8 +64,8 @@ export class KVCache {
    * @param {number} seqPos - Position in the sequence (0-indexed)
    */
   append(layerIdx, newK, newV, seqPos) {
-    const offset = seqPos * this.hiddenSize * 4; // byte offset
-    const size = this.hiddenSize * 4; // bytes for one position
+    const offset = seqPos * this.kvHiddenSize * 4; // byte offset
+    const size = this.kvHiddenSize * 4; // bytes for one position
 
     const encoder = this.device.createCommandEncoder();
     encoder.copyBufferToBuffer(newK, 0, this.kBuffers.get(layerIdx), offset, size);
@@ -83,8 +88,8 @@ export class KVCache {
    * @param {number} numTokens - Number of tokens to cache
    */
   appendBatch(layerIdx, keys, values, startPos, numTokens) {
-    const offset = startPos * this.hiddenSize * 4;
-    const size = numTokens * this.hiddenSize * 4;
+    const offset = startPos * this.kvHiddenSize * 4;
+    const size = numTokens * this.kvHiddenSize * 4;
 
     const encoder = this.device.createCommandEncoder();
     encoder.copyBufferToBuffer(keys, 0, this.kBuffers.get(layerIdx), offset, size);

@@ -1498,6 +1498,205 @@ export class Pipeline {
     return finalOut;
   }
 
+  /**
+   * Single-token Gemma embed for cached decode. Mirrors gemmaEmbed but
+   * handles one token_id → one row, with the same sqrt(hidden) scale.
+   */
+  async gemmaEmbedSingle(tokenId) {
+    const { hiddenSize } = this.config;
+    const vocabSize = this.loader?.manifest?.vocab_size;
+    if (!vocabSize) throw new Error("gemmaEmbedSingle: manifest.vocab_size missing");
+    const gpuBuf = this.loader.getBuffer("model.embed_tokens.weight");
+    if (!gpuBuf) throw new Error("gemmaEmbedSingle: embed_tokens not loaded");
+
+    // Read only the one row we need — much cheaper than the full 576MB table.
+    const rowBytes = hiddenSize * 4;
+    const raw = await this._readBuffer(gpuBuf, tokenId * rowBytes, rowBytes);
+    const row = new Float32Array(raw);
+    const scale = Math.sqrt(hiddenSize);
+    const out = new Float32Array(hiddenSize);
+    for (let j = 0; j < hiddenSize; j++) out[j] = row[j] * scale;
+
+    const outputBuf = this._createBuffer("gemma_embed_single", out.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(outputBuf, 0, out);
+    return { buffer: outputBuf, shape: [1, hiddenSize] };
+  }
+
+  /**
+   * GQA/MQA cached attention for single-query decode.
+   * q:        [numQHeads, headDim]  (flat buffer, the current token's rotated Q)
+   * kvCache:  KVCache with kvHiddenSize == numKvHeads * headDim
+   * Returns:  [numQHeads * headDim] buffer (concatenated head outputs).
+   *
+   * Per-query-head dispatch of attention_cached.wgsl. For MQA (numKvHeads=1)
+   * all Q heads share the same K/V slice. For GQA, Q head h routes to
+   * KV head (h / group) where group = numQHeads / numKvHeads.
+   *
+   * Note: sliding-window masking via `cacheStart` — caller bounds the
+   * cache-length window so we don't re-implement per-position masking in
+   * the 1×N softmax.
+   */
+  async _attentionGqaCached(qBuf, cfg, kvCache, layerIdx, seqPos, windowSize = 0) {
+    const { numQHeads, numKvHeads, headDim, invSqrtScale } = cfg;
+    const group = numQHeads / numKvHeads;
+    const scale = invSqrtScale ?? (1.0 / Math.sqrt(headDim));
+    const { kBuffer: fullK, vBuffer: fullV } = kvCache.getKV(layerIdx);
+    const cacheLenFull = kvCache.seqLen; // includes the current position we just appended
+    const cacheStart = windowSize > 0 ? Math.max(0, cacheLenFull - windowSize) : 0;
+    const cacheLen = cacheLenFull - cacheStart;
+    const kvHidden = numKvHeads * headDim;
+
+    const outputBuf = this._createBuffer("gemma_cached_out", numQHeads * headDim * 4,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+    for (let h = 0; h < numQHeads; h++) {
+      const kvH = Math.floor(h / group);
+
+      // Extract Q head slice from the flat [numQHeads*headDim] buffer.
+      const qHead = this._createBuffer(`gemma_qcached_h${h}`, headDim * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+      const enc0 = this.device.createCommandEncoder();
+      enc0.copyBufferToBuffer(qBuf, h * headDim * 4, qHead, 0, headDim * 4);
+      this.device.queue.submit([enc0.finish()]);
+
+      // Slice K and V cache rows [cacheStart, cacheLenFull) for kvH.
+      const kSlice = await this._extractHeadSlice(fullK, cacheLen, kvHidden, cacheStart, kvH, headDim, numKvHeads);
+      const vSlice = await this._extractHeadSlice(fullV, cacheLen, kvHidden, cacheStart, kvH, headDim, numKvHeads);
+
+      // Run the 3-pass cached attention.
+      const scores = this._createBuffer(`gemma_cs_h${h}`, cacheLen * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+      const p = new ArrayBuffer(16);
+      const pv = new DataView(p);
+      pv.setUint32(0, cacheLen, true);
+      pv.setUint32(4, headDim, true);
+      pv.setFloat32(8, scale, true);
+      const pBuf = this._createBuffer(`gemma_cp_h${h}`, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+      this.device.queue.writeBuffer(pBuf, 0, new Uint8Array(p));
+
+      const scorePipe = this._getOrCreatePipeline("attention_cached", "compute_scores_cached", [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ]);
+      const smPipe = this._getOrCreatePipeline("attention_cached_softmax", "softmax_cached", [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ]);
+      const wsPipe = this._getOrCreatePipeline("attention_cached_ws", "weighted_sum_cached", [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ]);
+
+      const headOut = this._createBuffer(`gemma_hout_h${h}`, headDim * 4,
+        GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+      const bg1 = this.device.createBindGroup({ layout: scorePipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: pBuf } },
+        { binding: 1, resource: { buffer: qHead } },
+        { binding: 2, resource: { buffer: kSlice } },
+        { binding: 3, resource: { buffer: scores } },
+      ]});
+      const bg2 = this.device.createBindGroup({ layout: smPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: pBuf } },
+        { binding: 1, resource: { buffer: scores } },
+      ]});
+      const bg3 = this.device.createBindGroup({ layout: wsPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: pBuf } },
+        { binding: 1, resource: { buffer: scores } },
+        { binding: 2, resource: { buffer: vSlice } },
+        { binding: 3, resource: { buffer: headOut } },
+      ]});
+
+      const enc = this.device.createCommandEncoder();
+      let pass = enc.beginComputePass(); pass.setPipeline(scorePipe); pass.setBindGroup(0, bg1);
+      pass.dispatchWorkgroups(Math.ceil(cacheLen / 256)); pass.end();
+      pass = enc.beginComputePass(); pass.setPipeline(smPipe); pass.setBindGroup(0, bg2);
+      pass.dispatchWorkgroups(1); pass.end();
+      pass = enc.beginComputePass(); pass.setPipeline(wsPipe); pass.setBindGroup(0, bg3);
+      pass.dispatchWorkgroups(Math.ceil(headDim / 256)); pass.end();
+      this.device.queue.submit([enc.finish()]);
+
+      // Concat head output back into aggregate.
+      const encC = this.device.createCommandEncoder();
+      encC.copyBufferToBuffer(headOut, 0, outputBuf, h * headDim * 4, headDim * 4);
+      this.device.queue.submit([encC.finish()]);
+    }
+
+    return outputBuf;
+  }
+
+  /**
+   * One Gemma transformer layer for single-token cached decode.
+   *
+   * Same composition as forwardLayerGemmaPrefill (q_norm/k_norm, dual RoPE,
+   * pre/post FFN norms) but seq=1 and attention reads from KVCache instead
+   * of re-computing over full history.
+   *
+   * Appends the new K,V to the cache before attending.
+   *
+   * @param {GPUBuffer} xBuf — single-row [1, hidden] input
+   * @param {number} l — absolute layer index
+   * @param {number} seqPos — 0-indexed position of this token in the sequence
+   * @param {object} cfg — same as forwardLayerGemmaPrefill + { invSqrtScale, layerTypes }
+   * @param {{cos,sin,cosLocal?,sinLocal?}} ropeBufs
+   * @param {KVCache} kvCache — must be constructed with kvHiddenSize == numKvHeads*headDim
+   * @returns {Promise<GPUBuffer>} — [1, hidden] output
+   */
+  async forwardLayerGemmaCached(xBuf, l, seqPos, cfg, ropeBufs, kvCache) {
+    const { hiddenSize, numQHeads, numKvHeads, headDim, intermediateSize,
+            windowSize, rmsEps, layerTypes } = cfg;
+    const prefix = `model.layers.${l}`;
+    const getW = (name) => {
+      const b = this.loader.getBuffer(`${prefix}.${name}.weight`);
+      if (!b) throw new Error(`missing weight: ${prefix}.${name}.weight`);
+      return b;
+    };
+
+    const isSliding = layerTypes ? layerTypes[l] === "sliding_attention" : (windowSize > 0);
+    const layerWindow = isSliding ? (windowSize || 0) : 0;
+    const cosBuf = isSliding && ropeBufs.cosLocal ? ropeBufs.cosLocal : ropeBufs.cos;
+    const sinBuf = isSliding && ropeBufs.sinLocal ? ropeBufs.sinLocal : ropeBufs.sin;
+
+    const residual1 = xBuf;
+    const ln1 = await this._rmsNorm(xBuf, 1, hiddenSize, getW("input_layernorm"), rmsEps, 1.0);
+
+    const qFull = numQHeads * headDim;
+    const kvFull = numKvHeads * headDim;
+    const q = await this._matmul(ln1, 1, hiddenSize, getW("self_attn.q_proj"), hiddenSize, qFull);
+    const k = await this._matmul(ln1, 1, hiddenSize, getW("self_attn.k_proj"), hiddenSize, kvFull);
+    const v = await this._matmul(ln1, 1, hiddenSize, getW("self_attn.v_proj"), hiddenSize, kvFull);
+
+    await this._rmsNormInPlace(q, numQHeads,  headDim, getW("self_attn.q_norm"), rmsEps, 1.0);
+    await this._rmsNormInPlace(k, numKvHeads, headDim, getW("self_attn.k_norm"), rmsEps, 1.0);
+
+    // RoPE at the current absolute position.
+    await this._rope(q, 1, numQHeads,  headDim, cosBuf, sinBuf, seqPos);
+    await this._rope(k, 1, numKvHeads, headDim, cosBuf, sinBuf, seqPos);
+
+    // Append to KV cache at seqPos, then attend against the (possibly
+    // windowed) cache.
+    kvCache.append(l, k, v, seqPos);
+    const attnOut = await this._attentionGqaCached(q, cfg, kvCache, l, seqPos, layerWindow);
+
+    const oProj = await this._matmul(attnOut, 1, qFull, getW("self_attn.o_proj"), qFull, hiddenSize);
+    const oNorm = await this._rmsNorm(oProj, 1, hiddenSize, getW("post_attention_layernorm"), rmsEps, 1.0);
+    const afterAttn = await this._residualAdd(residual1, oNorm, hiddenSize);
+
+    const residual2 = afterAttn;
+    const ln2 = await this._rmsNorm(afterAttn, 1, hiddenSize, getW("pre_feedforward_layernorm"), rmsEps, 1.0);
+    const gate = await this._matmul(ln2, 1, hiddenSize, getW("mlp.gate_proj"), hiddenSize, intermediateSize);
+    const up   = await this._matmul(ln2, 1, hiddenSize, getW("mlp.up_proj"),   hiddenSize, intermediateSize);
+    await this._gelu(gate, intermediateSize);
+    const gated = await this._elementwiseMul(gate, up, intermediateSize);
+    const down = await this._matmul(gated, 1, intermediateSize, getW("mlp.down_proj"), intermediateSize, hiddenSize);
+    const downNorm = await this._rmsNorm(down, 1, hiddenSize, getW("post_feedforward_layernorm"), rmsEps, 1.0);
+    return this._residualAdd(residual2, downNorm, hiddenSize);
+  }
+
   /** RMSNorm where the "row" dimension isn't seq_len — e.g. q_norm over
    *  (seqLen*numHeads) rows of headDim. Thin wrapper over _rmsNorm that
    *  overwrites inputBuf via copy after norm. */
