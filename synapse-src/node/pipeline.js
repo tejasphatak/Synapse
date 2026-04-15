@@ -1502,9 +1502,12 @@ export class Pipeline {
 
     const qFull = numQHeads * headDim;
     const kvFull = numKvHeads * headDim;
-    const q = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.q_proj"), hiddenSize, qFull);
-    const k = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.k_proj"), hiddenSize, kvFull);
-    const v = await this._matmul(ln1, seqLen, hiddenSize, getW("self_attn.v_proj"), hiddenSize, kvFull);
+    // Gemma weights are HF nn.Linear format [out, in] = [N, K] — use
+    // matmul_transB, not matmul (which expects [K, N]). GPT-2's Conv1D
+    // stored weights transposed, hence the asymmetry.
+    const q = await this._matmulTransB(ln1, seqLen, hiddenSize, getW("self_attn.q_proj"), qFull);
+    const k = await this._matmulTransB(ln1, seqLen, hiddenSize, getW("self_attn.k_proj"), kvFull);
+    const v = await this._matmulTransB(ln1, seqLen, hiddenSize, getW("self_attn.v_proj"), kvFull);
 
     // Gemma 3 per-head q_norm / k_norm over head_dim — BEFORE RoPE.
     // Treat Q as (seqLen*numQHeads) rows of headDim; same for K.
@@ -1517,7 +1520,7 @@ export class Pipeline {
     const attnOut = await this._attentionGqa(q, k, v, seqLen,
       numQHeads, numKvHeads, headDim, layerWindow, invSqrtScale);
 
-    const oProj = await this._matmul(attnOut, seqLen, qFull, getW("self_attn.o_proj"), qFull, hiddenSize);
+    const oProj = await this._matmulTransB(attnOut, seqLen, qFull, getW("self_attn.o_proj"), hiddenSize);
 
     // Gemma 3 quirk: post_attention_layernorm is applied to o_proj output
     // BEFORE the residual add (not after).
@@ -1530,12 +1533,12 @@ export class Pipeline {
     const ln2 = await this._rmsNorm(afterAttn, seqLen, hiddenSize,
       getW("pre_feedforward_layernorm"), rmsEps, 1.0);
 
-    const gate = await this._matmul(ln2, seqLen, hiddenSize, getW("mlp.gate_proj"), hiddenSize, intermediateSize);
-    const up   = await this._matmul(ln2, seqLen, hiddenSize, getW("mlp.up_proj"),   hiddenSize, intermediateSize);
+    const gate = await this._matmulTransB(ln2, seqLen, hiddenSize, getW("mlp.gate_proj"), intermediateSize);
+    const up   = await this._matmulTransB(ln2, seqLen, hiddenSize, getW("mlp.up_proj"),   intermediateSize);
     const total = seqLen * intermediateSize;
     await this._gelu(gate, total);
     const gated = await this._elementwiseMul(gate, up, total);
-    const down = await this._matmul(gated, seqLen, intermediateSize, getW("mlp.down_proj"), intermediateSize, hiddenSize);
+    const down = await this._matmulTransB(gated, seqLen, intermediateSize, getW("mlp.down_proj"), hiddenSize);
 
     // post_feedforward_layernorm on MLP output BEFORE residual add.
     const downNorm = await this._rmsNorm(down, seqLen, hiddenSize,
@@ -1697,9 +1700,9 @@ export class Pipeline {
 
     const qFull = numQHeads * headDim;
     const kvFull = numKvHeads * headDim;
-    const q = await this._matmul(ln1, 1, hiddenSize, getW("self_attn.q_proj"), hiddenSize, qFull);
-    const k = await this._matmul(ln1, 1, hiddenSize, getW("self_attn.k_proj"), hiddenSize, kvFull);
-    const v = await this._matmul(ln1, 1, hiddenSize, getW("self_attn.v_proj"), hiddenSize, kvFull);
+    const q = await this._matmulTransB(ln1, 1, hiddenSize, getW("self_attn.q_proj"), qFull);
+    const k = await this._matmulTransB(ln1, 1, hiddenSize, getW("self_attn.k_proj"), kvFull);
+    const v = await this._matmulTransB(ln1, 1, hiddenSize, getW("self_attn.v_proj"), kvFull);
 
     await this._rmsNormInPlace(q, numQHeads,  headDim, getW("self_attn.q_norm"), rmsEps, 1.0);
     await this._rmsNormInPlace(k, numKvHeads, headDim, getW("self_attn.k_norm"), rmsEps, 1.0);
@@ -1713,17 +1716,17 @@ export class Pipeline {
     kvCache.append(l, k, v, seqPos);
     const attnOut = await this._attentionGqaCached(q, cfg, kvCache, l, seqPos, layerWindow);
 
-    const oProj = await this._matmul(attnOut, 1, qFull, getW("self_attn.o_proj"), qFull, hiddenSize);
+    const oProj = await this._matmulTransB(attnOut, 1, qFull, getW("self_attn.o_proj"), hiddenSize);
     const oNorm = await this._rmsNorm(oProj, 1, hiddenSize, getW("post_attention_layernorm"), rmsEps, 1.0);
     const afterAttn = await this._residualAdd(residual1, oNorm, hiddenSize);
 
     const residual2 = afterAttn;
     const ln2 = await this._rmsNorm(afterAttn, 1, hiddenSize, getW("pre_feedforward_layernorm"), rmsEps, 1.0);
-    const gate = await this._matmul(ln2, 1, hiddenSize, getW("mlp.gate_proj"), hiddenSize, intermediateSize);
-    const up   = await this._matmul(ln2, 1, hiddenSize, getW("mlp.up_proj"),   hiddenSize, intermediateSize);
+    const gate = await this._matmulTransB(ln2, 1, hiddenSize, getW("mlp.gate_proj"), intermediateSize);
+    const up   = await this._matmulTransB(ln2, 1, hiddenSize, getW("mlp.up_proj"),   intermediateSize);
     await this._gelu(gate, intermediateSize);
     const gated = await this._elementwiseMul(gate, up, intermediateSize);
-    const down = await this._matmul(gated, 1, intermediateSize, getW("mlp.down_proj"), intermediateSize, hiddenSize);
+    const down = await this._matmulTransB(gated, 1, intermediateSize, getW("mlp.down_proj"), hiddenSize);
     const downNorm = await this._rmsNorm(down, 1, hiddenSize, getW("post_feedforward_layernorm"), rmsEps, 1.0);
     return this._residualAdd(residual2, downNorm, hiddenSize);
   }
