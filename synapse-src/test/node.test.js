@@ -850,8 +850,10 @@ describe("SynapseNode Send Activation", () => {
     );
 
     assert.ok(ws._sent.length > 0);
-    const sent = ws._sent[ws._sent.length - 1];
-    assert.ok(sent instanceof ArrayBuffer || ArrayBuffer.isView(sent));
+    // wire_hop log now accompanies every activation send; filter for
+    // the binary frame rather than last-message.
+    const sent = ws._sent.find(m => m instanceof ArrayBuffer || ArrayBuffer.isView(m));
+    assert.ok(sent, "expected a binary ACTIVATION frame on WS");
   });
 
   it("prefers P2P channel when available", async () => {
@@ -865,9 +867,12 @@ describe("SynapseNode Send Activation", () => {
     const ws = injectWs(node);
 
     let p2pSent = null;
-    node.p2p = {
+    // Multi-peer shape: install channel keyed by downstream peer id.
+    const peerId = "peer-xyz";
+    node.p2pChannels.set(peerId, {
       send: (data) => { p2pSent = data; return true; },
-    };
+    });
+    node._currentDownstreamPeer = peerId;
 
     registerRequestId("req-p2p", 3);
     await node._sendActivation(
@@ -896,9 +901,11 @@ describe("SynapseNode Send Activation", () => {
     node.adaptivePrecision = null;
     const ws = injectWs(node);
 
-    node.p2p = {
+    const peerId = "peer-fail";
+    node.p2pChannels.set(peerId, {
       send: () => false, // P2P not connected / failed
-    };
+    });
+    node._currentDownstreamPeer = peerId;
 
     registerRequestId("req-p2p-fail", 4);
     await node._sendActivation(
@@ -982,14 +989,17 @@ describe("SynapseNode Error Handling", () => {
 describe("SynapseNode P2P Signal", () => {
   it("forwards P2P_SIGNAL to existing p2p channel", async () => {
     const node = makeNode();
+    node.useP2P = true;
     let signalHandled = false;
-    node.p2p = {
+    const peerId = "node-peer";
+    // Multi-peer: install the channel keyed by peer id before the signal arrives.
+    node.p2pChannels.set(peerId, {
       handleSignal: async (msg) => { signalHandled = true; },
-    };
+    });
 
     await node._handleMessage(JSON.stringify({
       type: "P2P_SIGNAL",
-      from: "node-peer",
+      from: peerId,
       signal: { type: "offer" },
     }));
 

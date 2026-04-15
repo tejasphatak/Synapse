@@ -99,7 +99,17 @@ export class SynapseNode {
     this._lastRecvActivation = new Map(); // requestId -> Float32Array
     this.speculative = null; // initialized after pipeline is ready
     this.useSpeculation = true;
-    this.p2p = null; // initialized when topology assigns a downstream peer
+    // Multi-peer P2P: Map<remoteNodeId, P2PChannel>. Each distinct peer
+    // gets its own WebRTC data channel. Enables mesh topologies + multiple
+    // downstream candidates for same shard.
+    this.p2pChannels = new Map();
+    // Legacy getter/setter facade so existing `this.p2p` reads return the
+    // most-recently-used channel. Writes go into the Map keyed by remote.
+    Object.defineProperty(this, "p2p", {
+      configurable: true,
+      get: () => this._lastP2P || null,
+      set: (v) => { this._lastP2P = v; },
+    });
     this.useP2P = true;
     this.adaptivePrecision = null; // initialized when layer range is known
     this.useAdaptivePrecision = true;
@@ -513,27 +523,20 @@ export class SynapseNode {
         }
         break;
 
-      case "P2P_SIGNAL":
-        // WebRTC signaling relayed through coordinator
-        if (this.p2p) {
-          this.p2p.handleSignal(msg).catch(err =>
-            console.warn("[node] P2P signal error:", err.message));
-        } else if (this.useP2P) {
-          // Incoming offer — create P2P channel as responder
-          this.p2p = new P2PChannel(this.nodeId, this.ws);
-          this.p2p.onMessage = (data) => this._handleBinaryMessage(data);
-          this.p2p.onConnected = () => {
-            this._sendLog("info", "p2p_connected", { peer: msg.from });
-          };
-          this.p2p.onDisconnected = () => {
-            this._sendLog("info", "p2p_disconnected", { peer: msg.from });
-            this.p2p?.close();
-            this.p2p = null;
-          };
-          this.p2p.handleSignal(msg).catch(err =>
-            console.warn("[node] P2P signal error:", err.message));
+      case "P2P_SIGNAL": {
+        // Multiplex signaling by peer id (msg.from). Each distinct peer
+        // gets its own P2PChannel in this.p2pChannels.
+        if (!this.useP2P) break;
+        const peerId = msg.from;
+        let ch = this.p2pChannels.get(peerId);
+        if (!ch) {
+          ch = this._createPeerChannel(peerId);
+          this.p2pChannels.set(peerId, ch);
         }
+        ch.handleSignal(msg).catch(err =>
+          console.warn(`[node] P2P signal error (${peerId}):`, err.message));
         break;
+      }
 
       case MessageType.ERROR:
         console.error(`[node] Error from coordinator: ${msg.message}`);
@@ -1297,7 +1300,11 @@ export class SynapseNode {
         payloadData
       );
       // Try P2P direct transfer, fall back to coordinator relay.
-      const sentP2P = this.p2p?.send(binaryMsg);
+      // Multi-peer: look up the channel for the current downstream peer.
+      const ch = this._currentDownstreamPeer
+        ? this.p2pChannels.get(this._currentDownstreamPeer)
+        : null;
+      const sentP2P = ch?.send(binaryMsg);
       if (!sentP2P) {
         this.ws.send(binaryMsg);
       }
@@ -1332,25 +1339,23 @@ export class SynapseNode {
       this.isFirstNode = msg.pipeline[0] === this.nodeId;
       this.isLastNode = msg.pipeline[msg.pipeline.length - 1] === this.nodeId;
 
-      // Initiate P2P to downstream peer if not last node
-      if (this.useP2P && !this.isLastNode && !this.p2p) {
+      // Initiate P2P to downstream peer if not last node. Multi-peer:
+      // keep channel keyed by peer id. If the downstream peer changes
+      // (e.g. shard reassignment), open a new channel without closing
+      // the others — lets us probe/prefer the faster path.
+      if (this.useP2P && !this.isLastNode) {
         const myIdx = msg.pipeline.indexOf(this.nodeId);
         if (myIdx >= 0 && myIdx < msg.pipeline.length - 1) {
           const downstreamId = msg.pipeline[myIdx + 1];
-          this.p2p = new P2PChannel(this.nodeId, this.ws);
-          this.p2p.onMessage = (data) => this._handleBinaryMessage(data);
-          this.p2p.onConnected = () => {
-            this._sendLog("info", "p2p_connected", { peer: downstreamId });
-          };
-          this.p2p.onDisconnected = () => {
-            this._sendLog("info", "p2p_disconnected", { peer: downstreamId });
-            this.p2p?.close();
-            this.p2p = null;
-          };
-          this.p2p.initiate(downstreamId).catch(err => {
-            console.warn("[node] P2P initiation failed:", err.message);
-            this.p2p = null;
-          });
+          if (!this.p2pChannels.has(downstreamId)) {
+            const ch = this._createPeerChannel(downstreamId);
+            this.p2pChannels.set(downstreamId, ch);
+            ch.initiate(downstreamId).catch(err => {
+              console.warn(`[node] P2P initiation failed (${downstreamId}):`, err.message);
+              this.p2pChannels.delete(downstreamId);
+            });
+          }
+          this._currentDownstreamPeer = downstreamId;
         }
       }
     }
@@ -1445,6 +1450,27 @@ export class SynapseNode {
     if (this.ws) this.ws.close();
     if (this.loader) this.loader.destroy();
     this.status = "destroyed";
+  }
+
+  /**
+   * Create a P2PChannel keyed by remote peer id. Wires standard callbacks:
+   * onMessage routes to this node's binary handler; onDisconnected removes
+   * from the map.
+   */
+  _createPeerChannel(remoteNodeId) {
+    const ch = new P2PChannel(this.nodeId, this.ws);
+    ch.onMessage = (data) => this._handleBinaryMessage(data);
+    ch.onConnected = () => {
+      this._lastP2P = ch;
+      this._sendLog("info", "p2p_connected", { peer: remoteNodeId });
+    };
+    ch.onDisconnected = () => {
+      this._sendLog("info", "p2p_disconnected", { peer: remoteNodeId });
+      try { ch.close(); } catch {}
+      this.p2pChannels.delete(remoteNodeId);
+      if (this._lastP2P === ch) this._lastP2P = null;
+    };
+    return ch;
   }
 
   // ─── AOP perf aspect ─────────────────────────────────────────────
