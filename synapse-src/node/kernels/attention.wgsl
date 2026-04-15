@@ -31,9 +31,13 @@ fn compute_scores(
     return;
   }
 
-  // Causal mask: positions can only attend to earlier positions (and themselves)
+  // Causal mask: positions can only attend to earlier positions (and themselves).
+  // Use -1e4 instead of -1e9 to stay within FP16 safe range — some GPUs
+  // (observed 2026-04-15: Intel) produce NaN when a softmax subtraction
+  // involves -1e9 at reduced precision. -1e4 - shared_max is still negative
+  // enough that exp() underflows cleanly to 0 in every IEEE-754 path.
   if (j > i) {
-    scores[i * params.seq_len + j] = -1e9;
+    scores[i * params.seq_len + j] = -1e4;
     return;
   }
 

@@ -87,7 +87,13 @@ export class SynapseNode {
     this.baseUrl = "";
     this.useBinaryProtocol = false;
     this.useQuantization = true;
-    this.useDeltaEncoding = true;
+    // Delta encoding disabled 2026-04-15 — root-cause bug: sender stores
+    // unquantized lastSentActivation while receiver stores INT8-roundtripped
+    // lastRecvActivation, so the "previous" state diverges from step 0 and
+    // all subsequent delta-apply operations drift by the quantization error.
+    // Real fix: sender must store the dequantized-after-quantize version
+    // (match receiver's exact state). Until then, absolute INT8 on every hop.
+    this.useDeltaEncoding = false;
     this._binaryRequestIds = new Map(); // string -> uint32
     this._lastSentActivation = new Map(); // requestId -> Float32Array
     this._lastRecvActivation = new Map(); // requestId -> Float32Array
@@ -624,10 +630,39 @@ export class SynapseNode {
       // Embed all tokens
       let hidden = await this.pipeline.embed(tokenIds);
 
+      // Diagnostic: stats of embedding output. If NaN here, embed kernel
+      // is broken. If clean here but NaN after forwardLayersPrefill, the
+      // bug is in one of the per-layer kernels.
+      try {
+        const sz = hidden.shape.reduce((a,b)=>a*b,1) * 4;
+        const f = new Float32Array(await this.pipeline._readBuffer(hidden.buffer, 0, sz));
+        let nans=0, mn=Infinity, mx=-Infinity, sum2=0;
+        for (let i=0;i<f.length;i++) { const v=f[i]; if (Number.isNaN(v)) nans++; else { if(v<mn)mn=v; if(v>mx)mx=v; sum2+=v*v; } }
+        this._sendLog("perf","post_embed_stats",{
+          requestId: msg.requestId, shape: hidden.shape,
+          min: isFinite(mn)?+mn.toFixed(4):null, max: isFinite(mx)?+mx.toFixed(4):null,
+          nans, rms: +Math.sqrt(sum2/Math.max(1,f.length-nans)).toFixed(4),
+        });
+      } catch(_){}
+
+      // Enable per-layer trace BEFORE the prefill so we can identify which
+      // exact layer first introduces NaN in shard 0.
+      this.pipeline._nanTrace = [];
+
       // Run assigned layers with KV cache prefill
       hidden = await this.pipeline.forwardLayersPrefill(
         hidden, this.layerStart, this.layerEnd, msg.requestId
       );
+
+      if (this.pipeline._nanTrace) {
+        this._sendLog("perf", "per_layer_nan_trace", {
+          requestId: msg.requestId,
+          shardId: this.shardId,
+          layerRange: [this.layerStart, this.layerEnd],
+          trace: this.pipeline._nanTrace,
+        });
+        this.pipeline._nanTrace = null;
+      }
 
       if (this.isLastNode) {
         await this._produceOutput(hidden, msg.requestId, msg.temperature ?? 1.0);
@@ -748,13 +783,12 @@ export class SynapseNode {
       }
 
       if (isPrefill) {
-        // Per-layer NaN trace: enable once per node per minute so we can
-        // pinpoint which layer corrupts activation on failing devices.
-        const now = Date.now();
-        const traceEnabled = !this._lastNanTraceAt || (now - this._lastNanTraceAt) > 60000;
+        // Per-layer NaN trace: ALWAYS on during this debug session so we
+        // can pinpoint which layer corrupts activation on failing devices.
+        // Re-rate-limit once root cause found.
+        const traceEnabled = true;
         if (traceEnabled) {
           this.pipeline._nanTrace = [];
-          this._lastNanTraceAt = now;
         }
 
         // Prefill: full sequence, populate KV cache — no speculation on prefill
