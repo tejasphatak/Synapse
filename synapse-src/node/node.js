@@ -572,8 +572,10 @@ export class SynapseNode {
             this._sendLog("perf", "speculation_rejected", { requestId, seqLen });
           }
 
-          // Auto-enable speculation after warmup if accuracy is high enough
-          if (!this.speculative.enabled && this.speculative.warmupSteps > 0) {
+          // Auto-enable speculation after warmup if accuracy is high enough.
+          // Shadow-speculation (always-predict during warmup) populates stats
+          // so this check can actually fire. See project_speculation_bootstrap_deadlock_2026-04-15.
+          if (!this.speculative.enabled && this.speculative.warmupSteps > 0 && !this.speculative._warmupExhausted) {
             const stats = this.speculative.predictor.getStats();
             const verified = stats.hits + stats.misses;
             if (verified >= this.speculative.warmupSteps) {
@@ -585,6 +587,16 @@ export class SynapseNode {
                   afterSteps: verified,
                 });
                 console.log(`[node] Speculative execution auto-enabled (hitRate=${stats.hitRate.toFixed(3)}, avgCosine=${stats.avgCosine.toFixed(4)})`);
+              } else if (verified >= this.speculative.warmupSteps * 4) {
+                // Gave the predictor 4× the warmup budget; hit rate still below threshold.
+                // Stop wasting GPU on speculative work that will never be accepted.
+                this.speculative._warmupExhausted = true;
+                this._sendLog("perf", "speculation_warmup_exhausted", {
+                  hitRate: +stats.hitRate.toFixed(4),
+                  avgCosine: +stats.avgCosine.toFixed(6),
+                  afterSteps: verified,
+                });
+                console.log(`[node] Speculation warmup exhausted — hit rate ${stats.hitRate.toFixed(3)} below ${this.speculative.enableThreshold}. Shadow mode off.`);
               }
             }
           }

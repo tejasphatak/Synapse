@@ -228,8 +228,12 @@ describe("SpeculativeController", () => {
   });
 
   describe("onActivationReceived — disabled", () => {
-    it("does not speculate when disabled", async () => {
+    it("does not speculate when disabled AND warmup exhausted", async () => {
+      // Shadow-mode warmup: disabled+unexhausted still predicts so
+      // auto-enable has stats to decide on. Only when warmup is
+      // exhausted does the controller stop entirely.
       ctrl.enabled = false;
+      ctrl._warmupExhausted = true;
 
       // Give predictor enough data to predict
       ctrl.predictor.observe("req1", f32(1, 2, 3));

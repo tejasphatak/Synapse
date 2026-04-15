@@ -33,6 +33,10 @@ export class SpeculativeController {
     // Whether speculation is enabled (can be toggled at runtime)
     this.enabled = true;
 
+    // Shadow-mode flag: set true to stop speculating entirely after warmup
+    // fails to reach the hit-rate threshold. Prevents indefinite wasted GPU.
+    this._warmupExhausted = false;
+
     // Batch speculation depth (1 = single-step legacy, 2-4 = batch)
     this.batchDepth = 3;
 
@@ -107,8 +111,12 @@ export class SpeculativeController {
     // Step 2: Record observation for future predictions
     this.predictor.observe(requestId, activationFloat32);
 
-    // Step 3: Predict next step(s) and kick off speculative compute
-    if (this.enabled) {
+    // Step 3: Predict next step(s) and kick off speculative compute.
+    // Always runs during warmup so verify() can accumulate stats and the
+    // auto-enable check has data to act on. Without this, the controller
+    // deadlocks: enabled requires warmup, warmup requires verify, verify
+    // requires pending speculations, pending requires enabled.
+    if (this.enabled || !this._warmupExhausted) {
       if (this.batchDepth > 1) {
         this._speculateNextBatch(requestId, seqPos + 1, this.batchDepth, layerStart, layerEnd);
       } else {
