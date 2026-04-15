@@ -1931,11 +1931,13 @@ export class Pipeline {
    */
   async gemmaFinalNormAndLmHead(hidden, cfg, normGamma, headWeight) {
     const seqLen = hidden.shape[0];
-    return this._withBatchedEncoder(async () => {
-      const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps, 1.0);
-      const logits = await this._matmulTransB(normed, seqLen, cfg.hiddenSize, headWeight, cfg.vocabSize);
-      return { buffer: logits, shape: [seqLen, cfg.vocabSize] };
-    });
+    // Do NOT wrap in _withBatchedEncoder: the caller immediately reads the
+    // logits back, so any deferred submit + mapAsync ordering is
+    // brittle. Submit each kernel individually and let GPU scheduler
+    // overlap them.
+    const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps, 1.0);
+    const logits = await this._matmulTransB(normed, seqLen, cfg.hiddenSize, headWeight, cfg.vocabSize);
+    return { buffer: logits, shape: [seqLen, cfg.vocabSize] };
   }
 
   async _matmul(inputBuf, M, K, weightBuf, _K, N) {
