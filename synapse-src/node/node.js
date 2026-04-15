@@ -574,6 +574,16 @@ export class SynapseNode {
       this.pipeline = new Pipeline(this.device, this.loader);
       await this.pipeline.init();
 
+      // Gemma activations have much wider dynamic range than GPT-2
+      // (rms≈60 with max≈2100 at layer 7). Int8 quantization over
+      // [-max, +max] gives ~16 units per step — crushes most values to
+      // zero. Disable until fp16 wire protocol lands.
+      if (this.loader?.manifest?.arch === "gemma") {
+        this.useQuantization = false;
+        this.useAdaptivePrecision = false;
+        this.forceQuantMode = "none";
+      }
+
       // Initialize speculative execution
       if (this.useSpeculation) {
         this.speculative = new SpeculativeController(this.pipeline);
