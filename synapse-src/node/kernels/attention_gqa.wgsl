@@ -101,8 +101,8 @@ struct Params2 {
   _pad3:   u32,
 };
 
-@group(1) @binding(0) var<storage, read_write> scores2: array<f32>;
-@group(1) @binding(1) var<uniform>             params2: Params2;
+@group(0) @binding(0) var<storage, read_write> scores2: array<f32>;
+@group(0) @binding(1) var<uniform>             params2: Params2;
 
 var<workgroup> shared_max: f32;
 var<workgroup> shared_sum: f32;
@@ -168,10 +168,10 @@ struct Params3 {
   head_dim:     u32,
 };
 
-@group(2) @binding(0) var<storage, read>       probs:   array<f32>;
-@group(2) @binding(1) var<storage, read>       v3:      array<f32>;
-@group(2) @binding(2) var<storage, read_write> output:  array<f32>;
-@group(2) @binding(3) var<uniform>             params3: Params3;
+@group(0) @binding(0) var<storage, read>       probs:   array<f32>;
+@group(0) @binding(1) var<storage, read>       v3:      array<f32>;
+@group(0) @binding(2) var<storage, read_write> output:  array<f32>;
+@group(0) @binding(3) var<uniform>             params3: Params3;
 
 @compute @workgroup_size(8, 8, 1)
 fn attend(
