@@ -755,6 +755,27 @@ export class Pipeline {
     const kvCache = this.getOrCreateKVCache(requestId, layerStart, numLayers);
     const weightBuffers = new Set(this.loader.buffers.values());
 
+    // Sub-kernel diagnostic helper. Pushes into this._subKernelTrace if
+    // it's set externally (typically only on layer 0 of shard 0 to limit
+    // readback cost). Captures rms + nans after each kernel inside layer 0.
+    const trace = async (label, buf, elements) => {
+      if (!this._subKernelTrace || this._subKernelTrace._stop) return;
+      const f = new Float32Array(await this._readBuffer(buf, 0, elements * 4));
+      let nans = 0, sum2 = 0, mn = Infinity, mx = -Infinity;
+      for (let i = 0; i < f.length; i++) {
+        const v = f[i];
+        if (Number.isNaN(v)) nans++;
+        else { sum2 += v * v; if (v < mn) mn = v; if (v > mx) mx = v; }
+      }
+      this._subKernelTrace.push({
+        label, nans,
+        rms: +Math.sqrt(sum2 / Math.max(1, f.length - nans)).toFixed(3),
+        min: isFinite(mn) ? +mn.toFixed(3) : null,
+        max: isFinite(mx) ? +mx.toFixed(3) : null,
+      });
+      if (nans > 0) this._subKernelTrace._stop = true;
+    };
+
     let h = hidden;
     for (let l = layerStart; l <= layerEnd; l++) {
       const prefix = `transformer.h.${l}`;
@@ -765,14 +786,17 @@ export class Pipeline {
         this.loader.getBuffer(`${prefix}.ln_1.weight`),
         this.loader.getBuffer(`${prefix}.ln_1.bias`)
       );
+      if (l === layerStart) await trace("ln1", ln1Out, seqLen * hiddenSize);
 
       const qkvOut = await this._matmul(
         ln1Out, seqLen, hiddenSize,
         this.loader.getBuffer(`${prefix}.attn.c_attn.weight`), hiddenSize, 3 * hiddenSize
       );
+      if (l === layerStart) await trace("qkv_matmul", qkvOut, seqLen * 3 * hiddenSize);
       await this._addBias(qkvOut, seqLen, 3 * hiddenSize,
         this.loader.getBuffer(`${prefix}.attn.c_attn.bias`)
       );
+      if (l === layerStart) await trace("qkv_bias", qkvOut, seqLen * 3 * hiddenSize);
 
       // Extract full K and V for caching: [seqLen, hiddenSize]
       const kBuf = this._createBuffer(`prefill_k_l${l}`, seqLen * hiddenSize * 4,
@@ -798,43 +822,54 @@ export class Pipeline {
 
       // Standard attention (full sequence)
       const attnOut = await this._multiHeadAttention(qkvOut, seqLen, numHeads, headDim);
+      if (l === layerStart) await trace("attention", attnOut, seqLen * hiddenSize);
 
       const projOut = await this._matmul(
         attnOut, seqLen, hiddenSize,
         this.loader.getBuffer(`${prefix}.attn.c_proj.weight`), hiddenSize, hiddenSize
       );
+      if (l === layerStart) await trace("attn_proj_matmul", projOut, seqLen * hiddenSize);
       await this._addBias(projOut, seqLen, hiddenSize,
         this.loader.getBuffer(`${prefix}.attn.c_proj.bias`)
       );
+      if (l === layerStart) await trace("attn_proj_bias", projOut, seqLen * hiddenSize);
 
       const residual1 = await this._residualAdd(h.buffer, projOut, seqLen * hiddenSize);
+      if (l === layerStart) await trace("residual1", residual1, seqLen * hiddenSize);
 
       const ln2Out = await this._layerNorm(
         residual1, seqLen, hiddenSize,
         this.loader.getBuffer(`${prefix}.ln_2.weight`),
         this.loader.getBuffer(`${prefix}.ln_2.bias`)
       );
+      if (l === layerStart) await trace("ln2", ln2Out, seqLen * hiddenSize);
 
       const ffnInnerDim = 4 * hiddenSize;
       const fcOut = await this._matmul(
         ln2Out, seqLen, hiddenSize,
         this.loader.getBuffer(`${prefix}.mlp.c_fc.weight`), hiddenSize, ffnInnerDim
       );
+      if (l === layerStart) await trace("fc_matmul", fcOut, seqLen * ffnInnerDim);
       await this._addBias(fcOut, seqLen, ffnInnerDim,
         this.loader.getBuffer(`${prefix}.mlp.c_fc.bias`)
       );
+      if (l === layerStart) await trace("fc_bias", fcOut, seqLen * ffnInnerDim);
 
       const geluOut = await this._gelu(fcOut, seqLen * ffnInnerDim);
+      if (l === layerStart) await trace("gelu", geluOut, seqLen * ffnInnerDim);
 
       const ffnOut = await this._matmul(
         geluOut, seqLen, ffnInnerDim,
         this.loader.getBuffer(`${prefix}.mlp.c_proj.weight`), ffnInnerDim, hiddenSize
       );
+      if (l === layerStart) await trace("ffn_matmul", ffnOut, seqLen * hiddenSize);
       await this._addBias(ffnOut, seqLen, hiddenSize,
         this.loader.getBuffer(`${prefix}.mlp.c_proj.bias`)
       );
+      if (l === layerStart) await trace("ffn_bias", ffnOut, seqLen * hiddenSize);
 
       const residual2 = await this._residualAdd(residual1, ffnOut, seqLen * hiddenSize);
+      if (l === layerStart) await trace("residual2", residual2, seqLen * hiddenSize);
       h = { buffer: residual2, shape: [seqLen, hiddenSize] };
 
       // Per-layer NaN trace: expose for node-level logging so we can

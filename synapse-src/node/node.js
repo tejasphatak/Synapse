@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-hr1";
-import { Pipeline } from "./pipeline.js?v=20260415-chain";
+import { Pipeline } from "./pipeline.js?v=20260415-subker";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -648,6 +648,12 @@ export class SynapseNode {
       // Enable per-layer trace BEFORE the prefill so we can identify which
       // exact layer first introduces NaN in shard 0.
       this.pipeline._nanTrace = [];
+      // Sub-kernel trace ONLY for shard 0 (where the bug originates) to
+      // avoid expensive readbacks on healthy shards.
+      // Enable sub-kernel trace on EVERY shard's first layer — captures
+      // rms/nans after each sub-kernel (ln1 / qkv / attention / etc.) so we
+      // can find where Intel introduces NaN regardless of which shard it's on.
+      this.pipeline._subKernelTrace = [];
 
       // Run assigned layers with KV cache prefill
       hidden = await this.pipeline.forwardLayersPrefill(
@@ -662,6 +668,15 @@ export class SynapseNode {
           trace: this.pipeline._nanTrace,
         });
         this.pipeline._nanTrace = null;
+      }
+      if (this.pipeline._subKernelTrace) {
+        this._sendLog("perf", "sub_kernel_trace", {
+          requestId: msg.requestId,
+          shardId: this.shardId,
+          layer: this.layerStart,
+          trace: this.pipeline._subKernelTrace,
+        });
+        this.pipeline._subKernelTrace = null;
       }
 
       if (this.isLastNode) {
