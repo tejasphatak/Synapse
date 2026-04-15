@@ -1,4 +1,5 @@
 node_modules/
 model/shards/*.bin
 model/shards/manifest.json
+model/shards/tokenizer/
 .DS_Store

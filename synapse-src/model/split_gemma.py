@@ -375,6 +375,19 @@ def main():
     for k, v in text_cfg.items():
         print(f"    {k:<28} {v}")
 
+    # Download tokenizer files so the coordinator can encode/decode without
+    # HF network access at runtime. Placed under shards/tokenizer/.
+    tok_dir = SHARDS_DIR / "tokenizer"
+    tok_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    for fname in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"):
+        try:
+            src = hf_hub_download(args.model, fname, token=token)
+            shutil.copy(src, tok_dir / fname)
+        except Exception as e:
+            print(f"  tokenizer: skipping {fname} ({e.__class__.__name__})")
+    print(f"  tokenizer files → {tok_dir}")
+
     tensor_refs = load_all_tensors(paths)
     # Filter to text-transformer tensors only (strip vision/audio for Gemma 4)
     text_tensors = {

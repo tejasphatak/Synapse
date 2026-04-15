@@ -14,7 +14,7 @@ import { createServer as createHttpsServer } from "https";
 import { readFileSync, writeFileSync, existsSync, statSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
-import { encode as gptEncode, decode as gptDecode } from "gpt-tokenizer/model/text-davinci-001";
+import { initTokenizer, encodeText, decodeTokens, getArch as getTokArch } from "./tokenizer.js";
 import { WebSocketServer } from "ws";
 import { Topology } from "./topology.js";
 import { Router } from "./router.js";
@@ -151,7 +151,7 @@ function requestHandler(req, res) {
     req.on("end", () => {
       try {
         const { text } = JSON.parse(body);
-        const tokenIds = gptEncode(text);
+        const tokenIds = encodeText(text);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ tokenIds }));
       } catch (e) {
@@ -169,7 +169,7 @@ function requestHandler(req, res) {
     req.on("end", () => {
       try {
         const { tokenIds } = JSON.parse(body);
-        const text = gptDecode(tokenIds);
+        const text = decodeTokens(tokenIds);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ text }));
       } catch (e) {
@@ -1313,6 +1313,13 @@ setInterval(() => {
 }, 10000);
 
 // ─── Start ────────────────────────────────────────────────────────
+
+try {
+  const tokInfo = await initTokenizer();
+  console.log(`[coordinator] Tokenizer initialised — arch: ${tokInfo.arch}`);
+} catch (e) {
+  console.warn(`[coordinator] Tokenizer init failed (${e.message}); /api/tokenize will error until fixed.`);
+}
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`[coordinator] Synapse coordinator running on http://0.0.0.0:${PORT}`);
