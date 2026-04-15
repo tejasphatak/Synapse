@@ -1446,6 +1446,63 @@ export class Pipeline {
     return finalOut;
   }
 
+  /**
+   * Full Gemma prefill across a contiguous range of layers. Stops at the
+   * end of the range — the caller (shard boundary) then sends the hidden
+   * state to the next shard, exactly like forwardLayersPrefill does for
+   * GPT-2. If this shard is the last one, caller follows with
+   * gemmaFinalNormAndLmHead() to produce logits.
+   *
+   * @param {object} hidden — { buffer, shape: [seqLen, hiddenSize] }
+   * @param {number} layerStart / layerEnd — inclusive range assigned to this shard
+   * @param {object} cfg — as forwardLayerGemmaPrefill
+   * @param {GPUBuffer} cosBuf / sinBuf — precomputed RoPE caches for the session
+   * @returns {Promise<{buffer, shape}>}
+   */
+  async forwardLayersGemmaPrefill(hidden, layerStart, layerEnd, cfg, cosBuf, sinBuf) {
+    const seqLen = hidden.shape[0];
+    let cur = hidden.buffer;
+    const weightBuffers = new Set(this.loader.buffers.values());
+
+    for (let l = layerStart; l <= layerEnd; l++) {
+      // Some Gemma 3 layers use sliding-window attention, others use full.
+      // HF's modeling_gemma3 alternates every N layers via a pattern;
+      // for now we honour the global sliding_window config on all layers.
+      // A per-layer override can come from cfg.layerTypes[l] if needed.
+      cur = await this.forwardLayerGemmaPrefill(cur, l, seqLen, cfg, cosBuf, sinBuf);
+
+      // Clean up temp buffers between layers to bound peak memory on
+      // mobile (same pattern as forwardLayersPrefill for GPT-2).
+      const keep = cur;
+      const surviving = [];
+      for (const buf of this._tempBuffers) {
+        if (buf === keep || weightBuffers.has(buf)) surviving.push(buf);
+        else buf.destroy();
+      }
+      this._tempBuffers = surviving;
+    }
+
+    return { buffer: cur, shape: [seqLen, cfg.hiddenSize] };
+  }
+
+  /**
+   * Final norm + LM head projection, called only on the last shard after
+   * forwardLayersGemmaPrefill. Gemma uses weight tying — lm_head weights
+   * are the same as embed_tokens; loader exposes both names. If only
+   * embed_tokens exists (strict tying), caller passes embedBuf as
+   * headWeight.
+   *
+   * Returns a buffer of shape [seqLen, vocabSize] with raw logits.
+   * Sampling (with optional softcap) happens on coord side.
+   */
+  async gemmaFinalNormAndLmHead(hidden, cfg, normGamma, headWeight) {
+    const seqLen = hidden.shape[0];
+    const normed = await this._rmsNorm(hidden.buffer, seqLen, cfg.hiddenSize, normGamma, cfg.rmsEps);
+    // lm_head.weight shape: [vocab, hidden]. matmul_transB runs input @ W.T.
+    const logits = await this._matmulTransB(normed, seqLen, cfg.hiddenSize, headWeight, cfg.vocabSize);
+    return { buffer: logits, shape: [seqLen, cfg.vocabSize] };
+  }
+
   async _matmul(inputBuf, M, K, weightBuf, _K, N) {
     const outputBuf = this._createBuffer("mm_out", M * N * 4,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
