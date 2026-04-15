@@ -1486,6 +1486,25 @@ export class Pipeline {
       return b;
     };
 
+    // Layer 0 sub-kernel probe: when _subKernelTrace array is set by the
+    // caller, stats every intermediate so we can diff live vs numpy.
+    const probeSub = l === 0 && Array.isArray(this._subKernelTrace);
+    const probe = async (buf, elems, name) => {
+      if (!probeSub) return;
+      const f = new Float32Array(await this._readBuffer(buf, 0, elems * 4));
+      let mn = Infinity, mx = -Infinity, sum2 = 0;
+      for (let i = 0; i < f.length; i++) {
+        const v = f[i];
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+        sum2 += v * v;
+      }
+      this._subKernelTrace.push({
+        name, rms: +Math.sqrt(sum2 / elems).toFixed(4),
+        min: +mn.toFixed(3), max: +mx.toFixed(3), n: elems,
+      });
+    };
+
     // Per-layer attention type selects (1) sliding-window size and
     // (2) which RoPE cache to use. Gemma 3 interleaves sliding+full.
     const isSliding = layerTypes ? layerTypes[l] === "sliding_attention" : (windowSize > 0);
@@ -1496,54 +1515,67 @@ export class Pipeline {
     // ── Attention block ──────────────────────────────────────────
     const residual1 = xBuf;
 
+    await probe(xBuf, seqLen * hiddenSize, "xBuf (layer_in)");
+
     // Gemma 3: RMSNorm uses y = x/rms * (1 + gamma). gammaBias = 1.0.
     const ln1 = await this._rmsNorm(xBuf, seqLen, hiddenSize,
       getW("input_layernorm"), rmsEps, 1.0);
+    await probe(ln1, seqLen * hiddenSize, "ln1");
 
     const qFull = numQHeads * headDim;
     const kvFull = numKvHeads * headDim;
-    // Gemma weights are HF nn.Linear format [out, in] = [N, K] — use
-    // matmul_transB, not matmul (which expects [K, N]). GPT-2's Conv1D
-    // stored weights transposed, hence the asymmetry.
     const q = await this._matmulTransB(ln1, seqLen, hiddenSize, getW("self_attn.q_proj"), qFull);
     const k = await this._matmulTransB(ln1, seqLen, hiddenSize, getW("self_attn.k_proj"), kvFull);
     const v = await this._matmulTransB(ln1, seqLen, hiddenSize, getW("self_attn.v_proj"), kvFull);
+    await probe(q, seqLen * qFull, "q_proj");
+    await probe(k, seqLen * kvFull, "k_proj");
+    await probe(v, seqLen * kvFull, "v_proj");
 
-    // Gemma 3 per-head q_norm / k_norm over head_dim — BEFORE RoPE.
-    // Treat Q as (seqLen*numQHeads) rows of headDim; same for K.
     await this._rmsNormInPlace(q, seqLen * numQHeads, headDim, getW("self_attn.q_norm"), rmsEps, 1.0);
     await this._rmsNormInPlace(k, seqLen * numKvHeads, headDim, getW("self_attn.k_norm"), rmsEps, 1.0);
+    await probe(q, seqLen * qFull, "q_norm");
+    await probe(k, seqLen * kvFull, "k_norm");
 
     await this._rope(q, seqLen, numQHeads,  headDim, cosBuf, sinBuf, 0);
     await this._rope(k, seqLen, numKvHeads, headDim, cosBuf, sinBuf, 0);
+    await probe(q, seqLen * qFull, "q_rope");
+    await probe(k, seqLen * kvFull, "k_rope");
 
     const attnOut = await this._attentionGqa(q, k, v, seqLen,
       numQHeads, numKvHeads, headDim, layerWindow, invSqrtScale);
+    await probe(attnOut, seqLen * qFull, "attn_gqa");
 
     const oProj = await this._matmulTransB(attnOut, seqLen, qFull, getW("self_attn.o_proj"), hiddenSize);
+    await probe(oProj, seqLen * hiddenSize, "o_proj");
 
-    // Gemma 3 quirk: post_attention_layernorm is applied to o_proj output
-    // BEFORE the residual add (not after).
     const oNorm = await this._rmsNorm(oProj, seqLen, hiddenSize,
       getW("post_attention_layernorm"), rmsEps, 1.0);
+    await probe(oNorm, seqLen * hiddenSize, "o_norm");
     const afterAttn = await this._residualAdd(residual1, oNorm, seqLen * hiddenSize);
+    await probe(afterAttn, seqLen * hiddenSize, "after_attn_residual");
 
-    // ── FFN block (pre + post feedforward norms wrap the MLP) ────
     const residual2 = afterAttn;
     const ln2 = await this._rmsNorm(afterAttn, seqLen, hiddenSize,
       getW("pre_feedforward_layernorm"), rmsEps, 1.0);
+    await probe(ln2, seqLen * hiddenSize, "ln2");
 
     const gate = await this._matmulTransB(ln2, seqLen, hiddenSize, getW("mlp.gate_proj"), intermediateSize);
     const up   = await this._matmulTransB(ln2, seqLen, hiddenSize, getW("mlp.up_proj"),   intermediateSize);
+    await probe(gate, seqLen * intermediateSize, "gate_pre_gelu");
+    await probe(up,   seqLen * intermediateSize, "up");
     const total = seqLen * intermediateSize;
     await this._gelu(gate, total);
+    await probe(gate, seqLen * intermediateSize, "gate_gelu");
     const gated = await this._elementwiseMul(gate, up, total);
+    await probe(gated, seqLen * intermediateSize, "gated");
     const down = await this._matmulTransB(gated, seqLen, intermediateSize, getW("mlp.down_proj"), hiddenSize);
+    await probe(down, seqLen * hiddenSize, "down");
 
-    // post_feedforward_layernorm on MLP output BEFORE residual add.
     const downNorm = await this._rmsNorm(down, seqLen, hiddenSize,
       getW("post_feedforward_layernorm"), rmsEps, 1.0);
+    await probe(downNorm, seqLen * hiddenSize, "down_norm");
     const finalOut = await this._residualAdd(residual2, downNorm, seqLen * hiddenSize);
+    await probe(finalOut, seqLen * hiddenSize, "layer_0_final");
     return finalOut;
   }
 
