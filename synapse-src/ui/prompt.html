@@ -317,22 +317,24 @@
 </head>
 <body>
   <header class="appbar">
-    <div class="brand">
-      <img src="/ui/assets/icon.svg" alt="Synapse" onerror="this.src='/ui/assets/icon-192.png'">
+    <div class="brand" style="display:flex;align-items:center;gap:0.5rem">
+      <img src="/ui/assets/icon.svg" alt="" width="22" height="22" style="border-radius:5px" onerror="this.src='/ui/assets/icon-192.png'">
       <span class="name">SYNAPSE</span>
+      <span style="color:var(--border-strong);font-weight:300;margin:0 0.15rem">|</span>
+      <span class="dot" id="pipelineDot" style="width:7px;height:7px;flex-shrink:0"></span>
+      <span class="status-text" id="pipelineText" style="font-size:0.78rem;color:var(--text-dim)">Connecting</span>
+      <span class="status-text" id="fleetSummary" style="font-size:0.78rem;color:var(--text-dim)"></span>
     </div>
-    <div class="status" id="pipelineStatus">
-      <span class="dot" id="pipelineDot"></span>
-      <span class="status-text" id="pipelineText">Connecting</span>
-      <span class="status-text" id="fleetSummary"></span>
-    </div>
-    <div class="actions">
-      <a class="btn-icon" href="https://webmind.sh/vision.html" target="_blank" rel="noopener" title="Why this exists" style="text-decoration:none">Vision</a>
-      <button class="btn-icon" id="fleetBtn" title="Show peer counts + traffic">Peers</button>
-      <button class="btn-icon" id="contribBtn" title="Contribute this device's GPU">Contribute</button>
-      <button class="btn-icon" id="logBtn" title="Show event log">Log</button>
+    <div class="actions" style="display:flex;align-items:center;gap:0.4rem">
+      <a class="btn-icon" href="https://webmind.sh/vision.html" target="_blank" rel="noopener" title="Vision" style="text-decoration:none;font-size:0.8rem">Vision</a>
+      <button class="btn-icon" id="logBtn" title="Event log" style="font-size:0;padding:0.4rem;line-height:0">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16zm.93-9.412l-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.318.001.01-.45L8.635 6.59h.156z M8 5.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>
+      </button>
     </div>
   </header>
+  <!-- Contribute toggle (hidden from top bar but still functional — auto-starts on load) -->
+  <button id="contribBtn" style="display:none">Contribute</button>
+  <button id="fleetBtn" style="display:none">Peers</button>
 
   <!-- Peers panel: aggregate counts + traffic, no per-device list. -->
   <aside id="fleetPanel" aria-hidden="true" style="
