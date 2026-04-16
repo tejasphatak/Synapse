@@ -364,6 +364,36 @@
   </div>
 
   <div class="composer">
+    <!-- Status strip: compact network status just above the input box -->
+    <div id="statusStrip" style="
+      display:flex;align-items:center;justify-content:center;gap:0.6rem;
+      padding:0.35rem 0.8rem;font-size:0.78rem;color:#6a6a67;
+      border-top:1px solid var(--border);cursor:pointer;user-select:none;
+      background:var(--bg-surface,#fff);transition:background 0.15s"
+      title="Tap to expand">
+      <span id="stripDot" style="width:7px;height:7px;border-radius:50%;background:#ccc;flex-shrink:0"></span>
+      <span id="stripStatus">Offline</span>
+      <span style="color:#c5c0b5">·</span>
+      <span id="stripGpus">0 GPUs</span>
+      <span id="stripP2p" style="color:#3f8f5c;font-weight:600;display:none">· P2P direct</span>
+      <span id="stripArrow" style="margin-left:auto;font-size:10px;color:#aaa;transition:transform 0.2s">▲</span>
+    </div>
+    <!-- Expandable detail panel -->
+    <div id="statusDetail" style="
+      display:none;padding:0.5rem 0.9rem;font-size:0.82rem;color:#2d2a24;
+      border-top:1px solid var(--border);background:var(--bg-surface,#fff);
+      line-height:1.7">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem 1rem">
+        <div>Peers: <strong id="detailPeers">—</strong></div>
+        <div>Ready: <strong id="detailReady">—</strong></div>
+        <div>GPUs: <strong id="detailGpus">—</strong></div>
+        <div>Model: <strong id="detailModel">—</strong></div>
+        <div>P2P: <strong id="detailP2p" style="color:#3f8f5c">—</strong></div>
+        <div>Wire: <strong id="detailWire">—</strong></div>
+        <div>↓ <strong id="detailDown">—</strong></div>
+        <div>↑ <strong id="detailUp">—</strong></div>
+      </div>
+    </div>
     <div class="typing-indicator" id="typingIndicator" style="text-align:center;margin-bottom:0.3rem">
       Thinking across the network
     </div>
@@ -456,22 +486,27 @@
     });
     logCloseBtn.addEventListener("click", () => drawer.classList.remove("open"));
 
-    // ── Fleet panel: live peer list, non-intrusive slide-up.
-    // Pulls /api/topology + /api/p2p-stats every 2s while visible.
-    const fleetBtn = document.getElementById("fleetBtn");
-    const fleetPanel = document.getElementById("fleetPanel");
-    const fleetCloseBtn = document.getElementById("fleetCloseBtn");
-    let fleetPollTimer = null;
-
+    // ── Bottom status strip: attached to input, expandable.
     function _fmtBytes(n) {
       if (!n || n < 0) return "0 B";
       if (n < 1024) return `${n} B`;
       if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-      if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-      return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+      return `${(n / 1024 / 1024).toFixed(1)} MB`;
     }
 
-    async function refreshFleet() {
+    const strip = document.getElementById("statusStrip");
+    const detail = document.getElementById("statusDetail");
+    const stripArrow = document.getElementById("stripArrow");
+    let stripExpanded = false;
+    strip.addEventListener("click", () => {
+      stripExpanded = !stripExpanded;
+      detail.style.display = stripExpanded ? "block" : "none";
+      stripArrow.style.transform = stripExpanded ? "rotate(0deg)" : "rotate(180deg)";
+    });
+    // Start collapsed
+    stripArrow.style.transform = "rotate(180deg)";
+
+    async function refreshStrip() {
       try {
         const [topo, p2p] = await Promise.all([
           fetch("/api/topology").then(r => r.json()).catch(() => null),
@@ -480,38 +515,43 @@
         if (!topo) return;
         const nodes = topo.nodes || [];
         const ready = nodes.filter(n => n.status === "ready");
-        const connEl = document.getElementById("peerConn");
-        const readyEl = document.getElementById("peerReady");
-        const downEl = document.getElementById("peerDown");
-        const upEl = document.getElementById("peerUp");
-        const p2pEl = document.getElementById("fleetP2p");
-        const modelEl = document.getElementById("fleetModel");
-        if (connEl) connEl.textContent = String(nodes.length);
-        if (readyEl) readyEl.textContent = `${ready.length}/${topo.pipeline?.length ?? "?"}`;
-        if (p2p) {
-          if (downEl) downEl.textContent = _fmtBytes(p2p.coordBytes + p2p.p2pBytes);
-          if (upEl)   upEl.textContent   = _fmtBytes(p2p.coordBytes + p2p.p2pBytes);
-          const pct = (p2p.p2pRatio * 100).toFixed(0);
-          if (p2pEl) p2pEl.textContent = p2p.totalHops ? `${pct}% direct` : "—";
-        }
-        if (modelEl) modelEl.textContent = topo.model?.name || "Gemma 3 1B";
-      } catch (e) { /* silent live poll */ }
-    }
+        const required = topo.pipeline?.length ?? 3;
+        const isReady = ready.length >= required;
+        const dot = document.getElementById("stripDot");
+        const statusEl = document.getElementById("stripStatus");
+        const gpusEl = document.getElementById("stripGpus");
+        const p2pStrip = document.getElementById("stripP2p");
+        dot.style.background = isReady ? "#3f8f5c" : nodes.length ? "#c29a4a" : "#ccc";
+        statusEl.textContent = isReady ? "Online" : nodes.length ? "Preparing" : "Offline";
+        gpusEl.textContent = `${nodes.length} GPU${nodes.length !== 1 ? "s" : ""}`;
+        const hasP2P = p2p && p2p.p2pRatio > 0;
+        p2pStrip.style.display = hasP2P ? "inline" : "none";
 
-    function openFleet() {
-      fleetPanel.style.display = "block";
-      fleetPanel.setAttribute("aria-hidden", "false");
-      refreshFleet();
-      if (fleetPollTimer) clearInterval(fleetPollTimer);
-      fleetPollTimer = setInterval(refreshFleet, 2000);
+        // Detail panel
+        const $ = id => document.getElementById(id);
+        $("detailPeers").textContent = nodes.length;
+        $("detailReady").textContent = `${ready.length}/${required}`;
+        $("detailGpus").textContent = nodes.length;
+        $("detailModel").textContent = topo.model?.name || "Gemma 3 1B";
+        if (p2p) {
+          const pct = (p2p.p2pRatio * 100).toFixed(0);
+          $("detailP2p").textContent = p2p.totalHops ? `${pct}% direct` : "none yet";
+          $("detailWire").textContent = hasP2P ? "P2P (local)" : "via coordinator";
+          const total = (p2p.coordBytes || 0) + (p2p.p2pBytes || 0);
+          $("detailDown").textContent = _fmtBytes(total);
+          $("detailUp").textContent = _fmtBytes(total);
+        }
+      } catch (e) { /* silent */ }
     }
-    function closeFleet() {
-      fleetPanel.style.display = "none";
-      fleetPanel.setAttribute("aria-hidden", "true");
-      if (fleetPollTimer) { clearInterval(fleetPollTimer); fleetPollTimer = null; }
-    }
-    fleetBtn.addEventListener("click", () => {
-      fleetPanel.style.display === "block" ? closeFleet() : openFleet();
+    // Poll every 3s
+    setInterval(refreshStrip, 3000);
+    refreshStrip();
+
+    // Keep old fleet panel wiring inert (buttons are hidden)
+    const fleetBtn = document.getElementById("fleetBtn");
+    const fleetPanel = document.getElementById("fleetPanel");
+    const fleetCloseBtn = document.getElementById("fleetCloseBtn");
+    fleetBtn?.addEventListener("click", () => {
     });
     fleetCloseBtn.addEventListener("click", closeFleet);
 
