@@ -107,11 +107,13 @@ export function createTopologyUpdateMessage(nodes, pipeline) {
 /**
  * Coordinator sends an inference request to the first node in the pipeline.
  */
-export function createInferenceRequestMessage(requestId, tokenIds) {
+export function createInferenceRequestMessage(requestId, tokenIds, temperature = 1.0, topP = 1.0) {
   return {
     type: MessageType.INFERENCE_REQUEST,
     requestId,
     tokenIds,
+    temperature,
+    topP,
     timestamp: Date.now(),
   };
 }

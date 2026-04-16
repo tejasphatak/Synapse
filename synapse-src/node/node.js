@@ -773,7 +773,10 @@ export class SynapseNode {
       }
 
       if (this.isLastNode) {
-        await this._produceOutput(hidden, msg.requestId, msg.temperature ?? 1.0);
+        await this._produceOutput(hidden, msg.requestId, {
+          temperature: msg.temperature ?? 1.0,
+          topP: msg.topP ?? 1.0,
+        });
       } else {
         // Include seqPos so downstream nodes know the sequence length
         await this._sendActivation(hidden, msg.requestId, tokenIds.length);
@@ -834,7 +837,10 @@ export class SynapseNode {
       }
 
       if (this.isLastNode) {
-        await this._produceOutput(hidden, msg.requestId, msg.temperature ?? 1.0);
+        await this._produceOutput(hidden, msg.requestId, {
+          temperature: msg.temperature ?? 1.0,
+          topP: msg.topP ?? 1.0,
+        });
       } else {
         await this._sendActivation(hidden, msg.requestId, msg.seqPos + 1);
       }
@@ -1137,7 +1143,13 @@ export class SynapseNode {
   /**
    * Produce final output: run output head, sample token, send OUTPUT.
    */
-  async _produceOutput(hidden, requestId, temperature = 1.0) {
+  async _produceOutput(hidden, requestId, opts = {}) {
+    // Support both old (temperature as number) and new (opts object) calling convention
+    if (typeof opts === "number") {
+      opts = { temperature: opts };
+    }
+    const temperature = opts.temperature ?? 1.0;
+    const topP = opts.topP ?? 1.0;
     if (this.debugProfile) {
       try {
         const sz = hidden.shape.reduce((a, b) => a * b, 1) * 4;
@@ -1170,7 +1182,7 @@ export class SynapseNode {
     } else {
       logitsTensor = await this.pipeline.outputHead(hidden);
     }
-    const tokenId = await this.pipeline.sampleToken(logitsTensor, temperature);
+    const tokenId = await this.pipeline.sampleToken(logitsTensor, { temperature, topP });
 
     // Drift diagnostic: emit top-5 tokens + logit range so we can see if
     // EOT-spam is argmax-from-drift (one token dominates) or sampler-weird.

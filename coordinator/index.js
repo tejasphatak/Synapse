@@ -88,8 +88,8 @@ const httpServer = createServer((req, res) => {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       try {
-        const { tokenIds } = JSON.parse(body);
-        const result = startInference(tokenIds);
+        const { tokenIds, temperature = 1.0, topP = 1.0 } = JSON.parse(body);
+        const result = startInference(tokenIds, temperature, topP);
         res.writeHead(result.ok ? 200 : 503, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       } catch (e) {
@@ -173,7 +173,9 @@ wss.on("connection", (ws, req) => {
 
       if (msg.type === "PROMPT_INFER") {
         // Prompt client wants to run inference
-        const result = startInference(msg.tokenIds);
+        const temperature = msg.temperature ?? 1.0;
+        const topP = msg.topP ?? 1.0;
+        const result = startInference(msg.tokenIds, temperature, topP);
         if (result.ok) {
           // Track which prompt client is waiting for this request
           promptClients.get(ws)?.pendingRequests.set(result.requestId, true);
@@ -357,7 +359,7 @@ function tryAssignShards() {
 
 // ─── Inference Trigger ────────────────────────────────────────────
 
-function startInference(tokenIds) {
+function startInference(tokenIds, temperature = 1.0, topP = 1.0) {
   if (!topology.isPipelineReady()) {
     return { ok: false, error: "Pipeline not ready — waiting for all nodes" };
   }
@@ -368,7 +370,7 @@ function startInference(tokenIds) {
   }
 
   const requestId = `req-${++requestCounter}-${Date.now()}`;
-  const msg = createInferenceRequestMessage(requestId, tokenIds);
+  const msg = createInferenceRequestMessage(requestId, tokenIds, temperature, topP);
 
   firstNode.ws.send(JSON.stringify(msg));
 
@@ -378,13 +380,15 @@ function startInference(tokenIds) {
     hops: [],
   });
 
-  console.log(`[coordinator] Inference started: ${requestId} (${tokenIds.length} tokens)`);
+  console.log(`[coordinator] Inference started: ${requestId} (${tokenIds.length} tokens, T=${temperature}, topP=${topP})`);
 
   // Notify dashboards
   broadcastToDashboards({
     type: "INFERENCE_STARTED",
     requestId,
     tokenCount: tokenIds.length,
+    temperature,
+    topP,
     timestamp: Date.now(),
   });
 

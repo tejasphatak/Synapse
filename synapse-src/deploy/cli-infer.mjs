@@ -40,15 +40,20 @@ const COORD = process.env.COORD || "http://localhost:8080";
 const WS_URL = COORD.replace(/^http/, "ws") + "/?type=prompt";
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS || "180000", 10);
 
-// Parse positional prompt + max_tokens + optional --temperature flag
+// Parse positional prompt + max_tokens + optional --temperature and --top-p flags
 const args = process.argv.slice(2);
 let TEMPERATURE;
+let TOP_P;
 const positional = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--temperature" || args[i] === "-t") {
     TEMPERATURE = parseFloat(args[++i]);
   } else if (args[i].startsWith("--temperature=")) {
     TEMPERATURE = parseFloat(args[i].split("=")[1]);
+  } else if (args[i] === "--top-p" || args[i] === "-p") {
+    TOP_P = parseFloat(args[++i]);
+  } else if (args[i].startsWith("--top-p=")) {
+    TOP_P = parseFloat(args[i].split("=")[1]);
   } else {
     positional.push(args[i]);
   }
@@ -108,6 +113,9 @@ ws.on("message", async (data) => {
       };
       if (TEMPERATURE !== undefined && !Number.isNaN(TEMPERATURE)) {
         request.temperature = TEMPERATURE;
+      }
+      if (TOP_P !== undefined && !Number.isNaN(TOP_P)) {
+        request.topP = TOP_P;
       }
       ws.send(JSON.stringify(request));
     }
