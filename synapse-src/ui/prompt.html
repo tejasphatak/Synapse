@@ -116,7 +116,9 @@
       transition: all 0.15s ease;
       white-space: nowrap;
     }
-    .btn-icon:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
+    .btn-icon:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); text-decoration: none; }
+    a.btn-icon, a.btn-icon:visited { color: var(--text-dim); text-decoration: none; }
+    a.btn-icon:hover { color: var(--text); text-decoration: none; }
     .btn-icon.on {
       background: var(--accent-soft);
       border-color: var(--accent);
