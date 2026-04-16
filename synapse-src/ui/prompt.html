@@ -320,16 +320,11 @@
     <div class="brand" style="display:flex;align-items:center;gap:0.5rem">
       <img src="/ui/assets/icon.svg" alt="" width="22" height="22" style="border-radius:5px" onerror="this.src='/ui/assets/icon-192.png'">
       <span class="name">SYNAPSE</span>
-      <span style="color:var(--border-strong);font-weight:300;margin:0 0.15rem">|</span>
-      <span class="dot" id="pipelineDot" style="width:7px;height:7px;flex-shrink:0"></span>
-      <span class="status-text" id="pipelineText" style="font-size:0.78rem;color:var(--text-dim)">Connecting</span>
-      <span class="status-text" id="fleetSummary" style="font-size:0.78rem;color:var(--text-dim)"></span>
+      <span style="color:var(--border-strong);font-weight:300;margin:0 0.2rem">|</span>
+      <span style="font-size:0.72rem;color:var(--text-dim);font-weight:400">v0.1</span>
     </div>
     <div class="actions" style="display:flex;align-items:center;gap:0.4rem">
       <a class="btn-icon" href="https://webmind.sh/vision.html" target="_blank" rel="noopener" title="Vision" style="text-decoration:none;font-size:0.8rem">Vision</a>
-      <button class="btn-icon" id="logBtn" title="Event log" style="font-size:0;padding:0.4rem;line-height:0">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16zm.93-9.412l-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.399l-.318.001.01-.45L8.635 6.59h.156z M8 5.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>
-      </button>
     </div>
   </header>
   <!-- Contribute toggle (hidden from top bar but still functional — auto-starts on load) -->
@@ -393,15 +388,22 @@
         <div>↓ <strong id="detailDown">—</strong></div>
         <div>↑ <strong id="detailUp">—</strong></div>
       </div>
+      <div style="margin-top:0.5rem;text-align:right">
+        <button id="logBtn" title="Event log" style="
+          border:0;background:none;cursor:pointer;color:#8a8479;padding:0.3rem;
+          border-radius:6px;transition:background 0.15s" onmouseover="this.style.background='#f0ece4'" onmouseout="this.style.background='none'">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.068.727c.243-.97 1.62-.97 1.864 0l.071.286a.96.96 0 001.622.434l.205-.211c.695-.719 1.888-.03 1.613.931l-.084.299a.96.96 0 00.9 1.239l.311.006c.978.018.978 1.486 0 1.505l-.311.006a.96.96 0 00-.9 1.24l.084.298c.275.96-.918 1.65-1.613.93l-.205-.21a.96.96 0 00-1.622.434l-.071.286c-.243.97-1.62.97-1.864 0l-.071-.286a.96.96 0 00-1.622-.434l-.205.21c-.695.72-1.888.03-1.613-.93l.084-.299a.96.96 0 00-.9-1.24l-.31-.005c-.979-.018-.979-1.487 0-1.505l.31-.006a.96.96 0 00.9-1.24l-.084-.298c-.275-.96.918-1.65 1.613-.93l.205.21a.96.96 0 001.622-.434l.071-.286zM12.973 8.5H8.25l-2.065 3.57a.5.5 0 00.205.698l4.134 2.388a.5.5 0 00.682-.183l1.768-3.06A3.5 3.5 0 0012.973 8.5z M8 10.93a1.5 1.5 0 10-.001-3.001A1.5 1.5 0 008 10.93z"/></svg>
+        </button>
+      </div>
     </div>
     <div class="typing-indicator" id="typingIndicator" style="text-align:center;margin-bottom:0.3rem">
       Thinking across the network
     </div>
     <div class="composer-inner">
-      <textarea id="promptInput" placeholder="Message Synapse…" rows="1" disabled></textarea>
+      <textarea id="promptInput" placeholder="Ask anything…" rows="1" disabled></textarea>
       <button id="sendBtn" disabled title="Send (Enter)">↑</button>
     </div>
-    <div class="disclaimer">Synapse runs GPT-2 across volunteer browser GPUs. Responses are experimental.</div>
+    <div class="disclaimer">Synapse runs Gemma 3 across volunteer browser GPUs. Responses are experimental.</div>
     <!-- Legacy hidden stat elements kept so existing JS can write to them without error -->
     <div style="display:none">
       <span id="statNodes">0</span>
@@ -971,10 +973,34 @@
       document.getElementById("typingIndicator").classList.remove("active");
     }
 
+    // ── Rotating warm placeholder lines ──
+    const _warmLines = [
+      "Ask anything…",
+      "Curious about something?",
+      "Try: why do monsoons come from the west?",
+      "What would you like to know?",
+      "Try: explain photosynthesis to a 10-year-old",
+      "The fleet is listening…",
+      "Your question, answered by people's devices",
+      "Try: what makes the sky blue?",
+      "Ask a question — no cloud, just GPUs nearby",
+    ];
+    let _warmIdx = 0;
+    setInterval(() => {
+      const el = document.getElementById("promptInput");
+      if (el && !el.value && document.activeElement !== el) {
+        _warmIdx = (_warmIdx + 1) % _warmLines.length;
+        el.placeholder = _warmLines[_warmIdx];
+      }
+    }, 4500);
+
     function updatePipelineStatus(state, text) {
-      const dot = document.getElementById("pipelineDot");
-      dot.className = `dot ${state}`;
-      document.getElementById("pipelineText").textContent = text;
+      // Status moved to bottom strip — update the strip dot + text.
+      // Old header pipelineDot/pipelineText may not exist; fail silently.
+      const dot = document.getElementById("pipelineDot") || document.getElementById("stripDot");
+      if (dot) dot.className = `dot ${state}`;
+      const txt = document.getElementById("pipelineText") || document.getElementById("stripStatus");
+      if (txt) txt.textContent = text;
     }
 
     function updateInputState() {
