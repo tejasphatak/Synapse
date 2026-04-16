@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260415-stable1";
+import { Pipeline } from "./pipeline.js?v=20260416-bansamp";
 import {
   MessageType,
   PROTOCOL_V2,

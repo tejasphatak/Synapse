@@ -587,6 +587,13 @@ export class Pipeline {
     const topK = sOpts.topK ?? 40;           // 0 disables; 40 is a common default
     const topP = sOpts.topP ?? 0.95;         // 0 disables; 0.95 is nucleus default
 
+    // Lazy-load banned tokens from manifest (Gemma has 6242 <unused*>
+    // tokens scattered across the vocab that shouldn't be sampled).
+    if (!this._bannedTokensSet && this.loader?.manifest?.banned_sampling_tokens) {
+      this._bannedTokensSet = new Set(this.loader.manifest.banned_sampling_tokens);
+    }
+    const banned = this._bannedTokensSet;
+
     // Read only the last position's logits from GPU
     const offset = (seqLen - 1) * vocabSize * 4;
     const logits = await this._readBuffer(logitsTensor.buffer, offset, vocabSize * 4);
@@ -613,6 +620,20 @@ export class Pipeline {
       sumExp += probs[i];
     }
     for (let i = 0; i < probs.length; i++) probs[i] /= sumExp;
+
+    // Ban unused/special tokens: zero their probs so they can't survive
+    // top-k/top-p. Applied BEFORE the filter so they're guaranteed out.
+    if (banned && banned.size) {
+      for (const id of banned) {
+        if (id < probs.length) probs[id] = 0;
+      }
+      // Renormalize after zeroing
+      let renormSum = 0;
+      for (let i = 0; i < probs.length; i++) renormSum += probs[i];
+      if (renormSum > 0) {
+        for (let i = 0; i < probs.length; i++) probs[i] /= renormSum;
+      }
+    }
 
     // Top-K + Top-P filter. For 262k-vocab Gemma, keeping only top-40
     // tokens concentrates mass and eliminates long-tail noise that

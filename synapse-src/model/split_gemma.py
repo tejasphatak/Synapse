@@ -267,6 +267,8 @@ def build_shards(tensor_refs, text_cfg, num_shards, dtype="float16"):
                      "file": f"shard_{s}.bin"}
             for s in range(num_shards)
         },
+        "banned_sampling_tokens": text_cfg.get("banned_sampling_tokens", []),
+        "eos_tokens": text_cfg.get("eos_tokens", [1]),
         "shared_file": "shared.bin",
         "shared_dtype": dtype,
         "rope_cos_file": "rope_cos.bin",
@@ -387,6 +389,23 @@ def main():
         except Exception as e:
             print(f"  tokenizer: skipping {fname} ({e.__class__.__name__})")
     print(f"  tokenizer files → {tok_dir}")
+
+    # Parse tokenizer config for banned tokens (<unused*>) so the
+    # inference pipeline can zero them before sampling.
+    banned_ids = []
+    eos_ids = []
+    tok_config_path = tok_dir / "tokenizer_config.json"
+    if tok_config_path.exists():
+        import json as _j
+        tc = _j.load(open(tok_config_path))
+        added = tc.get("added_tokens_decoder", {})
+        banned_ids = sorted(int(k) for k, v in added.items()
+                            if "<unused" in str(v.get("content", "")))
+        eos_ids = sorted(int(k) for k, v in added.items()
+                         if v.get("content") in ("</s>", "<eos>", "<end_of_turn>"))
+        print(f"  banned sampling tokens: {len(banned_ids)}, eos tokens: {eos_ids}")
+    text_cfg["banned_sampling_tokens"] = banned_ids
+    text_cfg["eos_tokens"] = eos_ids
 
     tensor_refs = load_all_tensors(paths)
     # Filter to text-transformer tensors only (strip vision/audio for Gemma 4)
