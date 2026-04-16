@@ -2430,6 +2430,16 @@ export class Pipeline {
   deserializeTensor(tensorMsg) { return this.serializer.deserialize(tensorMsg); }
   async serializeTensorBinary(tensor) { return this.serializer.serializeBinary(tensor); }
   deserializeTensorBinary(payload, shape) { return this.serializer.deserializeBinary(payload, shape); }
+
+  /**
+   * Upload a Float32Array directly to GPU (used by fp16-wire decode path).
+   */
+  deserializeTensorFromFloat32(f32, shape) {
+    const buf = this._createBuffer("fp16_recv", f32.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(buf, 0, f32);
+    return { buffer: buf, shape };
+  }
   async serializeTensorQuantized(tensor) { return this.serializer.serializeQuantized(tensor); }
   deserializeTensorQuantized(payload, shape) { return this.serializer.deserializeQuantized(payload, shape); }
   async serializeTensorInt4(tensor) { return this.serializer.serializeInt4(tensor); }

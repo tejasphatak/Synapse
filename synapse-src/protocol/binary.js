@@ -43,6 +43,7 @@ export const QuantMode = {
   NONE: 0,
   INT8: 1,
   INT4: 2,
+  FP16: 3,  // Half-precision: 2× bandwidth saving over NONE, lossless for Gemma's range
 };
 
 // ─── Quantization Helpers ────────────────────────────────────────
@@ -59,6 +60,34 @@ export function getQuantMode(flags) {
  */
 export function setQuantFlags(flags, quantMode) {
   return (flags & ~Flags.QUANT_MASK) | (quantMode & Flags.QUANT_MASK);
+}
+
+// ─── FP16 Wire Helpers ──────────────────────────────────────────
+
+/**
+ * Convert Float32Array → Uint8Array of fp16 values (half the bytes).
+ * Uses DataView.setFloat16 (Chrome 121+, all WebGPU browsers).
+ */
+export function float32ToFp16Bytes(f32) {
+  const buf = new ArrayBuffer(f32.length * 2);
+  const view = new DataView(buf);
+  for (let i = 0; i < f32.length; i++) {
+    view.setFloat16(i * 2, f32[i], true); // little-endian
+  }
+  return new Uint8Array(buf);
+}
+
+/**
+ * Convert fp16 Uint8Array back to Float32Array.
+ */
+export function fp16BytesToFloat32(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = bytes.byteLength / 2;
+  const f32 = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    f32[i] = view.getFloat16(i * 2, true);
+  }
+  return f32;
 }
 
 // ─── Request ID Mapping ──────────────────────────────────────────

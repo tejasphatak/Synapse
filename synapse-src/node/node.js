@@ -12,7 +12,7 @@
  */
 
 import { ShardLoader } from "./shard-loader.js?v=20260415-gemma";
-import { Pipeline } from "./pipeline.js?v=20260416-bansamp";
+import { Pipeline } from "./pipeline.js?v=20260416-fp16wire";
 import {
   MessageType,
   PROTOCOL_V2,
@@ -36,6 +36,8 @@ import {
   requestIdToUint32,
   uint32ToRequestId,
   registerRequestId,
+  float32ToFp16Bytes,
+  fp16BytesToFloat32,
 } from "../protocol/binary.js";
 import { unpackQuantized, dequantizeInt8, unpackQuantizedPerChannel, dequantizeInt8PerChannel } from "../protocol/quantize.js";
 import { compressPayload, decompressPayload } from "../protocol/entropy.js";
@@ -606,7 +608,9 @@ export class SynapseNode {
       if (this.loader?.manifest?.arch === "gemma") {
         this.useQuantization = false;
         this.useAdaptivePrecision = false;
-        this.forceQuantMode = "none";
+        // FP16 wire: half the bytes vs fp32, lossless for Gemma's range.
+        // Int8 was too lossy (dynamic range crush); FP16 preserves precision.
+        this.forceQuantMode = "fp16";
         // Re-enabled: predictor is activation-shape-agnostic (operates on
         // float32 vectors). Shadow mode observes without affecting output
         // for the first warmupSteps; auto-enables only if hit-rate clears
@@ -889,6 +893,10 @@ export class SynapseNode {
           // No previous — treat as regular int8 (first token or cache miss)
           hidden = this.pipeline.deserializeTensorQuantized(payload, decoded.shape);
         }
+      } else if (quantMode === QuantMode.FP16) {
+        // FP16 wire: expand fp16 bytes back to fp32, then upload to GPU.
+        const f32 = fp16BytesToFloat32(payload);
+        hidden = this.pipeline.deserializeTensorFromFloat32(f32, decoded.shape);
       } else if (quantMode === QuantMode.INT4) {
         hidden = this.pipeline.deserializeTensorInt4(payload, decoded.shape);
       } else if (quantMode === QuantMode.INT8) {
@@ -1231,6 +1239,7 @@ export class SynapseNode {
       if (this.forceQuantMode === "int4") quantMode = QuantMode.INT4;
       else if (this.forceQuantMode === "int8") quantMode = QuantMode.INT8;
       else if (this.forceQuantMode === "none") quantMode = QuantMode.NONE;
+      else if (this.forceQuantMode === "fp16") quantMode = QuantMode.FP16;
       else if (this.adaptivePrecision) {
         quantMode = this.adaptivePrecision.getMode(0);
       }
@@ -1251,6 +1260,12 @@ export class SynapseNode {
         }
         // Cache the float32 for next delta
         this._lastSentActivation.set(requestId, result.currentFloat32);
+      } else if (quantMode === QuantMode.FP16) {
+        // FP16: read fp32 from GPU → convert to fp16 bytes (2× smaller).
+        const raw = await this.pipeline.serializeTensor(hidden);
+        const f32 = raw.currentFloat32 || new Float32Array(raw.data.buffer, raw.data.byteOffset, raw.data.byteLength / 4);
+        serialized = { data: float32ToFp16Bytes(f32), shape: raw.shape };
+        flags = setQuantFlags(flags, QuantMode.FP16);
       } else if (quantMode === QuantMode.INT4) {
         serialized = await this.pipeline.serializeTensorInt4(hidden);
         if (!serialized.fallbackUnquantized) {
