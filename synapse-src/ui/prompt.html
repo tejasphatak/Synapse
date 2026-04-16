@@ -145,7 +145,27 @@
     .message {
       line-height: 1.65;
       display: flex;
-      gap: 0.75rem;
+      gap: 0.65rem;
+      max-width: 85%;
+    }
+    /* User messages: right-aligned, no avatar */
+    .message.user {
+      margin-left: auto;
+      flex-direction: row-reverse;
+    }
+    .message.user .avatar { display: none; }
+    .message.user .bubble {
+      background: #3f8f5c;
+      color: #fff;
+      border-radius: 18px 18px 4px 18px;
+      padding: 0.55rem 0.9rem;
+    }
+    .message.user .role { display: none; }
+    .message.user .content { color: #fff; }
+
+    /* Nex messages: left-aligned with animated neuron avatar */
+    .message.assistant {
+      margin-right: auto;
     }
     .message .avatar {
       width: 28px; height: 28px;
@@ -155,43 +175,68 @@
       font-size: 0.7rem;
       font-weight: 600;
       letter-spacing: -0.02em;
+      overflow: hidden;
     }
-    .message.user .avatar { background: var(--bg-hover); color: var(--text-dim); }
     .message.assistant .avatar {
-      background: linear-gradient(135deg, var(--accent) 0%, #a78bfa 100%);
-      color: white;
+      background: #f4f3ee;
+      padding: 0;
     }
     .message .bubble { flex: 1 1 auto; min-width: 0; }
-    .message .role {
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--text-dim);
-      margin-bottom: 0.25rem;
+    .message.assistant .bubble {
+      background: #f8f7f3;
+      border: 1px solid #e6e3da;
+      border-radius: 18px 18px 18px 4px;
+      padding: 0.55rem 0.9rem;
     }
-    .message.user .role { color: var(--text); }
+    .message .role {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: #6a6a67;
+      margin-bottom: 0.2rem;
+    }
     .message .content {
-      color: var(--text);
+      color: #23262b;
       white-space: pre-wrap;
       word-break: break-word;
       font-size: clamp(0.92rem, 1.5vw, 1rem);
     }
-    .message .meta { font-size: 0.7rem; color: var(--text-faint); margin-top: 0.3rem; }
+    .message .meta { font-size: 0.68rem; color: #9a9a96; margin-top: 0.25rem; }
 
-    .typing-indicator {
-      color: var(--text-dim);
-      font-size: 0.82rem;
-      display: none;
-      padding: 0 1rem;
+    /* Animated neuron SVG for nex avatar */
+    @keyframes neuron-pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
     }
-    .typing-indicator.active { display: block; }
-    .typing-indicator::after {
-      content: '';
-      display: inline-block; width: 4px; height: 4px;
-      border-radius: 50%;
-      background: currentColor;
-      margin-left: 4px;
-      animation: typing-pulse 1.4s infinite;
+    .nex-neuron-svg .spark { animation: neuron-pulse 1.8s ease-in-out infinite; }
+
+    /* Thinking bubble — appears as a chat message with animated dots */
+    .thinking-bubble {
+      display: flex; align-items: flex-start; gap: 0.7rem;
+      padding: 0.6rem 1rem; opacity: 0;
+      animation: think-fade-in 0.3s ease forwards;
     }
+    @keyframes think-fade-in { to { opacity: 1; } }
+    .thinking-bubble .avatar { flex-shrink: 0; }
+    .thinking-dots {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 0.55rem 0.9rem; background: var(--bg-surface, #f8f7f3);
+      border: 1px solid var(--border, #e6e3da);
+      border-radius: 16px 16px 16px 4px;
+    }
+    .thinking-dots span {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--text-dim, #999);
+      animation: dot-bounce 1.4s infinite ease-in-out;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.16s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.32s; }
+    @keyframes dot-bounce {
+      0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+      30% { opacity: 1; transform: translateY(-3px); }
+    }
+    /* Legacy — kept for compat, hidden element in DOM */
+    .typing-indicator { display: none; }
+    .typing-indicator.active { display: none; }
     @keyframes typing-pulse {
       0%, 60%, 100% { opacity: 0.3; }
       30% { opacity: 1; }
@@ -396,9 +441,8 @@
         </button>
       </div>
     </div>
-    <div class="typing-indicator" id="typingIndicator" style="text-align:center;margin-bottom:0.3rem">
-      Thinking across the network
-    </div>
+    <!-- typing indicator hidden from composer — now shown as a chat bubble -->
+    <div class="typing-indicator" id="typingIndicator" style="display:none"></div>
     <div class="composer-inner">
       <textarea id="promptInput" placeholder="Ask anything…" rows="1" disabled></textarea>
       <button id="sendBtn" disabled title="Send (Enter)">↑</button>
@@ -930,20 +974,32 @@
 
     // ─── UI Helpers ───────────────────────────────────────────────────
 
+    const _nexAvatarSVG = `<svg class="nex-neuron-svg" viewBox="0 0 28 28" width="28" height="28" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="9" cy="14" r="3" fill="none" stroke="#3f8f5c" stroke-width="1.2"/>
+      <circle cx="19" cy="14" r="3" fill="none" stroke="#3f8f5c" stroke-width="1.2"/>
+      <line x1="12" y1="14" x2="16" y2="14" stroke="#3f8f5c" stroke-width="1"/>
+      <line x1="7" y1="11" x2="5" y2="8" stroke="#3f8f5c" stroke-width="0.8"/>
+      <line x1="6" y1="14" x2="3" y2="14" stroke="#3f8f5c" stroke-width="0.8"/>
+      <line x1="7" y1="17" x2="5" y2="20" stroke="#3f8f5c" stroke-width="0.8"/>
+      <line x1="21" y1="11" x2="23" y2="8" stroke="#3f8f5c" stroke-width="0.8"/>
+      <line x1="22" y1="14" x2="25" y2="14" stroke="#3f8f5c" stroke-width="0.8"/>
+      <line x1="21" y1="17" x2="23" y2="20" stroke="#3f8f5c" stroke-width="0.8"/>
+      <circle class="spark" cx="14" cy="14" r="1.4" fill="#b86b3e"/>
+    </svg>`;
+
     function addMessage(role, content, meta = "") {
       const messagesDiv = document.getElementById("messages");
       const div = document.createElement("div");
       div.className = `message ${role}`;
-      const label = role === "user" ? "you" : "nex";
+      const avatarHTML = role === "assistant" ? _nexAvatarSVG : "";
       div.innerHTML = `
-        <div class="avatar">${label}</div>
+        <div class="avatar">${avatarHTML}</div>
         <div class="bubble">
-          <div class="role">${label}</div>
+          ${role === "assistant" ? '<div class="role">nex</div>' : ""}
           <div class="content"></div>
           ${meta ? `<div class="meta">${meta}</div>` : ""}
         </div>
       `;
-      // Safe text assignment to avoid HTML injection from arbitrary content
       div.querySelector(".content").textContent = content;
       messagesDiv.appendChild(div);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -966,11 +1022,22 @@
     }
 
     function showTyping() {
-      document.getElementById("typingIndicator").classList.add("active");
+      hideTyping(); // clear any existing
+      const messagesDiv = document.getElementById("messages");
+      const bubble = document.createElement("div");
+      bubble.className = "thinking-bubble";
+      bubble.id = "thinkingBubble";
+      bubble.innerHTML = `
+        <div class="avatar" style="background:#f4f3ee;border-radius:50%;width:28px;height:28px;display:grid;place-items:center">${_nexAvatarSVG}</div>
+        <div class="thinking-dots"><span></span><span></span><span></span></div>
+      `;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
     function hideTyping() {
-      document.getElementById("typingIndicator").classList.remove("active");
+      const existing = document.getElementById("thinkingBubble");
+      if (existing) existing.remove();
     }
 
     // ── Rotating warm placeholder lines ──
