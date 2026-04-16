@@ -683,28 +683,38 @@ function wsConnectionHandler(ws, req) {
     if (nodeId) {
       console.log(`[coordinator] Node ${nodeId} disconnected`);
       topology.removeNode(nodeId);
-      // Fail-fast: abort any in-flight generation that was routed through
-      // this node. Much better UX than a 60s timeout.
-      const failedGenIds = [];
-      for (const [genId, gen] of generations) {
-        if (gen.routedThrough?.has?.(nodeId) || gen.promptClient) {
-          failedGenIds.push(genId);
+      // Fail-fast: abort any in-flight generation whose pipeline includes
+      // this node. Wrapped in try/catch so bugs in the abort path never
+      // take down the coord (hot earned lesson — prior version crashed
+      // the process by iterating a non-Map directly).
+      try {
+        const inner = generations?.generations; // underlying Map on GenerationManager
+        if (inner && typeof inner.entries === "function") {
+          const failedGenIds = [];
+          for (const [genId, gen] of inner.entries()) {
+            if (gen?.routedThrough?.has?.(nodeId) || gen?.promptClient) {
+              failedGenIds.push(genId);
+            }
+          }
+          for (const genId of failedGenIds) {
+            const gen = inner.get(genId);
+            if (!gen) continue;
+            if (gen.promptClient?.readyState === 1) {
+              try {
+                gen.promptClient.send(JSON.stringify({
+                  type: "GENERATION_FAILED",
+                  genId,
+                  error: `Node ${nodeId} dropped mid-generation — aborted so you can retry`,
+                }));
+              } catch {}
+            }
+            if (typeof generations.remove === "function") generations.remove(genId);
+            else inner.delete(genId);
+            console.log(`[coordinator] aborted ${genId} due to ${nodeId} disconnect`);
+          }
         }
-      }
-      for (const genId of failedGenIds) {
-        const gen = generations.get(genId);
-        if (!gen) continue;
-        if (gen.promptClient?.readyState === 1) {
-          try {
-            gen.promptClient.send(JSON.stringify({
-              type: "GENERATION_FAILED",
-              genId,
-              error: `Node ${nodeId} dropped mid-generation — aborted so you can retry`,
-            }));
-          } catch {}
-        }
-        generations.delete(genId);
-        console.log(`[coordinator] aborted ${genId} due to ${nodeId} disconnect`);
+      } catch (e) {
+        console.error(`[coordinator] disconnect-abort handler error: ${e.message}`);
       }
       tryAssignShards();
       broadcastTopology();
