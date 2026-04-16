@@ -781,6 +781,25 @@
         case "OUTPUT":
           handleOutputToken(msg);
           break;
+
+        case "GENERATION_FAILED":
+          // A node dropped mid-generation. Coord aborted the run
+          // fast-fail-style (commit 89971d4). Auto-retry once silently
+          // — phones often reconnect in seconds; second failure
+          // surfaces to the user.
+          hideTyping();
+          currentRequestId = null;
+          if (_lastPromptText && _lastPromptRetries < 1) {
+            _lastPromptRetries += 1;
+            appendLog && appendLog("info", "A node dropped — retrying automatically");
+            setTimeout(() => sendPrompt(true), 1200);
+          } else {
+            addMessage("assistant", `A node dropped mid-answer and the retry also failed. The fleet may be short-staffed right now — try again in a moment.`);
+            _lastPromptText = null;
+            _lastPromptRetries = 0;
+            updateInputState();
+          }
+          break;
       }
     }
 
@@ -973,17 +992,26 @@
 
     // ─── Send Logic ───────────────────────────────────────────────────
 
-    async function sendPrompt() {
+    // Last prompt + retry count so we can auto-resubmit once on
+    // GENERATION_FAILED (node dropped mid-stream). Second failure
+    // surfaces to the user.
+    let _lastPromptText = null;
+    let _lastPromptRetries = 0;
+
+    async function sendPrompt(isRetry = false) {
       const input = document.getElementById("promptInput");
-      const text = input.value.trim();
+      const text = isRetry ? _lastPromptText : input.value.trim();
       if (!text || !pipelineReady) return;
 
-      addMessage("user", text);
-      input.value = "";
+      if (!isRetry) {
+        _lastPromptText = text;
+        _lastPromptRetries = 0;
+        addMessage("user", text);
+        input.value = "";
+      }
       currentAssistantDiv = null;
       showTyping();
 
-      // Tokenize via coordinator API
       let tokenIds;
       try {
         const result = await tokenizer.encode(text);
@@ -993,7 +1021,6 @@
         return;
       }
 
-      // Send to coordinator
       ws.send(JSON.stringify({
         type: "PROMPT_INFER",
         tokenIds,
