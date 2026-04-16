@@ -323,48 +323,41 @@
     </div>
     <div class="status" id="pipelineStatus">
       <span class="dot" id="pipelineDot"></span>
-      <span class="status-text" id="pipelineText">Connecting…</span>
+      <span class="status-text" id="pipelineText">Connecting</span>
       <span class="status-text" id="fleetSummary"></span>
     </div>
     <div class="actions">
       <a class="btn-icon" href="https://webmind.sh/vision.html" target="_blank" rel="noopener" title="Why this exists" style="text-decoration:none">Vision</a>
-      <button class="btn-icon" id="fleetBtn" title="Show fleet details">Fleet</button>
+      <button class="btn-icon" id="fleetBtn" title="Show peer counts + traffic">Peers</button>
       <button class="btn-icon" id="contribBtn" title="Contribute this device's GPU">Contribute</button>
       <button class="btn-icon" id="logBtn" title="Show event log">Log</button>
     </div>
   </header>
 
-  <!-- Fleet panel: slide-up sheet showing connected peers, vendors, shard
-       assignments, and live traffic indicator. Non-intrusive, opens on
-       explicit tap. Torrent-client aesthetic, light/fun palette. -->
+  <!-- Peers panel: aggregate counts + traffic, no per-device list. -->
   <aside id="fleetPanel" aria-hidden="true" style="
-    position:fixed;right:1rem;bottom:5.5rem;width:min(380px,calc(100vw - 2rem));
-    max-height:70vh;overflow:auto;background:#fffdfa;border:1px solid #e7e3da;
-    border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.08);
-    padding:0.9rem 1rem;font:13px/1.5 -apple-system,system-ui,sans-serif;
-    color:#2d2a24;display:none;z-index:50">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
-      <strong style="font-size:13px">The fleet</strong>
+    position:fixed;right:1rem;bottom:5.5rem;width:min(320px,calc(100vw - 2rem));
+    background:#fffdfa;border:1px solid #e7e3da;border-radius:14px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.08);padding:0.9rem 1rem;
+    font:13px/1.5 -apple-system,system-ui,sans-serif;color:#2d2a24;
+    display:none;z-index:50">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem">
+      <strong style="font-size:13px">Peers</strong>
       <button id="fleetCloseBtn" aria-label="Close"
         style="border:0;background:none;font-size:18px;cursor:pointer;color:#666">×</button>
     </div>
-    <div id="fleetSummary2" style="color:#655f55;margin-bottom:0.6rem"></div>
-    <ul id="fleetPeerList" style="list-style:none;padding:0;margin:0"></ul>
-    <div style="margin-top:0.7rem;padding-top:0.6rem;border-top:1px solid #eee4d4;color:#6b6558;font-size:11.5px">
-      <div>Model: <span id="fleetModel">—</span></div>
-      <div>Decode: <span id="fleetTps">— tok/s</span> · Wire: <span id="fleetP2p">—</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.55rem 0.9rem;color:#2d2a24">
+      <div><div style="font-size:11px;color:#8a8479;text-transform:uppercase;letter-spacing:0.05em">Connected</div><div id="peerConn" style="font-size:18px;font-weight:700;color:#3f8f5c">—</div></div>
+      <div><div style="font-size:11px;color:#8a8479;text-transform:uppercase;letter-spacing:0.05em">Ready</div><div id="peerReady" style="font-size:18px;font-weight:700;color:#3f8f5c">—</div></div>
+      <div><div style="font-size:11px;color:#8a8479;text-transform:uppercase;letter-spacing:0.05em">↓ Down</div><div id="peerDown" style="font-size:15px;font-weight:600">—</div></div>
+      <div><div style="font-size:11px;color:#8a8479;text-transform:uppercase;letter-spacing:0.05em">↑ Up</div><div id="peerUp" style="font-size:15px;font-weight:600">—</div></div>
+      <div><div style="font-size:11px;color:#8a8479;text-transform:uppercase;letter-spacing:0.05em">P2P</div><div id="fleetP2p" style="font-size:13px;font-weight:500">—</div></div>
+      <div><div style="font-size:11px;color:#8a8479;text-transform:uppercase;letter-spacing:0.05em">Model</div><div id="fleetModel" style="font-size:13px;font-weight:500">—</div></div>
     </div>
   </aside>
 
   <div class="main">
     <div class="messages" id="messages">
-      <div class="message assistant">
-        <div class="avatar">nex</div>
-        <div class="bubble">
-          <div class="role">nex</div>
-          <div class="content">Waiting for the neural network to come online. Tap <strong>Contribute</strong> to add this device, or open more browser tabs to grow the fleet.</div>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -466,23 +459,14 @@
     const fleetBtn = document.getElementById("fleetBtn");
     const fleetPanel = document.getElementById("fleetPanel");
     const fleetCloseBtn = document.getElementById("fleetCloseBtn");
-    const fleetPeerList = document.getElementById("fleetPeerList");
-    const fleetSummary2 = document.getElementById("fleetSummary2");
-    const fleetModelEl = document.getElementById("fleetModel");
-    const fleetTpsEl = document.getElementById("fleetTps");
-    const fleetP2pEl = document.getElementById("fleetP2p");
     let fleetPollTimer = null;
 
-    // Vendor → emoji for a tiny visual torrent-client flavour.
-    function vendorIcon(v) {
-      const k = (v || "").toLowerCase();
-      if (k.includes("nvidia")) return "🟢";
-      if (k.includes("apple"))  return "⚪";
-      if (k.includes("qualcomm")) return "🟠";
-      if (k.includes("arm"))    return "⚫";
-      if (k.includes("intel"))  return "🔵";
-      if (k.includes("img"))    return "🟣";
-      return "🟡";
+    function _fmtBytes(n) {
+      if (!n || n < 0) return "0 B";
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+      return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
     }
 
     async function refreshFleet() {
@@ -494,44 +478,22 @@
         if (!topo) return;
         const nodes = topo.nodes || [];
         const ready = nodes.filter(n => n.status === "ready");
-        fleetSummary2.textContent = `${ready.length}/${topo.pipeline?.length ?? "?"} shards live · ${nodes.length} device${nodes.length === 1 ? "" : "s"} connected`;
-
-        const vendorMap = window.__synapseVendorMap || (window.__synapseVendorMap = {});
-        // Best-effort vendor enrichment from log events: watch self_test_passed.
-        fetch("/api/logs?event=self_test_passed&limit=80")
-          .then(r => r.ok ? r.json() : null)
-          .then(d => { for (const e of (d?.logs || [])) vendorMap[e.nodeId] = e.data?.vendor; })
-          .catch(() => {});
-
-        fleetPeerList.innerHTML = nodes.map(n => {
-          const v = vendorMap[n.nodeId] || "?";
-          const badge = n.status === "ready" ? "ready" : n.status || "connecting";
-          const badgeColor = n.status === "ready" ? "#6aa96a"
-                           : n.status === "assigned" ? "#c29a4a" : "#888";
-          const shard = n.shardId != null ? `shard ${n.shardId}` : "idle";
-          return `<li style="display:flex;align-items:center;gap:0.55rem;padding:0.35rem 0;border-bottom:1px dashed #eee4d4">
-            <span style="font-size:14px">${vendorIcon(v)}</span>
-            <span style="flex:1;min-width:0">
-              <div style="font-weight:600;font-size:12px">${n.nodeId.slice(0, 14)}</div>
-              <div style="color:#7a7367;font-size:11px">${v} · ${shard}</div>
-            </span>
-            <span style="font-size:10px;padding:2px 6px;border-radius:10px;background:${badgeColor}22;color:${badgeColor};font-weight:600">${badge}</span>
-          </li>`;
-        }).join("");
-
+        const connEl = document.getElementById("peerConn");
+        const readyEl = document.getElementById("peerReady");
+        const downEl = document.getElementById("peerDown");
+        const upEl = document.getElementById("peerUp");
+        const p2pEl = document.getElementById("fleetP2p");
+        const modelEl = document.getElementById("fleetModel");
+        if (connEl) connEl.textContent = String(nodes.length);
+        if (readyEl) readyEl.textContent = `${ready.length}/${topo.pipeline?.length ?? "?"}`;
         if (p2p) {
+          if (downEl) downEl.textContent = _fmtBytes(p2p.coordBytes + p2p.p2pBytes);
+          if (upEl)   upEl.textContent   = _fmtBytes(p2p.coordBytes + p2p.p2pBytes);
           const pct = (p2p.p2pRatio * 100).toFixed(0);
-          fleetP2pEl.textContent = p2p.totalHops
-            ? `${pct}% P2P (${p2p.p2p}/${p2p.totalHops} hops)`
-            : "no traffic yet";
+          if (p2pEl) p2pEl.textContent = p2p.totalHops ? `${pct}% direct` : "—";
         }
-        // TPS pulled from last known per-generation stats via statTokens/latency legacy elements
-        const legacyTok = document.getElementById("statTokens")?.textContent;
-        fleetTpsEl.textContent = legacyTok && legacyTok !== "0" ? `${legacyTok} tok` : "— tok/s";
-        fleetModelEl.textContent = topo.model?.name || "Gemma 3 1B";
-      } catch (e) {
-        // silent — this is a live polling loop
-      }
+        if (modelEl) modelEl.textContent = topo.model?.name || "Gemma 3 1B";
+      } catch (e) { /* silent live poll */ }
     }
 
     function openFleet() {
@@ -719,7 +681,7 @@
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        updatePipelineStatus("connected", "Connected — waiting for nodes...");
+        updatePipelineStatus("connected", "Preparing");
       };
 
       ws.onmessage = (event) => {
@@ -728,7 +690,7 @@
       };
 
       ws.onclose = () => {
-        updatePipelineStatus("disconnected", "Disconnected — reconnecting...");
+        updatePipelineStatus("disconnected", "Disconnected");
         pipelineReady = false;
         updateInputState();
         setTimeout(connect, 3000);
@@ -752,9 +714,8 @@
 
         case "PIPELINE_READY":
           pipelineReady = true;
-          updatePipelineStatus("ready", "Pipeline ready");
+          updatePipelineStatus("ready", "Ready");
           updateInputState();
-          addMessage("assistant", "The neural network is online. I'm running across distributed browser nodes. Ask me anything.");
           break;
 
         case "INFER_STARTED":
@@ -840,11 +801,11 @@
       }
 
       if (pipeline.length >= 2 && activeNodes.length >= 2) {
-        updatePipelineStatus("ready", `Pipeline ready (${activeNodes.length} nodes)`);
+        updatePipelineStatus("ready", `Ready`);
         document.getElementById("statPipeline").textContent = "online";
         pipelineReady = true;
       } else if (totalNodes > 0) {
-        updatePipelineStatus("partial", `${activeNodes.length}/${totalNodes} nodes ready`);
+        updatePipelineStatus("partial", `${activeNodes.length}/${totalNodes}`);
         document.getElementById("statPipeline").textContent = "partial";
       }
 
