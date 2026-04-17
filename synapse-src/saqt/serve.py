@@ -195,12 +195,15 @@ class SAQTEngine:
 
         elapsed_ms = int((time.time() - t0) * 1000)
 
-        # Synthesize answer from facts (no LLM — facts ARE the answer)
+        # Synthesize answer from retrieved facts
         answer = ""
         if answers:
             answer = answers[0]
         elif facts:
             answer = facts[0]
+
+        # Try to synthesize a coherent answer using retrieved facts
+        answer = self._synthesize(question, facts, answers)
 
         return {
             "question": question,
@@ -213,6 +216,42 @@ class SAQTEngine:
             "totalFacts": len(facts),
             "timeMs": elapsed_ms,
         }
+
+    def _synthesize(self, question, facts, answers):
+        """Synthesize a coherent answer from retrieved facts.
+        Uses Gemini Flash as temporary bridge until kernel is trained.
+        TODO: Replace with trained GPT-2 125M kernel."""
+        if not facts and not answers:
+            return "I don't have enough information in my knowledge base to answer that."
+
+        # Try Gemini Flash for synthesis (temporary — will be replaced by local kernel)
+        gemini_key = ""
+        try:
+            gpath = os.path.join(HOME, ".claude/secrets/gemini.json")
+            if os.path.exists(gpath):
+                gemini_key = json.loads(open(gpath).read()).get("api_key", "")
+        except:
+            pass
+
+        if gemini_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=gemini_key)
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                context = "\n".join(facts[:6])
+                direct = f"\nDirect answers: {', '.join(answers[:3])}" if answers else ""
+                prompt = f"Answer the question using ONLY the provided facts. Be concise, natural, and helpful. If the facts don't contain the answer, say so honestly. Do not add information beyond what the facts state.\n\nFacts:\n{context}{direct}\n\nQuestion: {question}\n\nAnswer:"
+                resp = model.generate_content(prompt,
+                    generation_config={'max_output_tokens': 300, 'temperature': 0.3})
+                if resp.text:
+                    return resp.text
+            except Exception as e:
+                print(f"[saqt] Synthesis fallback: {e}", flush=True)
+
+        # Fallback: return best answer or fact directly
+        if answers:
+            return answers[0]
+        return facts[0] if facts else "No answer found."
 
     def stats(self):
         return {
