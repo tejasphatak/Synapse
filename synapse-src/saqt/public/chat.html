@@ -334,22 +334,30 @@ async function sendQuery() {
     // Build answer
     let html = '';
 
-    // Show direct answers first
-    if (data.answers && data.answers.length > 0) {
-      html += `<div style="font-weight:600;margin-bottom:8px;">${escapeHtml(data.answers[0])}</div>`;
-      if (data.answers.length > 1) {
-        html += `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">Also: ${data.answers.slice(1).map(escapeHtml).join(', ')}</div>`;
-      }
+    // Main answer
+    if (data.answer) {
+      html += `<div style="line-height:1.7;margin-bottom:6px;">${escapeHtml(data.answer)}</div>`;
     }
 
-    // Show retrieved facts
+    // Other possible answers
+    if (data.otherAnswers && data.otherAnswers.length > 0) {
+      html += `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">Other answers: ${data.otherAnswers.map(escapeHtml).join(' | ')}</div>`;
+    }
+
+    // Confidence indicator
+    if (data.confidence === 'direct') {
+      html += `<div style="font-size:11px;color:var(--primary);margin-bottom:4px;">Direct match found</div>`;
+    }
+
+    // Collapsible sources — always show
     if (data.facts && data.facts.length > 0) {
-      html += `<div class="fact-label">Retrieved facts (${data.totalFacts} total)</div>`;
-      for (const fact of data.facts.slice(0, 5)) {
-        html += `<div class="fact-card">${escapeHtml(fact)}</div>`;
+      html += `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--primary);font-weight:600;user-select:none;">View sources (${data.totalFacts} facts, ${data.hops} hops, ${data.timeMs}ms)</summary>`;
+      for (const fact of data.facts.slice(0, 6)) {
+        html += `<div class="fact-card">${escapeHtml(fact.substring(0, 250))}</div>`;
       }
+      html += `</details>`;
     } else {
-      html += 'No relevant facts found in the knowledge base.';
+      html += `<div style="font-size:13px;color:var(--text-secondary);">No matching facts in knowledge base.</div>`;
     }
 
     loadingBubble.innerHTML = html;

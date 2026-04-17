@@ -107,6 +107,20 @@ function saqtQuery(question, maxHops = 5) {
     trace, hops: maxHops, totalFacts: facts.length, timeMs: Date.now() - t0 };
 }
 
+// ─── Answer Synthesis (no LLM — facts are the answer) ────
+
+function synthesizeAnswer(question, facts, answers) {
+  // Direct answer if available
+  if (answers.length > 0) {
+    return { answer: answers[0], confidence: 'direct', otherAnswers: answers.slice(1) };
+  }
+  // Best matching fact
+  if (facts.length > 0) {
+    return { answer: facts[0], confidence: 'retrieved', otherAnswers: [] };
+  }
+  return { answer: "I don't have enough information in my knowledge base to answer that.", confidence: 'none', otherAnswers: [] };
+}
+
 // ─── HTTP Server ──────────────────────────────────────────
 
 const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
@@ -127,6 +141,10 @@ function handleRequest(req, res) {
         const { question, hops = 5 } = JSON.parse(body);
         if (!question) { res.writeHead(400, cors); res.end(JSON.stringify({ error: 'Missing question' })); return; }
         const result = saqtQuery(question, Math.min(hops, 10));
+        const synth = synthesizeAnswer(question, result.facts, result.answers);
+        result.answer = synth.answer;
+        result.confidence = synth.confidence;
+        result.otherAnswers = synth.otherAnswers;
         res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (e) { res.writeHead(500, cors); res.end(JSON.stringify({ error: e.message })); }
