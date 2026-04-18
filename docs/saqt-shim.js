@@ -291,14 +291,62 @@
               const out = [];
               const print = (...a) => out.push(a.join(' '));
               const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-              // Web search helper available to tool code
+              // Multi-source web search helper available to tool code
               const searchWeb = async (query) => {
+                const results = [];
+
+                // Source 1: Wikipedia
                 try {
                   const q = encodeURIComponent(query);
                   const r = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${q}`);
-                  if (r.ok) { const d = await r.json(); return d.extract || ''; }
+                  if (r.ok) {
+                    const d = await r.json();
+                    if (d.extract) results.push({ source: 'Wikipedia', text: d.extract, url: d.content_urls?.desktop?.page || '' });
+                  }
                 } catch(e) {}
-                return '';
+
+                // Source 2: DuckDuckGo Instant Answers
+                try {
+                  const q = encodeURIComponent(query);
+                  const r = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_html=1&skip_disambig=1`);
+                  if (r.ok) {
+                    const d = await r.json();
+                    const text = d.AbstractText || d.Answer || '';
+                    if (text) results.push({ source: d.AbstractSource || 'DuckDuckGo', text, url: d.AbstractURL || '' });
+                    // Also grab related topics
+                    if (d.RelatedTopics?.length) {
+                      const related = d.RelatedTopics.slice(0, 3).map(t => t.Text).filter(Boolean).join(' ');
+                      if (related && !text) results.push({ source: 'DuckDuckGo', text: related, url: '' });
+                    }
+                  }
+                } catch(e) {}
+
+                // Source 3: Wikipedia search (if direct lookup failed)
+                if (!results.some(r => r.source === 'Wikipedia')) {
+                  try {
+                    const q = encodeURIComponent(query);
+                    const r = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${q}&format=json&origin=*&srlimit=3`);
+                    if (r.ok) {
+                      const d = await r.json();
+                      const hits = d.query?.search || [];
+                      if (hits.length) {
+                        const snippet = hits.map(h => h.snippet.replace(/<[^>]+>/g, '')).join(' ');
+                        results.push({ source: 'Wikipedia Search', text: snippet, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(hits[0].title)}` });
+                      }
+                    }
+                  } catch(e) {}
+                }
+
+                // Return best result or combined
+                if (results.length === 0) return '';
+                if (results.length === 1) return results[0].text;
+                // Combine unique results
+                const seen = new Set();
+                return results.filter(r => {
+                  if (seen.has(r.text.substring(0, 50))) return false;
+                  seen.add(r.text.substring(0, 50));
+                  return true;
+                }).map(r => r.text).join('\n\n');
               };
               const fn = new AsyncFunction('print', 'QUERY', 'searchWeb', toolCode);
               await fn(print, question, searchWeb);
