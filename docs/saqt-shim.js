@@ -101,6 +101,68 @@
     }
 
     const DIM = 384;
+
+    // ─── Multi-source web search (shared by tool code + low-confidence fallback) ───
+    async function searchWebMulti(query) {
+      const results = [];
+
+      // Source 1: Wikipedia direct
+      try {
+        const q = encodeURIComponent(query);
+        const r = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${q}`);
+        if (r.ok) {
+          const d = await r.json();
+          if (d.extract) results.push({ source: 'Wikipedia', text: d.extract, url: d.content_urls?.desktop?.page || '' });
+        }
+      } catch(e) {}
+
+      // Source 2: DuckDuckGo Instant Answers
+      try {
+        const q = encodeURIComponent(query);
+        const r = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_html=1&skip_disambig=1`);
+        if (r.ok) {
+          const d = await r.json();
+          const text = d.AbstractText || d.Answer || '';
+          if (text) results.push({ source: d.AbstractSource || 'DuckDuckGo', text, url: d.AbstractURL || '' });
+          if (d.RelatedTopics?.length) {
+            const related = d.RelatedTopics.slice(0, 3).map(t => t.Text).filter(Boolean).join('\n');
+            if (related && !text) results.push({ source: 'DuckDuckGo', text: related, url: '' });
+          }
+        }
+      } catch(e) {}
+
+      // Source 3: Wikipedia search fallback
+      if (!results.some(r => r.source === 'Wikipedia')) {
+        try {
+          const q = encodeURIComponent(query);
+          const r = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${q}&format=json&origin=*&srlimit=3`);
+          if (r.ok) {
+            const d = await r.json();
+            const hits = d.query?.search || [];
+            if (hits.length) {
+              const snippet = hits.map(h => h.snippet.replace(/<[^>]+>/g, '')).join(' ');
+              results.push({ source: 'Wikipedia Search', text: snippet, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(hits[0].title)}` });
+            }
+          }
+        } catch(e) {}
+      }
+
+      // Deduplicate
+      const seen = new Set();
+      return results.filter(r => {
+        if (seen.has(r.text.substring(0, 50))) return false;
+        seen.add(r.text.substring(0, 50));
+        return true;
+      });
+    }
+
+    // String version for tool code (returns text, not array)
+    async function searchWebText(query) {
+      const results = await searchWebMulti(query);
+      if (results.length === 0) return '';
+      return results.map(r => r.text).join('\n\n');
+    }
+
     setStatus('Engine ready', qaData.length.toLocaleString() + ' pairs', 95);
 
     // ─── Python → JS transpiler for tool code ───
@@ -276,7 +338,14 @@
 
         let answer;
         if (bestScore < 0.35) {
-          answer = "I don't have enough confidence to answer that.";
+          // Low confidence — fall back to web search
+          const webResults = await searchWebMulti(searchQuery);
+          if (webResults.length > 0) {
+            const combined = webResults.map(r => r.text).join('\n\n');
+            answer = `Here's what I found online:\n\n${combined.substring(0, 1500)}`;
+          } else {
+            answer = "I don't have enough confidence to answer that, and web search didn't find relevant results either.";
+          }
         } else {
           answer = qaData[bestIdx].answer;
           // Tool execution
@@ -291,65 +360,8 @@
               const out = [];
               const print = (...a) => out.push(a.join(' '));
               const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-              // Multi-source web search helper available to tool code
-              const searchWeb = async (query) => {
-                const results = [];
-
-                // Source 1: Wikipedia
-                try {
-                  const q = encodeURIComponent(query);
-                  const r = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${q}`);
-                  if (r.ok) {
-                    const d = await r.json();
-                    if (d.extract) results.push({ source: 'Wikipedia', text: d.extract, url: d.content_urls?.desktop?.page || '' });
-                  }
-                } catch(e) {}
-
-                // Source 2: DuckDuckGo Instant Answers
-                try {
-                  const q = encodeURIComponent(query);
-                  const r = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_html=1&skip_disambig=1`);
-                  if (r.ok) {
-                    const d = await r.json();
-                    const text = d.AbstractText || d.Answer || '';
-                    if (text) results.push({ source: d.AbstractSource || 'DuckDuckGo', text, url: d.AbstractURL || '' });
-                    // Also grab related topics
-                    if (d.RelatedTopics?.length) {
-                      const related = d.RelatedTopics.slice(0, 3).map(t => t.Text).filter(Boolean).join(' ');
-                      if (related && !text) results.push({ source: 'DuckDuckGo', text: related, url: '' });
-                    }
-                  }
-                } catch(e) {}
-
-                // Source 3: Wikipedia search (if direct lookup failed)
-                if (!results.some(r => r.source === 'Wikipedia')) {
-                  try {
-                    const q = encodeURIComponent(query);
-                    const r = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${q}&format=json&origin=*&srlimit=3`);
-                    if (r.ok) {
-                      const d = await r.json();
-                      const hits = d.query?.search || [];
-                      if (hits.length) {
-                        const snippet = hits.map(h => h.snippet.replace(/<[^>]+>/g, '')).join(' ');
-                        results.push({ source: 'Wikipedia Search', text: snippet, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(hits[0].title)}` });
-                      }
-                    }
-                  } catch(e) {}
-                }
-
-                // Return best result or combined
-                if (results.length === 0) return '';
-                if (results.length === 1) return results[0].text;
-                // Combine unique results
-                const seen = new Set();
-                return results.filter(r => {
-                  if (seen.has(r.text.substring(0, 50))) return false;
-                  seen.add(r.text.substring(0, 50));
-                  return true;
-                }).map(r => r.text).join('\n\n');
-              };
               const fn = new AsyncFunction('print', 'QUERY', 'searchWeb', toolCode);
-              await fn(print, question, searchWeb);
+              await fn(print, question, searchWebText);
               if (out.length) answer = out.join('\n');
             } catch(e) { /* tool failed, return raw answer */ }
           }
