@@ -404,7 +404,7 @@
   const originalFetch = window.fetch;
   window.fetch = async function(url, opts) {
     const urlStr = typeof url === 'string' ? url : url?.url || '';
-    if (saqtReady && urlStr.includes('/v1/chat/completions') && urlStr.includes('chat.webmind.sh')) {
+    if (saqtReady && (urlStr.includes('/v1/chat/completions') || urlStr.includes('/chat/completions'))) {
       const body = JSON.parse(opts?.body || '{}');
       const messages = body.messages || [];
       let q = '';
@@ -425,7 +425,13 @@
         choices: [{ index: 0, message: { role: 'assistant', content: result.answer }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
       });
-      return new Response(responseBody, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      // Return as a proper ReadableStream so reader.read() works
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(responseBody);
+      const stream = new ReadableStream({
+        start(controller) { controller.enqueue(encoded); controller.close(); }
+      });
+      return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     return originalFetch.apply(this, arguments);
   };
