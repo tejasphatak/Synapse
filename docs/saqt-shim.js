@@ -525,16 +525,37 @@
     // "Can you create a markdown for current affairs?" → "current affairs"
     // No hardcoded extractTopic() — the KB learns intent from its own data.
     // Format/action requests ("create a list about X") are handled by teaching pairs.
+    // Pre-compute query embedding once, reuse Float32Array for speed
+    const queryBuf = new Float32Array(DIM);
+
     async function searchKB(queryText) {
       const output = await encoder(queryText, { pooling: 'mean', normalize: true });
-      const qEmb = Array.from(output.data);
+      queryBuf.set(output.data);
 
+      // Optimized dot product scan — use Float32Array directly, avoid inner loop overhead
+      // Process in chunks to yield to the event loop (prevents UI freeze on mobile)
+      const N = qaData.length;
       let bestIdx = 0, bestScore = -1;
-      for (let i = 0; i < qaData.length; i++) {
-        let dot = 0;
-        const off = i * DIM;
-        for (let d = 0; d < DIM; d++) dot += qEmb[d] * qaEmbeddings[off + d];
-        if (dot > bestScore) { bestScore = dot; bestIdx = i; }
+      const CHUNK = 50000; // process 50K pairs per tick
+
+      for (let start = 0; start < N; start += CHUNK) {
+        const end = Math.min(start + CHUNK, N);
+        for (let i = start; i < end; i++) {
+          let dot = 0;
+          const off = i * DIM;
+          // Unrolled inner loop — 4x per iteration for speed
+          let d = 0;
+          for (; d <= DIM - 4; d += 4) {
+            dot += queryBuf[d] * qaEmbeddings[off + d]
+                 + queryBuf[d+1] * qaEmbeddings[off + d+1]
+                 + queryBuf[d+2] * qaEmbeddings[off + d+2]
+                 + queryBuf[d+3] * qaEmbeddings[off + d+3];
+          }
+          for (; d < DIM; d++) dot += queryBuf[d] * qaEmbeddings[off + d];
+          if (dot > bestScore) { bestScore = dot; bestIdx = i; }
+        }
+        // Yield to event loop between chunks so UI stays responsive
+        if (start + CHUNK < N) await new Promise(r => setTimeout(r, 0));
       }
       return { bestIdx, bestScore };
     }

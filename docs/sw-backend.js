@@ -1,4 +1,4 @@
-/* sw-version: 10 */
+/* sw-version: 11 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -170,7 +170,7 @@ function saqtQuery(question, chatId, messageId) {
       const id = ++queryId;
       pendingQueries.set(id, resolve);
       queryPort.postMessage({ id, question, chatId, messageId });
-      setTimeout(() => { if (pendingQueries.has(id)) { pendingQueries.delete(id); resolve("Query timed out."); } }, 30000);
+      setTimeout(() => { if (pendingQueries.has(id)) { pendingQueries.delete(id); resolve("Query timed out."); } }, 120000);
     });
   });
 }
