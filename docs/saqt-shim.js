@@ -147,6 +147,22 @@
         } catch(e) {}
       }
 
+      // Source 4: Hacker News Algolia (tech/science/current)
+      try {
+        const q = encodeURIComponent(query);
+        const r = await fetch(`https://hn.algolia.com/api/v1/search?query=${q}&tags=story&hitsPerPage=5`);
+        if (r.ok) {
+          const d = await r.json();
+          const hits = d.hits || [];
+          if (hits.length > 0) {
+            const text = hits.slice(0, 3).map(h =>
+              `**${h.title}**${h.points ? ` (${h.points} pts)` : ''}${h.url ? ` — [link](${h.url})` : ''}`
+            ).join('\n');
+            results.push({ source: 'Hacker News', text, url: 'https://news.ycombinator.com' });
+          }
+        }
+      } catch(e) {}
+
       // Deduplicate
       const seen = new Set();
       return results.filter(r => {
