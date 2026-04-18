@@ -58,8 +58,19 @@
 
     // Step 2: Set up MessageChannel for SAQT queries
     const channel = new MessageChannel();
-    navigator.serviceWorker.controller.postMessage({ type: 'saqt-port' }, [channel.port2]);
-    console.log('[webmind] SAQT MessageChannel established');
+    function sendPort() {
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: 'saqt-port' }, [channel.port2]);
+        console.log('[webmind] SAQT MessageChannel established');
+      }
+    }
+    sendPort();
+    // Re-send port if SW changes (update, new activation)
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      const newChannel = new MessageChannel();
+      navigator.serviceWorker.controller.postMessage({ type: 'saqt-port' }, [newChannel.port2]);
+      console.log('[webmind] Re-sent SAQT port to new SW controller');
+    });
 
     // Step 3: Load SAQT engine
     setStatus('Loading AI model...', 'Sentence transformer (80MB)', 15);

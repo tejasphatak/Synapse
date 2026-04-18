@@ -1,4 +1,4 @@
-/* sw-version: 4 */
+/* sw-version: 5 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -154,12 +154,24 @@ self.addEventListener('message', (event) => {
 });
 
 function saqtQuery(question, chatId, messageId) {
-  if (!queryPort) return Promise.resolve("SAQT engine not ready. Please refresh the page.");
-  return new Promise((resolve) => {
-    const id = ++queryId;
-    pendingQueries.set(id, resolve);
-    queryPort.postMessage({ id, question, chatId, messageId });
-    setTimeout(() => { if (pendingQueries.has(id)) { pendingQueries.delete(id); resolve("Query timed out."); } }, 30000);
+  // If port not ready, wait up to 10s for it (SW may have just activated)
+  const waitForPort = queryPort
+    ? Promise.resolve()
+    : new Promise((resolve) => {
+        const check = setInterval(() => {
+          if (queryPort) { clearInterval(check); resolve(); }
+        }, 200);
+        setTimeout(() => { clearInterval(check); resolve(); }, 10000);
+      });
+
+  return waitForPort.then(() => {
+    if (!queryPort) return "SAQT engine is still loading. Please wait a moment and try again.";
+    return new Promise((resolve) => {
+      const id = ++queryId;
+      pendingQueries.set(id, resolve);
+      queryPort.postMessage({ id, question, chatId, messageId });
+      setTimeout(() => { if (pendingQueries.has(id)) { pendingQueries.delete(id); resolve("Query timed out."); } }, 30000);
+    });
   });
 }
 
