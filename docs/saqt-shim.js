@@ -229,7 +229,7 @@
 
     // --- USERS ---
     if (urlStr.match(/\/users\/.*\/settings/))
-      return jsonResponse({ ui: {}, version: '0.8.12', showChangelog: false });
+      return jsonResponse({ ui: { version: '0.8.12', showChangelog: false } });
     if (urlStr.includes('/api/v1/users'))
       return jsonResponse(FAKE_USER);
     if (urlStr.includes('/api/v1/configs/banners'))
