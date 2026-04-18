@@ -1,3 +1,4 @@
+/* sw-version: 3 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -199,6 +200,11 @@ async function handleAPI(request) {
 
   if (path.startsWith('/openai/models'))
     return json({ data: [{ id: 'W', object: 'model', owned_by: 'webmind' }] });
+
+  // User profile image — redirect to static asset
+  if (path.includes('/profile/image')) {
+    return Response.redirect(new URL('/static/user.png', url.origin).href, 302);
+  }
 
   // User settings
   if (path.match(/\/users\/.*\/settings/))
