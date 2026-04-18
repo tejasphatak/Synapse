@@ -247,6 +247,36 @@
       return js;
     }
 
+    // ─── Markdown response formatting ───
+    function formatAsMarkdown(answer, facts, confidence, usedWeb) {
+      if (!answer) return answer;
+
+      // Already has markdown formatting? (headers, bold, lists, links, code blocks)
+      const hasMarkdown = /^#{1,3}\s|^\*\*|^\- |^\d+\.\s|```|\[.+\]\(.+\)|^>\s/m.test(answer);
+
+      // If answer is short and plain, enhance it
+      if (!hasMarkdown && answer.length > 50) {
+        // Split long answers into paragraphs at sentence boundaries
+        let formatted = answer
+          .replace(/\. ([A-Z])/g, '.\n\n$1')  // paragraph breaks at sentences
+          .replace(/:\s*\n/g, ':\n\n')          // space after colons
+          .trim();
+
+        // If there are numbered items, format as list
+        formatted = formatted.replace(/(\d+)\)\s/g, '\n$1. ');
+        formatted = formatted.replace(/(\d+)\.\s(?=[A-Z])/g, '\n$1. ');
+
+        answer = formatted;
+      }
+
+      // Add source indicators for web results
+      if (usedWeb && !answer.includes('[Source]') && !answer.includes('---')) {
+        answer += '\n\n---\n*Results from web search*';
+      }
+
+      return answer;
+    }
+
     // ─── Two-pass query understanding ───
 
     // Pass 1: Extract topic from format requests
@@ -366,8 +396,12 @@
                 facts.push(...webResults.map(r => r.text.substring(0, 100)));
 
                 if (bestScore < CONFIDENCE_THRESHOLD) {
-                  // KB had nothing — use web as primary answer
-                  answer = `Here's what I found:\n\n${webResults.map(r => r.text).join('\n\n').substring(0, 1500)}`;
+                  // KB had nothing — use web as primary answer, formatted as markdown
+                  answer = webResults.map(r => {
+                    let md = r.text;
+                    if (r.url) md += `\n\n[Source](${r.url})`;
+                    return md;
+                  }).join('\n\n---\n\n').substring(0, 2000);
                 }
 
                 // Re-search KB with web context for better matches
@@ -427,6 +461,9 @@
             if (out.length) answer = out.join('\n');
           } catch(e) { /* tool failed, return raw answer */ }
         }
+
+        // Format as markdown if not already
+        answer = formatAsMarkdown(answer, facts, bestOverallScore, usedWeb);
 
         channel.port1.postMessage({ id, answer });
       } catch(e) {
