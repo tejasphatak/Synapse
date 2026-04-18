@@ -81,13 +81,14 @@ class SAQTEngine:
         # Best answer
         answer = answers[0] if answers else ""
 
-        # Tool call: <tool> tag → sandbox
+        # Tool call: <tool> tag → substitute {QUERY} → sandbox
         if '<tool>' in answer:
             match = re.search(r'<tool>(.*?)</tool>', answer, re.DOTALL)
             if match:
+                code = match.group(1).strip().replace('{QUERY}', question)
                 try:
                     result = subprocess.run(
-                        ["python3", "-c", match.group(1).strip()],
+                        ["python3", "-c", code],
                         capture_output=True, text=True, timeout=5,
                         env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
                         cwd="/tmp")
