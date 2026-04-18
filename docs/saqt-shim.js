@@ -528,6 +528,7 @@
         const CONFIDENCE_THRESHOLD = 0.35;
         const WEB_HOP_THRESHOLD = 0.35; // only web-search if KB has no confident match
         const MIN_WEB_QUERY_LEN = 8; // skip web for trivial queries like "hi", "hello"
+        const SHORT_THRESHOLD = 200; // answers shorter than this get enriched
         let answer = '';
         let facts = [];
         let visited = new Set();
@@ -612,7 +613,8 @@
         }
 
         // Step 3: Multi-hop refinement — gather deeper context
-        if (answer && bestOverallScore < 0.8) {
+        // Run if confidence is moderate OR answer is too short (needs enrichment)
+        if (answer && (bestOverallScore < 0.8 || answer.length < SHORT_THRESHOLD)) {
           think(`Confidence ${(bestOverallScore * 100).toFixed(0)}% < 80%. Running multi-hop refinement...`);
           for (let hop = 1; hop < MAX_HOPS; hop++) {
             context = `${searchQuery} ${answer.substring(0, 200)}`;
@@ -647,6 +649,45 @@
         if (!answer) {
           think(`No confident match found in KB or web. Declining to answer.`);
           answer = "I don't have enough confidence to answer that.";
+        }
+
+        // Step 4: Enrich short answers with related context
+        // Short answers feel robotic. Compose a natural response from primary + supporting facts.
+        if (answer && answer.length < SHORT_THRESHOLD && visited.size > 0 && bestOverallScore >= CONFIDENCE_THRESHOLD) {
+          think(`Answer is short (${answer.length} chars). Enriching with related KB entries...`);
+
+          // Gather supporting answers from multi-hop (already visited)
+          const supporting = [];
+          // Also do one more broad search for related content
+          const { bestIdx: relIdx, bestScore: relScore } = await searchKB(`${searchQuery} ${answer}`);
+          if (relScore >= CONFIDENCE_THRESHOLD && !visited.has(relIdx)) {
+            supporting.push(qaData[relIdx].answer);
+            visited.add(relIdx);
+            think(`  Found related: "${qaData[relIdx].question.substring(0, 50)}" (${(relScore * 100).toFixed(0)}%)`);
+          }
+
+          // Also search with the answer text itself to find elaborations
+          const { bestIdx: eIdx, bestScore: eScore } = await searchKB(answer);
+          if (eScore >= CONFIDENCE_THRESHOLD && !visited.has(eIdx) && qaData[eIdx].answer !== answer) {
+            supporting.push(qaData[eIdx].answer);
+            visited.add(eIdx);
+            think(`  Found elaboration: "${qaData[eIdx].question.substring(0, 50)}" (${(eScore * 100).toFixed(0)}%)`);
+          }
+
+          if (supporting.length > 0) {
+            // Compose: primary answer + supporting context
+            const composed = [answer];
+            for (const s of supporting) {
+              // Only add if it brings genuinely new info (not a repeat)
+              if (s.length > 30 && !answer.includes(s.substring(0, 30)) && !composed.some(c => c.includes(s.substring(0, 30)))) {
+                composed.push(s);
+              }
+            }
+            if (composed.length > 1) {
+              answer = composed.join('\n\n');
+              think(`  Enriched answer: ${answer.length} chars from ${composed.length} sources.`);
+            }
+          }
         }
 
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
