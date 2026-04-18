@@ -277,6 +277,7 @@
 const chat = document.getElementById('chat');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
+const history = []; // conversation memory
 
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !sendBtn.disabled) sendQuery(); });
 
@@ -327,7 +328,7 @@ async function sendQuery() {
     const res = await fetch('/api/saqt/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q, hops: 5 })
+      body: JSON.stringify({ question: q, hops: 5, context: history.slice(-6).map(h => `${h.q} ${h.a}`).join(' ') })
     });
     const data = await res.json();
 
@@ -360,6 +361,9 @@ async function sendQuery() {
       m.textContent = meta;
       loadingBubble.parentElement.appendChild(m);
     }
+
+    // Save to history for conversation continuity
+    history.push({ q, a: data.answer || '' });
 
   } catch (e) {
     loadingBubble.innerHTML = `Error: ${e.message}`;

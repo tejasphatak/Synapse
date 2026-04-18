@@ -296,11 +296,15 @@ class SAQTHandler(SimpleHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(length))
             question = body.get('question', '')
+            context = body.get('context', '')
             hops = min(body.get('hops', 5), 10)
             if not question:
                 self._json_response({"error": "Missing question"}, 400)
                 return
-            result = engine.query(question, max_hops=hops)
+            # Prepend conversation context for continuity
+            full_query = f"{context} {question}".strip() if context else question
+            result = engine.query(full_query, max_hops=hops)
+            result['question'] = question  # return original question, not context-enriched
             self._json_response(result)
         else:
             self.send_error(404)
