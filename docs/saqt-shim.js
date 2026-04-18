@@ -103,6 +103,88 @@
     const DIM = 384;
     setStatus('Engine ready', qaData.length.toLocaleString() + ' pairs', 95);
 
+    // ─── Python → JS transpiler for tool code ───
+    function pythonToJS(code) {
+      // Already JS? (has const/let/var/await/fetch/localStorage)
+      if (/\b(const |let |var |await |fetch\(|localStorage|document\.)/.test(code)) return code;
+
+      let js = code;
+
+      // Remove Python imports (handle their functionality inline)
+      js = js.replace(/^import datetime;?\s*/gm, '');
+      js = js.replace(/^import math;?\s*/gm, '');
+      js = js.replace(/^import re;?\s*/gm, '');
+      js = js.replace(/^from \w+ import \*;?\s*/gm, '');
+      js = js.replace(/^import \w+;?\s*/gm, '');
+
+      // datetime replacements
+      js = js.replace(/datetime\.date\.today\(\)\.strftime\(["']%A["']\)/g,
+        'new Date().toLocaleDateString("en-US",{weekday:"long"})');
+      js = js.replace(/datetime\.datetime\.now\(\)\.strftime\(["']%H:%M:%S["']\)/g,
+        'new Date().toLocaleTimeString("en-US",{hour12:false})');
+      js = js.replace(/datetime\.datetime\.now\(\)\.strftime\(["']([^"']+)["']\)/g,
+        'new Date().toLocaleString()');
+      js = js.replace(/datetime\.date\.today\(\)/g,
+        'new Date().toISOString().split("T")[0]');
+      js = js.replace(/datetime\.datetime\.now\(\)/g, 'new Date().toISOString()');
+
+      // math replacements
+      js = js.replace(/math\.sqrt\(/g, 'Math.sqrt(');
+      js = js.replace(/math\.pi/g, 'Math.PI');
+      js = js.replace(/math\.e\b/g, 'Math.E');
+      js = js.replace(/math\.floor\(/g, 'Math.floor(');
+      js = js.replace(/math\.ceil\(/g, 'Math.ceil(');
+      js = js.replace(/math\.log\(/g, 'Math.log(');
+      js = js.replace(/math\.sin\(/g, 'Math.sin(');
+      js = js.replace(/math\.cos\(/g, 'Math.cos(');
+
+      // Python round() → JS toFixed or Math.round
+      js = js.replace(/round\(([^,]+),\s*(\d+)\)/g, '(($1).toFixed($2))');
+
+      // Python ** → JS ** (both support it)
+      // Python // → JS Math.floor(a/b)
+      js = js.replace(/(\w+)\s*\/\/\s*(\w+)/g, 'Math.floor($1/$2)');
+
+      // sorted([...]) → [...].sort((a,b)=>a-b)
+      js = js.replace(/sorted\((\[.*?\])\)/g, '$1.sort((a,b)=>a-b)');
+
+      // Python string reverse [::-1]
+      js = js.replace(/["'](\w+)["']\[::-1\]/g, '"$1".split("").reverse().join("")');
+
+      // re.findall(pattern, string) → string.match(pattern) || []
+      js = js.replace(/re\.findall\(r?["']([^"']+)["'],\s*(\w+)\)/g,
+        '($2.match(/$1/g) || [])');
+
+      // re.sub(pattern, replacement, string) → string.replace(pattern, replacement)
+      js = js.replace(/re\.sub\(r?["']([^"']+)["'],\s*["']([^"']*)["'],\s*(\w+)\)/g,
+        '$3.replace(/$1/gi, "$2")');
+
+      // Python f-string and {QUERY} → QUERY variable
+      js = js.replace(/['"]?\{QUERY\}['"]?/g, 'QUERY');
+
+      // len(x) → x.length
+      js = js.replace(/len\((\w+)\)/g, '$1.length');
+
+      // float(x) → parseFloat(x)
+      js = js.replace(/float\(([^)]+)\)/g, 'parseFloat($1)');
+
+      // int(x) → parseInt(x)
+      js = js.replace(/\bint\(([^)]+)\)/g, 'parseInt($1)');
+
+      // Python True/False/None → JS
+      js = js.replace(/\bTrue\b/g, 'true');
+      js = js.replace(/\bFalse\b/g, 'false');
+      js = js.replace(/\bNone\b/g, 'null');
+
+      // Python elif → else if
+      js = js.replace(/\belif\b/g, 'else if');
+
+      // Handle multiline: Python uses indentation, JS uses braces
+      // For simple single-line expressions, this works as-is
+
+      return js;
+    }
+
     // ─── Two-pass query understanding ───
 
     // Pass 1: Extract topic from format requests
@@ -200,11 +282,16 @@
           // Tool execution
           const toolMatch = answer.match(/<tool>([\s\S]*?)<\/tool>/);
           if (toolMatch) {
+            let toolCode = toolMatch[1].trim();
+
+            // Transpile common Python patterns to JS
+            toolCode = pythonToJS(toolCode);
+
             try {
               const out = [];
               const print = (...a) => out.push(a.join(' '));
               const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-              const fn = new AsyncFunction('print', 'QUERY', toolMatch[1].trim());
+              const fn = new AsyncFunction('print', 'QUERY', toolCode);
               await fn(print, question);
               if (out.length) answer = out.join('\n');
             } catch(e) { /* tool failed, return raw answer */ }
