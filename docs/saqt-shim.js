@@ -613,25 +613,35 @@
         // Use 1/sqrt(N) as the random-chance baseline for this embedding space)
         const noiseFloor = 1 / Math.sqrt(qaData.length);
 
+        // Measure answer-question alignment using embeddings
+        // A high KB score doesn't mean the answer is relevant — "PCA" matching "cupcakes" is noise
+        let answerAligned = false;
         if (firstScore > noiseFloor) {
-          answer = qaData[firstIdx].answer;
-          visited.add(firstIdx);
-          facts.push(qaData[firstIdx].question);
-          think(`✓ Above noise floor (${(noiseFloor * 100).toFixed(2)}%). Using as primary.`);
-          emitStatus(chatId, messageId, 'sources_retrieved', `Matched: "${qaData[firstIdx].question.substring(0, 60)}" (${(firstScore * 100).toFixed(0)}%)`, true, { count: 1 });
+          const answerOut = await encoder(qaData[firstIdx].answer.substring(0, 200), { pooling: 'mean', normalize: true });
+          const questionOut = await encoder(question.substring(0, 200), { pooling: 'mean', normalize: true });
+          let alignment = 0;
+          for (let d = 0; d < DIM; d++) alignment += answerOut.data[d] * questionOut.data[d];
+          answerAligned = alignment > noiseFloor * 5;
+          think(`KB: "${qaData[firstIdx].question.substring(0, 60)}" → score=${(firstScore * 100).toFixed(1)}%, alignment=${(alignment * 100).toFixed(1)}%`);
 
-          // If KB answer contains <tool> — it's a learned behavior (web search, compute, etc.)
-          // The KB itself taught the engine when to use tools. No hardcoded check needed.
-
+          if (answerAligned) {
+            answer = qaData[firstIdx].answer;
+            visited.add(firstIdx);
+            facts.push(qaData[firstIdx].question);
+            think(`✓ Answer aligns with question. Using as primary.`);
+            emitStatus(chatId, messageId, 'sources_retrieved', `Matched: "${qaData[firstIdx].question.substring(0, 60)}" (${(firstScore * 100).toFixed(0)}%)`, true, { count: 1 });
+          } else {
+            think(`✗ KB match found but answer doesn't align with question. Searching web.`);
+            emitStatus(chatId, messageId, 'sources_retrieved', `Weak match — searching further`, true, { count: 0 });
+          }
         } else {
           think(`✗ Below noise floor. KB has nothing relevant.`);
           emitStatus(chatId, messageId, 'sources_retrieved', `No confident match`, true, { count: 0 });
         }
 
         // Step 2: Iterative web search — crawl until we have a solid answer
-        // If KB is weak, search the web. If web results are thin, refine and search again.
-        // Like a human: try → not enough → rephrase → try again → got it.
-        const kbWeak = firstScore < noiseFloor * 10;
+        // Fires when KB is weak OR answer doesn't align with question
+        const kbWeak = !answerAligned;
         if (kbWeak) {
           usedWeb = true;
           let allWebResults = [...webResults];
