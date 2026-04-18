@@ -160,49 +160,67 @@
         qaEmbeddings = new Float32Array(await embResp.arrayBuffer());
       }
 
-      // Cache for next time
+      // Cache for next time + set watermark
       if (cacheDB) {
         setStatus('Caching for next visit...', '', 86);
         await idbPut(cacheDB, 'qaData', qaData);
         await idbPut(cacheDB, 'qaEmbeddings', qaEmbeddings.buffer);
-        const cl2 = (await fetch(VM_BASE + '/qa_data.json', { method: 'HEAD' })).headers.get('Content-Length');
-        if (cl2) await idbPut(cacheDB, 'version', cl2);
+        // Set watermark from server stats
+        try {
+          const statsResp = await fetch(VM_BASE.replace('/saqt/browser', '') + '/api/saqt/stats');
+          const stats = await statsResp.json();
+          await idbPut(cacheDB, 'watermark', stats.max_id || qaData.length);
+        } catch(e) {
+          await idbPut(cacheDB, 'watermark', qaData.length);
+        }
         console.log('[webmind] Cached ' + qaData.length.toLocaleString() + ' pairs to IndexedDB');
       }
     }
 
     const DIM = 384;
 
-    // Background delta sync — watermark-based, like a DB redo log
-    // Only downloads NEW pairs added since last sync. No full re-download.
-    // Runs AFTER the UI is ready, so user can chat immediately.
+    // Background delta sync — watermark-based, like git pull
+    // Local stores a watermark (last synced max_id from server).
+    // On boot: compare local watermark vs remote max_id.
+    // If remote is ahead: fetch only pairs after our watermark.
+    // Watermark is the server's pair ID, not array length — handles gaps/deletes.
     const DELTA_API = VM_BASE.replace('/saqt/browser', '') + '/api/saqt/delta';
     const STATS_API = VM_BASE.replace('/saqt/browser', '') + '/api/saqt/stats';
     if (loadedFromCache) {
       (async () => {
         try {
-          // Check if server has more pairs than we do
+          // Get local watermark (stored from last sync)
+          const localWatermark = cacheDB ? (await idbGet(cacheDB, 'watermark') || 0) : 0;
+
+          // Check remote HEAD
           const statsResp = await fetch(STATS_API);
           const stats = await statsResp.json();
-          const localCount = qaData.length;
-          const remoteMax = stats.max_id || stats.chunks;
+          const remoteHead = stats.max_id || 0;
 
-          if (remoteMax <= localCount) {
-            console.log('[webmind] Data is up to date (' + localCount.toLocaleString() + ' pairs)');
+          if (remoteHead <= localWatermark) {
+            console.log(`[webmind] Up to date (watermark: ${localWatermark})`);
             return;
           }
 
-          // Delta sync — fetch only new pairs after our watermark
-          console.log(`[webmind] Delta sync: local=${localCount}, remote=${remoteMax}, fetching ${remoteMax - localCount} new pairs...`);
-          const deltaResp = await fetch(DELTA_API, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ after_id: localCount })
-          });
-          const delta = await deltaResp.json();
+          // Fetch delta — all pairs after our watermark
+          const behind = remoteHead - localWatermark;
+          console.log(`[webmind] Behind by ~${behind} pairs (local: ${localWatermark}, remote: ${remoteHead}). Syncing...`);
 
-          if (delta.pairs && delta.pairs.length > 0) {
-            // Append new pairs to qaData
+          // Paginate if needed (server caps at 5000 per request)
+          let afterId = localWatermark;
+          let totalAdded = 0;
+
+          while (afterId < remoteHead) {
+            const deltaResp = await fetch(DELTA_API, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ after_id: afterId })
+            });
+            const delta = await deltaResp.json();
+
+            if (!delta.pairs || delta.pairs.length === 0) break;
+
+            // Append new pairs
             for (const p of delta.pairs) {
               qaData.push({ question: p.question, answer: p.answer, source: p.source, weight: p.weight });
             }
@@ -217,17 +235,22 @@
               qaEmbeddings = merged;
             }
 
-            // Update cache
-            if (cacheDB) {
-              await idbPut(cacheDB, 'qaData', qaData);
-              await idbPut(cacheDB, 'qaEmbeddings', qaEmbeddings.buffer);
-              await idbPut(cacheDB, 'version', String(qaData.length));
-            }
+            // Advance watermark to the last pair we received
+            afterId = delta.pairs[delta.pairs.length - 1].id;
+            totalAdded += delta.pairs.length;
 
-            console.log(`[webmind] Delta sync complete — added ${delta.pairs.length} pairs, now ${qaData.length.toLocaleString()} total`);
+            if (!delta.has_more) break;
+          }
+
+          // Persist updated data + watermark
+          if (totalAdded > 0 && cacheDB) {
+            await idbPut(cacheDB, 'qaData', qaData);
+            await idbPut(cacheDB, 'qaEmbeddings', qaEmbeddings.buffer);
+            await idbPut(cacheDB, 'watermark', afterId);
+            console.log(`[webmind] Synced ${totalAdded} new pairs. Watermark: ${afterId}. Total: ${qaData.length.toLocaleString()}`);
           }
         } catch(e) {
-          console.log('[webmind] Delta sync failed (offline?) — using cached data');
+          console.log('[webmind] Sync failed (offline?) — using cached data');
         }
       })();
     }
