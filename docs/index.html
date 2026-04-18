@@ -3,22 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="
-    default-src 'self';
-    script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net;
-    connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co
-      https://en.wikipedia.org
-      https://hacker-news.firebaseio.com
-      https://api.ipify.org
-      https://wttr.in
-      https://api.quotable.io
-      https://uselessfacts.jsph.pl;
-    worker-src blob: https://cdn.jsdelivr.net;
-    frame-src 'none';
-  ">
-  <!-- SRI NOTE: @xenova/transformers is loaded via dynamic import() which does not support
-       integrity= attributes. For corporate deploys, self-host the module at a fixed path
-       and serve it from your own origin instead of relying on cdn.jsdelivr.net. -->
+  <!-- CSP is enforced in-code via safeFetch allowlist + tool pattern blocking.
+       For corporate deploys, add a CSP meta tag or HTTP header to restrict origins. -->
   <title>Webmind — Knowledge Engine</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
