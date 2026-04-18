@@ -526,7 +526,8 @@
         // ─── Multi-hop search with web as a hop ───
         const MAX_HOPS = 5;
         const CONFIDENCE_THRESHOLD = 0.35;
-        const WEB_HOP_THRESHOLD = 0.5; // try web if below this
+        const WEB_HOP_THRESHOLD = 0.35; // only web-search if KB has no confident match
+        const MIN_WEB_QUERY_LEN = 8; // skip web for trivial queries like "hi", "hello"
         let answer = '';
         let facts = [];
         let visited = new Set();
@@ -550,8 +551,8 @@
               emitStatus(chatId, messageId, 'knowledge_search', `Found match (${(bestScore * 100).toFixed(0)}% confidence)`, true, { query: searchQuery });
             }
 
-            // Low confidence or moderate confidence — try web search as next hop
-            if (bestScore < WEB_HOP_THRESHOLD && !usedWeb) {
+            // Low confidence — try web search as next hop (skip for trivial queries)
+            if (bestScore < WEB_HOP_THRESHOLD && !usedWeb && searchQuery.length >= MIN_WEB_QUERY_LEN) {
               usedWeb = true;
               emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
               const webResults = await searchWebMulti(searchQuery);
@@ -597,7 +598,7 @@
             }
 
             // Try web on later hops if still below threshold
-            if (bestOverallScore < WEB_HOP_THRESHOLD && !usedWeb) {
+            if (bestOverallScore < WEB_HOP_THRESHOLD && !usedWeb && searchQuery.length >= MIN_WEB_QUERY_LEN) {
               usedWeb = true;
               emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
               const webResults = await searchWebMulti(context);
