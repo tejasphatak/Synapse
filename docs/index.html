@@ -96,17 +96,42 @@
       <div class="logo-icon">W</div>
       <div><div class="logo-text">Webmind <span style="background:#ff9800;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;vertical-align:middle;font-weight:700;letter-spacing:0.5px;">ALPHA</span></div><div class="logo-sub">Pure Browser Knowledge Engine</div></div>
     </div>
-    <div class="stats-badge" id="stats">Loading...</div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div class="stats-badge" id="stats">Loading...</div>
+      <button onclick="document.getElementById('settings-panel').classList.toggle('open')" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text2);padding:4px;" title="Settings">&#9881;</button>
+    </div>
   </header>
 
-  <div id="status-bar" style="background:var(--primary-light);border-bottom:1px solid var(--border);padding:4px 20px;font-size:11px;color:var(--text2);display:flex;gap:16px;justify-content:center;flex-wrap:wrap;align-items:center;">
-    <span id="sb-model">Model: --</span>
-    <span id="sb-kb">KB: --</span>
-    <span id="sb-net">Net: checking...</span>
-    <span id="sb-learned">Learned: 0</span>
-    <span id="sb-peers">Peers: 0</span>
-    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)" style="cursor:pointer;"> CPU only</label>
+  <!-- Settings panel (hidden by default) -->
+  <div id="settings-panel" style="display:none;background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;font-size:13px;">
+    <div style="max-width:800px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <strong style="color:var(--primary-dark);">Settings</strong>
+        <button onclick="this.closest('#settings-panel').classList.remove('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);">&times;</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)"> CPU only (slower, max compatibility)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="autolearn-toggle" onchange="toggleAutoLearn(this.checked)"> Auto-learn from Wikipedia
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="markdown-toggle" onchange="toggleMarkdown(this.checked)"> Markdown rendering
+        </label>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:12px;font-size:11px;color:var(--text2);">
+        <span id="sb-model">Model: --</span>
+        <span id="sb-kb">KB: --</span>
+        <span id="sb-net">Net: --</span>
+        <span id="sb-learned">Learned: 0</span>
+        <span id="sb-peers">Peers: 0</span>
+      </div>
+    </div>
   </div>
+  <style>
+    #settings-panel.open { display: block !important; }
+  </style>
 
   <div class="chat-container" id="chat">
     <div class="welcome">
@@ -629,7 +654,7 @@ async function loadLearnedPairs() {
 // Auto-learn: when confidence is low, try Wikipedia
 async function tryAutoLearn(question) {
   // INVARIANT: no network in corporate mode
-  if (window._SAQT_NO_NETWORK) return null;
+  if (window._SAQT_NO_NETWORK || window._SAQT_NO_AUTOLEARN) return null;
 
   // Extract the core topic
   const topic = question.replace(/what is |who is |tell me about |explain /gi, '').trim();
@@ -1008,7 +1033,8 @@ async function loadMarked() {
 }
 
 function renderMarkdown(text) {
-  if (window._marked) {
+  const mdEnabled = localStorage.getItem('webmind_markdown') !== '0';
+  if (mdEnabled && window._marked) {
     try { return window._marked.parse(text); } catch (e) {}
   }
   return escapeHtml(text).replace(/\n/g, '<br>');
@@ -1112,11 +1138,33 @@ async function runSelfCheck() {
   setTimeout(runSelfCheck, 60000);
 }
 
-// CPU toggle — saves preference and reloads
+// Settings toggles — save to localStorage, reload where needed
 window.toggleCPU = function(checked) {
   localStorage.setItem('webmind_cpu', checked ? '1' : '0');
   location.reload();
 };
+window.toggleAutoLearn = function(checked) {
+  localStorage.setItem('webmind_autolearn', checked ? '1' : '0');
+  window._SAQT_NO_AUTOLEARN = !checked;
+};
+window.toggleMarkdown = function(checked) {
+  localStorage.setItem('webmind_markdown', checked ? '1' : '0');
+};
+
+// Initialize settings checkboxes from localStorage
+function initSettings() {
+  const cpu = localStorage.getItem('webmind_cpu') === '1';
+  const autolearn = localStorage.getItem('webmind_autolearn') !== '0'; // default ON
+  const md = localStorage.getItem('webmind_markdown') !== '0'; // default ON
+  const cpuEl = document.getElementById('cpu-toggle');
+  const alEl = document.getElementById('autolearn-toggle');
+  const mdEl = document.getElementById('markdown-toggle');
+  if (cpuEl) cpuEl.checked = cpu;
+  if (alEl) alEl.checked = autolearn;
+  if (mdEl) mdEl.checked = md;
+  window._SAQT_NO_AUTOLEARN = !autolearn;
+}
+initSettings();
 
 boot();
 </script>
