@@ -228,7 +228,7 @@
     }
 
     // --- USERS ---
-    if (urlStr.includes('/api/v1/users/settings'))
+    if (urlStr.match(/\/users\/.*\/settings/))
       return jsonResponse({ ui: {} });
     if (urlStr.includes('/api/v1/users'))
       return jsonResponse(FAKE_USER);
