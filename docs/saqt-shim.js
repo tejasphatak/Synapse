@@ -333,38 +333,99 @@
           // else: topic weak, use full query as-is
         }
 
-        // Search with best interpretation
-        const { bestIdx, bestScore } = await searchKB(searchQuery);
+        // ─── Multi-hop search with web as a hop ───
+        const MAX_HOPS = 5;
+        const CONFIDENCE_THRESHOLD = 0.35;
+        const WEB_HOP_THRESHOLD = 0.5; // try web if below this
+        let answer = '';
+        let facts = [];
+        let visited = new Set();
+        let context = searchQuery;
+        let bestOverallScore = 0;
+        let usedWeb = false;
 
-        let answer;
-        if (bestScore < 0.35) {
-          // Low confidence — fall back to web search
-          const webResults = await searchWebMulti(searchQuery);
-          if (webResults.length > 0) {
-            const combined = webResults.map(r => r.text).join('\n\n');
-            answer = `Here's what I found online:\n\n${combined.substring(0, 1500)}`;
+        for (let hop = 0; hop < MAX_HOPS; hop++) {
+          const { bestIdx, bestScore } = await searchKB(context);
+
+          // Hop 0: initial search
+          if (hop === 0) {
+            bestOverallScore = bestScore;
+
+            if (bestScore >= CONFIDENCE_THRESHOLD) {
+              answer = qaData[bestIdx].answer;
+              visited.add(bestIdx);
+              facts.push(qaData[bestIdx].question);
+            }
+
+            // Low confidence or moderate confidence — try web search as next hop
+            if (bestScore < WEB_HOP_THRESHOLD && !usedWeb) {
+              usedWeb = true;
+              const webResults = await searchWebMulti(searchQuery);
+              if (webResults.length > 0) {
+                const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
+                facts.push(...webResults.map(r => r.text.substring(0, 100)));
+
+                if (bestScore < CONFIDENCE_THRESHOLD) {
+                  // KB had nothing — use web as primary answer
+                  answer = `Here's what I found:\n\n${webResults.map(r => r.text).join('\n\n').substring(0, 1500)}`;
+                }
+
+                // Re-search KB with web context for better matches
+                context = `${searchQuery} ${webText}`;
+                continue; // next hop with enriched context
+              }
+            }
+
+            if (bestScore < CONFIDENCE_THRESHOLD && !answer) {
+              answer = "I don't have enough confidence to answer that.";
+              break;
+            }
           } else {
-            answer = "I don't have enough confidence to answer that, and web search didn't find relevant results either.";
-          }
-        } else {
-          answer = qaData[bestIdx].answer;
-          // Tool execution
-          const toolMatch = answer.match(/<tool>([\s\S]*?)<\/tool>/);
-          if (toolMatch) {
-            let toolCode = toolMatch[1].trim();
+            // Subsequent hops: look for new relevant info
+            if (bestScore >= CONFIDENCE_THRESHOLD && !visited.has(bestIdx)) {
+              visited.add(bestIdx);
+              const newAnswer = qaData[bestIdx].answer;
+              if (!facts.includes(qaData[bestIdx].question)) {
+                facts.push(qaData[bestIdx].question);
+              }
+              // If this is a better match than what we had, use it
+              if (bestScore > bestOverallScore) {
+                answer = newAnswer;
+                bestOverallScore = bestScore;
+              }
+            }
 
-            // Transpile common Python patterns to JS
-            toolCode = pythonToJS(toolCode);
+            // Try web on later hops if still below threshold
+            if (bestOverallScore < WEB_HOP_THRESHOLD && !usedWeb) {
+              usedWeb = true;
+              const webResults = await searchWebMulti(context);
+              if (webResults.length > 0) {
+                const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
+                context = `${searchQuery} ${webText}`;
+                continue;
+              }
+            }
 
-            try {
-              const out = [];
-              const print = (...a) => out.push(a.join(' '));
-              const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-              const fn = new AsyncFunction('print', 'QUERY', 'searchWeb', toolCode);
-              await fn(print, question, searchWebText);
-              if (out.length) answer = out.join('\n');
-            } catch(e) { /* tool failed, return raw answer */ }
+            // Enrich context for next hop
+            context = `${searchQuery} ${answer.substring(0, 200)}`;
           }
+
+          // Stop if we have high confidence
+          if (bestOverallScore > 0.8) break;
+        }
+
+        // Tool execution on final answer
+        const toolMatch = answer.match(/<tool>([\s\S]*?)<\/tool>/);
+        if (toolMatch) {
+          let toolCode = pythonToJS(toolMatch[1].trim());
+          try {
+            const out = [];
+            const print = (...a) => out.push(a.join(' '));
+            const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+            const fn = new AsyncFunction('print', 'QUERY', 'searchWeb', toolCode);
+            await fn(print, question, searchWebText);
+            if (out.length) answer = out.join('\n');
+          } catch(e) { /* tool failed, return raw answer */ }
         }
 
         channel.port1.postMessage({ id, answer });
