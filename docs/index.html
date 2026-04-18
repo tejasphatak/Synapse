@@ -1,1295 +1,2674 @@
+<!--
+
+  @Component: Chatbot UI
+
+  @Github: https://github.com/AI-QL
+
+  @License: This project uses the following tools, each subject to its respective license restrictions.
+  Please refer to the license of each tool for detailed information:
+
+  - Vue3: https://github.com/vuejs
+  - Vuetify: https://github.com/vuetifyjs/vuetify
+  - Pinia: https://github.com/vuejs/pinia
+  - md-editor-v3: https://github.com/imzbf/md-editor-v3
+  - lottie-web: https://github.com/airbnb/lottie-web
+  - vuedraggable: https://github.com/SortableJS/vue.draggable.next
+  - mammoth: https://github.com/mwilliamson/mammoth.js
+
+   Copyright 2024 AIQL.COM
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+-->
+
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- CSP is enforced in-code via safeFetch allowlist + tool pattern blocking.
-       For corporate deploys, add a CSP meta tag or HTTP header to restrict origins. -->
-  <title>Webmind — AI in your browser</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    :root {
-      --bg: #fefefe; --surface: #f8f7f4; --primary: #2d8a4e; --primary-light: #eef6f0;
-      --primary-dark: #1b5e20; --text: #2c2c2c; --text2: #8c8c8c; --border: #e8e6e1;
-      --sidebar-bg: #f3f2ee; --sidebar-w: 260px; --radius: 14px;
-    }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="AIQL provides a suite of tools designed to streamline the development and deployment of AI applications in a cloud-native environment.">
+    <title>Webmind — AI in your browser</title>
+    <style>
+        ::-webkit-scrollbar {
+            display: none;
+        }
 
-    /* Loading screen */
-    #loading { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.5s; }
-    #loading.hidden { opacity: 0; pointer-events: none; }
-    .loader-icon { width: 56px; height: 56px; background: var(--primary); border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white; font-size: 26px; font-weight: 700; margin-bottom: 16px; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-    .loader-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-    .loader-status { font-size: 13px; color: var(--text2); margin-bottom: 16px; }
-    .progress-bar { width: 260px; height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
-    .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; border-radius: 2px; }
-    .loader-detail { font-size: 11px; color: var(--text2); margin-top: 10px; }
+        .loading {
+            all: initial;
+            position: fixed;
+            top: calc(50% - 35px);
+            left: calc(50% - 35px);
+            display: flex;
+            width: 70px;
+            height: 70px;
+            border: 4px solid #1867C0;
+            border-top-color: rgba(0, 0, 0, 0.2);
+            border-right-color: rgba(0, 0, 0, 0.2);
+            border-bottom-color: rgba(0, 0, 0, 0.2);
+            border-radius: 100%;
+            overflow: hidden;
 
-    /* App layout */
-    #app { display: none; height: 100vh; flex-direction: row; }
-    #app.visible { display: flex; }
+            animation: circle infinite 1s linear;
+        }
 
-    /* Sidebar */
-    .sidebar { width: var(--sidebar-w); background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100vh; flex-shrink: 0; }
-    .sidebar-header { padding: 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
-    .sidebar-header .logo-icon { width: 32px; height: 32px; background: var(--primary); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 15px; flex-shrink: 0; }
-    .sidebar-header .logo-text { font-size: 16px; font-weight: 700; color: var(--text); }
-    .sidebar-new { margin: 12px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; cursor: pointer; font-size: 13px; color: var(--text2); transition: all 0.2s; }
-    .sidebar-new:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
-    .session-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
-    .session-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.15s; }
-    .session-item:hover { background: #eee; }
-    .session-item.active { background: var(--primary-light); color: var(--primary-dark); font-weight: 600; }
-    .session-item .session-date { font-size: 10px; color: var(--text2); font-weight: 400; }
-    .sidebar-footer { padding: 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: center; }
-    .sidebar-footer button { background: none; border: none; cursor: pointer; font-size: 16px; color: var(--text2); padding: 4px 8px; border-radius: 4px; }
-    .sidebar-footer button:hover { background: #eee; }
+        @keyframes circle {
+            0% {
+                transform: rotate(0);
+            }
 
-    /* Main content */
-    .main { flex: 1; display: flex; flex-direction: column; height: 100vh; min-width: 0; }
-    header { background: var(--bg); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; }
-    .header-title { font-size: 14px; font-weight: 600; color: var(--text); }
-    .header-right { display: flex; align-items: center; gap: 8px; }
-    .stats-badge { background: var(--primary-light); color: var(--primary-dark); padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+    <div id="loading" class="loading"></div>
 
-    .chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; max-width: 800px; width: 100%; margin: 0 auto; }
-    .message { display: flex; flex-direction: column; max-width: 85%; animation: fadeIn 0.3s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
-    .message.user { align-self: flex-end; }
-    .message.bot { align-self: flex-start; }
-    .message-bubble { padding: 12px 16px; border-radius: var(--radius); line-height: 1.6; font-size: 15px; word-wrap: break-word; }
-    .message.user .message-bubble { background: var(--primary); color: white; border-bottom-right-radius: 4px; }
-    .message.bot .message-bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-    .message-meta { font-size: 11px; color: var(--text2); margin-top: 4px; padding: 0 4px; }
+    <!-- MDI -->
+    <!-- https://mirrors.sustech.edu.cn/cdnjs/ajax/libs/MaterialDesign-Webfont/7.4.47/css/materialdesignicons.min.css -->
+    <link href="https://cdn.jsdelivr.org/npm/@mdi/font/css/materialdesignicons.min.css" rel="stylesheet" rel="preload">
 
-    .input-container { background: var(--bg); border-top: 1px solid var(--border); padding: 16px 20px; }
-    .input-wrapper { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; }
-    .input-wrapper input { flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; font-size: 15px; outline: none; background: var(--surface); transition: border-color 0.2s; }
-    .input-wrapper input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(45,138,78,0.1); }
-    .input-wrapper button { padding: 12px 20px; background: var(--primary); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    .input-wrapper button:hover { background: var(--primary-dark); }
-    .input-wrapper button:disabled { background: #ccc; }
+    <!-- Keep the order, vue should be the first -->
+    <script src="https://cdn.jsdelivr.org/npm/vue@3.5.21/dist/vue.global.prod.min.js"></script>
 
-    .welcome { text-align: center; padding: 60px 20px; color: var(--text2); }
-    .welcome h2 { color: var(--text); font-size: 24px; font-weight: 700; margin-bottom: 6px; }
-    .welcome p { font-size: 14px; max-width: 420px; margin: 0 auto 6px; }
-    .welcome .tagline { font-size: 16px; color: var(--primary); font-weight: 600; margin-bottom: 12px; }
-    .disclaimer { font-size: 10px; color: #aaa; max-width: 500px; margin: 16px auto 0; line-height: 1.4; }
+    <!-- Vuetify -->
+    <script src="https://cdn.jsdelivr.org/npm/vuetify/dist/vuetify.js"></script>
+    <link href="https://cdn.jsdelivr.org/npm/vuetify/dist/vuetify.css" rel="stylesheet">
 
-    footer { text-align: center; padding: 6px; font-size: 10px; color: var(--text2); background: var(--bg); border-top: 1px solid var(--border); }
-    footer a { color: var(--primary); text-decoration: none; }
-    .delete-data-btn { background: none; border: none; color: #c62828; cursor: pointer; font-size: 10px; font-family: inherit; padding: 0; text-decoration: underline; }
+    <!-- Vue i18n -->
+    <script src="https://cdn.jsdelivr.org/npm/vue-i18n/dist/vue-i18n.global.prod.min.js"></script>
+    <script src="https://cdn.jsdelivr.org/npm/iconify-icon/dist/iconify-icon.min.js"></script>
 
-    /* Markdown */
-    .message-bubble h1,.message-bubble h2,.message-bubble h3,.message-bubble h4 { margin: 8px 0 4px; color: var(--text); }
-    .message-bubble h1 { font-size: 18px; } .message-bubble h2 { font-size: 16px; } .message-bubble h3 { font-size: 15px; }
-    .message-bubble ul,.message-bubble ol { margin: 4px 0 4px 20px; }
-    .message-bubble li { margin: 2px 0; }
-    .message-bubble code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'SF Mono', Menlo, monospace; }
-    .message-bubble pre { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; font-size: 13px; }
-    .message-bubble pre code { background: none; padding: 0; color: inherit; }
-    .message-bubble blockquote { border-left: 3px solid var(--primary); padding-left: 12px; margin: 8px 0; color: var(--text2); }
-    .message-bubble p { margin: 4px 0; }
-    .message-bubble a { color: var(--primary); }
-    .message-bubble table { border-collapse: collapse; margin: 8px 0; font-size: 13px; width: 100%; }
-    .message-bubble th,.message-bubble td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-    .message-bubble th { background: var(--surface); font-weight: 600; }
+    <!-- Pinia -->
+    <script src="https://cdn.jsdelivr.org/npm/vue-demi/lib/index.iife.min.js"></script>
+    <script src="https://cdn.jsdelivr.org/npm/pinia/dist/pinia.iife.prod.js"></script>
+    <script src="https://cdn.jsdelivr.org/npm/pinia-plugin-persist/dist/pinia-persist.umd.min.js"></script>
 
-    /* Mobile: hide sidebar */
-    @media (max-width: 768px) {
-      .sidebar { display: none; }
-      .sidebar.open { display: flex; position: fixed; z-index: 50; height: 100vh; box-shadow: 4px 0 20px rgba(0,0,0,0.1); }
-      .mobile-menu { display: block !important; }
-    }
-    .mobile-menu { display: none; }
+    <!-- MD -->
+    <link href="https://cdn.jsdelivr.org/npm/md-editor-v3/lib/style.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.org/npm/md-editor-v3/lib/umd/index.js"></script>
 
-    /* Settings panel */
-    #settings-panel { display: none; }
-    #settings-panel.open { display: block; }
-  </style>
+    <!-- Lottie -->
+    <script src="https://cdn.jsdelivr.org/npm/lottie-web/build/player/lottie.min.js"></script>
+    <!-- Docx mammoth -->
+    <script src="https://cdn.jsdelivr.org/npm/mammoth/mammoth.browser.js"></script>
+
+    <!-- Vue Draggable -->
+    <script src="https://cdn.jsdelivr.org/npm/sortablejs/Sortable.min.js"></script>
+    <script src="https://cdn.jsdelivr.org/npm/vue3-draggable-next/dist/vuedraggable.umd.min.js"></script>
+
+    <script>
+        window.onload = function () {
+            const lottie = document.getElementById('lottie');
+            if (lottie) lottie.style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+        };
+    </script>
+
+    <style scoped lang="scss">
+        [v-cloak] {
+            display: none;
+        }
+
+        .chat-bot {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        .fill-area {
+            height: 20px
+        }
+
+        .dialog-card {
+            width: 960px;
+            max-width: 100vw;
+            max-height: calc(70vh + 3rem);
+        }
+
+        #lottie {
+            display: none;
+            height: calc(99vh - 50px);
+            max-height: calc(100% - 100px);
+        }
+
+        .left-icon {
+            margin-bottom: 0.8rem;
+        }
+
+        .input-area {
+            background-color: white;
+            display: flex;
+            padding-inline: 21.5px;
+            margin-inline: 21.5px;
+            width: 100%;
+            position: fixed;
+            left: 50%;
+            transform: translate(-50%);
+            bottom: 0;
+
+            .input-panel {
+                flex: 1;
+                border-top: 5px solid white;
+                max-width: 1280px;
+                border-radius: 5px;
+                margin: 0 auto;
+            }
+
+            .input-box textarea {
+                margin-bottom: 1px;
+            }
+
+            .input-box textarea::-webkit-scrollbar {
+                display: none;
+
+            }
+
+            .input-icon {
+                margin: 0 10px 34px 10px;
+                /* top left bot right*/
+            }
+        }
+
+        .chat-images {
+            width: 25px;
+            max-height: 40px;
+            transition: all 0.2s;
+            /* margin-bottom: 20px; */
+
+            &:hover {
+                transition: all 0.2s;
+                opacity: 0.5;
+                filter: grayscale(100%);
+                cursor: not-allowed;
+            }
+        }
+
+        .shadow {
+            box-shadow: 1px 1px 7px #1867C0;
+        }
+
+        .hidden {
+            overflow: hidden;
+        }
+
+        .chat-message {
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .message {
+            margin: 0 auto;
+            display: flex;
+        }
+
+        .conversation-area {
+            margin: 6px 4px 4px 4px;
+            /* top left bot right*/
+        }
+
+        .fade-enter-active,
+        .fade-leave-active {
+            transition: all 0.5s ease;
+        }
+
+        .fade-enter-from,
+        .fade-leave-to {
+            opacity: 0;
+            transform: translateX(35px);
+        }
+
+        .toolbox-button {
+            position: fixed;
+            background-color: #1867C0;
+            bottom: 194px;
+            right: -46px;
+            z-index: 999;
+            padding: 0.5rem 1rem;
+            border-top-left-radius: 0.5rem;
+            border-bottom-left-radius: 0.5rem;
+            box-shadow: 1px 1px 9px #1867C0;
+            transition: all 0.5s;
+            cursor: pointer;
+
+            &:hover {
+                box-shadow: 1px 1px 18px #1867C0;
+                right: 0px;
+                transition: all 0.5s;
+            }
+
+        }
+
+        .history-images {
+            &:hover {
+                cursor: zoom-in;
+            }
+        }
+
+        .md-preview {
+            width: 100vw;
+            max-width: 100%;
+        }
+
+        .md-editor-preview p {
+            word-break: break-word;
+        }
+
+        .toolbox {
+            z-index: 99;
+            position: fixed;
+            bottom: 194px;
+            right: 5px;
+        }
+
+        .rotation {
+            font-size: 1.5rem;
+            animation: rotation 2s linear infinite;
+        }
+
+        .ghost {
+            opacity: 0.5;
+            background: #E3F2FD;
+        }
+
+        .list-draggable {
+            height: calc(100% - 38px);
+            /* background-color: lightblue; */
+        }
+
+        .bgc {
+            background-color: lightblue;
+        }
+
+        @keyframes rotation {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        ::-webkit-scrollbar {
+            display: block;
+            block-size: 5px;
+            inline-size: 5px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background-color: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background-color: lightgrey;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background-color: grey;
+        }
+    </style>
 </head>
+
 <body>
+    <div id="app" v-cloak>
+        <v-app>
+            <v-container v-show="messageStore.conversation.length === 0">
+                <div id="lottie" class="text-center text-h5">
+                    <a href="https://github.com/AI-QL/chat-ui" style="color: #1867C0"
+                        class="font-weight-bold text-decoration-none" target="_blank">
+                        <v-icon class="mb-2">mdi-github</v-icon>
+                        {{$t('$vuetify.dataIterator.title')}}</a>
+                </div>
+            </v-container>
+            <v-container v-show="messageStore.conversation.length > 0" class="chat-bot">
+                <tuui-chat-box :messages="messageStore.conversation" :size="settingStore.avatarSize"
+                    :language="languageStore.getLocale"></tuui-chat-box>
+                <div class="fill-area"></div>
+            </v-container>
+            <div class="input-area">
+                <v-sheet elevation="0" class="input-panel d-flex align-end px-1">
+                    <v-speed-dial transition="expand-transition" offset="10">
+                        <template v-slot:activator="{ props: activatorProps }">
+                            <v-btn v-bind="activatorProps" size="small" icon="mdi-cog" absolute
+                                class="input-icon"></v-btn>
+                        </template>
+                        <v-btn key="4" variant="elevated" @click="settingStore.initDialog" icon="mdi-api"
+                            v-tooltip:end="$t('$vuetify.dataIterator.i.title')">
+                        </v-btn>
+                        <v-badge key="3" color="transparent" location='top left'>
+                            <template v-slot:badge>
+                                <iconify-icon :icon="languageStore.getIcon2()"></iconify-icon>
+                            </template>
+                            <v-menu transition="fade-transition">
+                                <template v-slot:activator="{ props }">
+                                    <v-btn variant="elevated" v-bind="props" icon="mdi-translate"
+                                        v-tooltip:end="$t('$vuetify.dataIterator.l.title')">
+                                    </v-btn>
+                                </template>
+                                <v-list class='mb-2'>
+                                    <v-list-item v-for="n in languageStore.list" :key="n.value"
+                                        @click="languageStore.change(n.value)" density="compact">
+                                        <template v-slot:prepend>
+                                            <iconify-icon class='mr-3'
+                                                :icon="languageStore.getIcon(n.name)"></iconify-icon>
+                                        </template>
+                                        <v-list-item-title v-text="n.title"></v-list-item-title>
+                                    </v-list-item>
+                                </v-list>
+                            </v-menu>
+                        </v-badge>
+                        <v-btn @click="settingStore.agentDialog = true" variant="elevated" icon="mdi-account-supervisor"
+                            v-tooltip:end="$t('$vuetify.dataIterator.a.title')">
+                        </v-btn>
+                        <v-btn v-if="mcpStore.getServers" @click="resourceStore.resourceDialog = true"
+                            variant="elevated" icon="mdi-database" v-tooltip:end="$t('$vuetify.dataIterator.r.title')">
+                        </v-btn>
+                        <v-badge key="1" :content="historyStore.conversation.length" color="info" max="99"
+                            location='top left'>
+                            <v-btn variant="elevated" icon="mdi-list-box" @click="settingStore.configHistory = true"
+                                v-tooltip:end="$t('$vuetify.dataIterator.q.title')">
+                            </v-btn>
+                        </v-badge>
+                    </v-speed-dial>
+                    <v-container>
+                        <v-row>
+                            <v-textarea class="input-box" dirty color="primary" type="text" variant="solo" counter
+                                clearable @keydown="messageStore.handleKeydown" v-model="messageStore.userMessage"
+                                :label="" @focus="settingStore.setInputRow(2,0)" @blur="settingStore.setInputRow(1,150)"
+                                :rows="settingStore.inputRow" auto-grow max-rows="15">
+                                <template v-slot:prepend-inner>
+                                    <v-container>
+                                        <v-row>
+                                            <v-img v-if="messageStore.base64" class="chat-images mt-1"
+                                                :src="messageStore.base64" @click="messageStore.images=[]"></v-img>
+                                            <v-file-input v-else @click.stop accept="image/*" hide-input
+                                                v-model="messageStore.images"
+                                                prepend-icon="mdi-plus-circle-outline"></v-file-input>
+                                        </v-row>
+                                    </v-container>
+                                </template>
+                            </v-textarea>
+                        </v-row>
+                    </v-container>
+                    <div class="input-icon">
+                        <v-btn v-if="messageStore.userMessage" size="small" color="primary" variant="elevated"
+                            @click="messageStore.sendMessage" icon="mdi-arrow-up">
+                        </v-btn>
+                        <v-btn v-else-if="messageStore.generating" size="small" color="primary" variant="elevated"
+                            @click="messageStore.stop" icon="mdi-stop"></v-btn>
+                        <v-speed-dial v-else-if="messageStore.conversation.length > 0" location="bottom center"
+                            transition="expand-transition">
+                            <template v-slot:activator="{ props: activatorProps }">
+                                <v-btn v-bind="activatorProps" size="small" icon="mdi-dots-horizontal"
+                                    color="primary"></v-btn>
+                            </template>
+                            <v-btn key="2" size="small" color="primary" variant="elevated"
+                                @click="messageStore.resendMessage" icon="mdi-autorenew"
+                                v-tooltip:start="$t('$vuetify.dataIterator.g.reg')">
+                            </v-btn>
+                            <v-btn key="1" color="primary" variant="elevated" @click="messageStore.init()"
+                                icon="mdi-pencil-plus" v-tooltip:start="$t('$vuetify.dataIterator.g.new')">
+                            </v-btn>
+                        </v-speed-dial>
+                        <v-btn v-else size="small" :color="mcpStore.getServers ? 'primary': 'grey'" variant="elevated"
+                            @click="mcpStore.getServers ? promptStore.promptDialog = true : false"
+                            icon="mdi-account-edit">
+                        </v-btn>
+                    </div>
+                </v-sheet>
+            </div>
 
-<!-- Loading Screen -->
-<div id="loading">
-  <div class="loader-icon">W</div>
-  <div class="loader-title">Webmind <span style="background:#ff9800;color:#fff;font-size:12px;padding:2px 8px;border-radius:4px;vertical-align:middle;font-weight:700;">ALPHA</span></div>
-  <div class="loader-status" id="load-status">Initializing...</div>
-  <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
-  <div class="loader-detail" id="load-detail">Loading knowledge engine</div>
-</div>
+            <!-- snackbar -->
+            <v-snackbar v-model="snackbarStore.isShow" timeout="4000" :color="snackbarStore.type" location="top">
+                <div class="d-flex align-center">
+                    <v-icon class="mr-2">{{ snackbarStore.getIcon() }}</v-icon>
+                    <span>{{$t(snackbarStore.message)}}</span>
+                </div>
 
-<!-- App -->
-<div id="app">
-  <!-- Sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="logo-icon">W</div>
-      <div class="logo-text">Webmind</div>
-      <span style="background:#ff9800;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;">ALPHA</span>
+                <template v-slot:actions>
+                    <v-btn icon variant="text" @click="snackbarStore.isShow = false">
+                        <v-icon>mdi-close</v-icon>
+                    </v-btn>
+                </template>
+            </v-snackbar>
+
+            <v-dialog v-model="settingStore.configHistory" class="dialog-card">
+                <v-card prepend-icon="mdi-history" :title="$t('$vuetify.dataIterator.q.title')" flat>
+                    <template v-slot:append>
+                        <v-card-actions>
+                            <v-spacer></v-spacer>
+                            <v-btn color="primary" icon="mdi-download" @click="historyStore.downloadHistory"></v-btn>
+                            <v-btn color="error" icon="mdi-delete-off-outline" @click="historyStore.resetState"></v-btn>
+                        </v-card-actions>
+                    </template>
+
+                    <v-data-iterator :items="historyStore.conversation" items-per-page="-1" class="ma-4 mt-0">
+                        <template v-slot:default="{ items }">
+                            <transition-group name="fade">
+                                <v-card v-for="(item, index) in items" variant="plain" :key="item.raw.id">
+                                    <v-divider></v-divider>
+                                    <v-card-item>
+                                        <template v-slot:prepend>
+                                            <v-btn :color="historyStore.getColor(index)" class="mr-3" icon size="small"
+                                                @click="historyStore.select(index)">
+                                                <b>{{item.raw.history.length}}</b>
+                                            </v-btn>
+                                        </template>
+                                        <v-card-subtitle class="mt-1 font-weight-bold">
+                                            {{ item.raw.history[0]?.content[1]?.text || item.raw.history[0]?.content ||
+                                            "NA" }}
+                                        </v-card-subtitle>
+                                        <v-card-subtitle>
+                                            {{ item.raw.history[item.raw.history.length-1]?.content[1]?.text ||
+                                            item.raw.history[item.raw.history.length-1]?.content || "NA" }}
+                                        </v-card-subtitle>
+                                        <template v-slot:append>
+                                            <v-btn color="primary" icon="mdi-download" variant="text"
+                                                @click="historyStore.downloadById(index)"></v-btn>
+                                            <v-btn icon="mdi-delete-outline" variant="text"
+                                                @click="historyStore.deleteById(index)"></v-btn>
+                                        </template>
+                                    </v-card-item>
+                                </v-card>
+                            </transition-group>
+                        </template>
+                    </v-data-iterator>
+                </v-card>
+
+            </v-dialog>
+            <!-- dialog -->
+            <v-dialog v-model="settingStore.configDialog" class="dialog-card">
+                <v-card prepend-icon="mdi-cog-outline" :title="$t('$vuetify.dataIterator.i.title')">
+                    <template v-slot:append>
+                        <v-card-actions>
+                            <v-spacer></v-spacer>
+                            <v-btn color="error" icon="mdi-refresh" @click="chatbotStore.resetState"></v-btn>
+                        </v-card-actions>
+                    </template>
+
+                    <v-card-text class="pb-0">
+                        <!-- ---------------------------------------------- -->
+                        <!-- APIKEY -->
+                        <!-- ---------------------------------------------- -->
+                        <v-text-field density='compact' color="primary" variant="outlined"
+                            :append-inner-icon="settingStore.apiKeyShow ? 'mdi-eye-off' : 'mdi-eye'"
+                            :type="settingStore.apiKeyShow ? 'text' : 'password'" v-model="chatbotStore.apiKey"
+                            class="px-2 mb-4" :label="$t('$vuetify.dataIterator.i.apikey')" prepend-inner-icon="mdi-key"
+                            clearable hide-details
+                            @click:append-inner="settingStore.apiKeyShow = !settingStore.apiKeyShow"></v-text-field>
+
+                        <v-expansion-panels static tile variant="accordion" class="px-2 mb-4">
+                            <v-expansion-panel>
+                                <v-expansion-panel-title v-slot="{ expanded }">
+                                    <v-icon icon="mdi-web" start></v-icon>
+                                    <v-row no-gutters class="hidden">
+                                        <span v-if="expanded">{{$t('$vuetify.dataIterator.i.endpoint')}}</span>
+                                        <span v-else>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{chatbotStore.url}}{{chatbotStore.path}}
+                                            </v-chip>
+
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{chatbotStore.model || "No model" }}
+                                            </v-chip>
+                                        </span>
+                                </v-expansion-panel-title>
+
+                                <v-expansion-panel-text>
+                                    <!-- ---------------------------------------------- -->
+                                    <!-- URL -->
+                                    <!-- ---------------------------------------------- -->
+                                    <v-combobox density='compact' class="px-2"
+                                        :label="$t('$vuetify.dataIterator.i.url')" :items="defaultChoiceStore.url"
+                                        v-model="chatbotStore.url" variant="outlined">
+                                    </v-combobox>
+
+                                    <!-- ---------------------------------------------- -->
+                                    <!-- Path -->
+                                    <!-- ---------------------------------------------- -->
+                                    <v-combobox density='compact' class="px-2"
+                                        :label="$t('$vuetify.dataIterator.i.path')" :items="defaultChoiceStore.path"
+                                        v-model="chatbotStore.path" variant="outlined">
+                                    </v-combobox>
+
+                                    <!-- ---------------------------------------------- -->
+                                    <!-- Model -->
+                                    <!-- ---------------------------------------------- -->
+                                    <v-combobox density='compact' class="px-2"
+                                        :label="$t('$vuetify.dataIterator.i.model')" :items="defaultChoiceStore.model"
+                                        v-model="chatbotStore.model" variant="outlined">
+                                    </v-combobox>
+                                </v-expansion-panel-text>
+                            </v-expansion-panel>
+
+                            <v-expansion-panel>
+                                <v-expansion-panel-title v-slot="{ expanded }">
+                                    <v-icon icon="mdi-account-key" start></v-icon>
+                                    <v-row no-gutters class="hidden">
+                                        <span v-if="expanded">{{ $t('$vuetify.dataIterator.i.advanced') }}</span>
+                                        <span v-else>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{ chatbotStore.stream ? "Stream" : "Stream: off" }}
+                                            </v-chip>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{ chatbotStore.mcp ? "MCP" : "MCP: off" }}
+                                            </v-chip>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{chatbotStore.max_tokens_type}}
+                                                {{": "}}
+                                                {{ chatbotStore.max_tokens_value ? chatbotStore.max_tokens_value :
+                                                "default" }}
+                                            </v-chip>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{"temperature: "}}
+                                                {{ chatbotStore.temperature ? chatbotStore.temperature :
+                                                "default" }}
+                                            </v-chip>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{"top_p: "}}
+                                                {{ chatbotStore.top_p ? chatbotStore.top_p :
+                                                "default" }}
+                                            </v-chip>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{ chatbotStore.authPrefix }}
+                                            </v-chip>
+                                            <v-chip label color="primary" class="ma-1">
+                                                {{ chatbotStore.contentType }}
+                                            </v-chip>
+                                        </span>
+                                </v-expansion-panel-title>
+
+                                <v-expansion-panel-text>
+                                    <v-row class="px-3 mt-2 mr-2">
+
+                                        <v-combobox class="px-2" density='compact'
+                                            :label="$t('$vuetify.dataIterator.i.reasoning')"
+                                            v-model="chatbotStore.reasoning_effort" clearable
+                                            :items="defaultChoiceStore.reasoning_efforts" variant="outlined">
+                                        </v-combobox>
+                                        <v-spacer></v-spacer>
+                                        <v-checkbox v-model="chatbotStore.stream"
+                                            :label="$t('$vuetify.dataIterator.i.stream')" density='compact'
+                                            color="primary">
+                                        </v-checkbox>
+                                        <v-checkbox v-if="mcpStore.getServers" v-model="chatbotStore.mcp"
+                                            :label="$t('$vuetify.dataIterator.i.mcp')" density='compact'
+                                            color="primary">
+                                        </v-checkbox>
+                                    </v-row>
+                                    <v-row class="px-3 mt-4 mb-0">
+                                        <v-combobox class="px-2" density='compact'
+                                            :label="$t('$vuetify.dataIterator.i.maxTokensPrefix')"
+                                            :items="defaultChoiceStore.max_tokens_type"
+                                            v-model="chatbotStore.max_tokens_type" variant="outlined">
+                                        </v-combobox>
+                                        <v-combobox class="px-2" density='compact' label="MaxTokenValue"
+                                            v-model="chatbotStore.max_tokens_value" type='number' single-line
+                                            variant="outlined">
+                                        </v-combobox>
+                                    </v-row>
+                                    <v-row class="px-3 mt-0 mb-0">
+                                        <v-combobox class="px-2" density='compact'
+                                            :label="$t('$vuetify.dataIterator.i.temperature')"
+                                            :items="defaultChoiceStore.temperature" type='number'
+                                            v-model="chatbotStore.temperature" variant="outlined"
+                                            :rules="[value => !isNaN(value) && parseFloat(value) >= 0 && parseFloat(value) <= 2]">
+                                        </v-combobox>
+                                        <v-combobox class="px-2" density='compact'
+                                            :label="$t('$vuetify.dataIterator.i.topP')" v-model="chatbotStore.top_p"
+                                            type='number' variant="outlined"
+                                            :rules="[value => !isNaN(value) && parseFloat(value) >= 0 && parseFloat(value) <= 1]">
+                                        </v-combobox>
+                                    </v-row>
+                                    <v-combobox class="px-2" density='compact'
+                                        :label="$t('$vuetify.dataIterator.i.contentType')"
+                                        v-model="chatbotStore.contentType" variant="outlined">
+                                    </v-combobox>
+                                    <v-combobox class="px-2" density='compact'
+                                        :label="$t('$vuetify.dataIterator.i.authPrefix')"
+                                        :items="defaultChoiceStore.authPrefix" v-model="chatbotStore.authPrefix"
+                                        variant="outlined">
+                                    </v-combobox>
+                                </v-expansion-panel-text>
+                            </v-expansion-panel>
+                        </v-expansion-panels>
+
+                        <!-- Dialog Btn -->
+                        <v-card-actions>
+                            <v-file-input prepend-icon="" prepend-inner-icon="mdi-upload" class="mr-2"
+                                variant="outlined" v-model="configFile"
+                                :label="$t('$vuetify.dataIterator.i.configFile')" accept="application/json"
+                                single-line></v-file-input>
+
+                            <v-spacer></v-spacer>
+                            <v-btn variant="flat" color="primary" @click="settingStore.configDialog = false">OK</v-btn>
+                        </v-card-actions>
+                    </v-card-text>
+                </v-card>
+            </v-dialog>
+            <v-dialog v-model="promptStore.promptDialog" class="dialog-card">
+                <v-card prepend-icon="mdi-account-cog" :title="$t('$vuetify.dataIterator.p.title')">
+                    <v-data-iterator :items="promptStore.promptList" :search="promptStore.search" items-per-page="-1"
+                        @update:options="promptStore.loadPrompts" :loading="promptStore.loading">
+                        <template v-slot:header>
+                            <v-toolbar class="px-2">
+                                <v-text-field v-model="promptStore.search" density="comfortable" placeholder="Search"
+                                    prepend-inner-icon="mdi-magnify" width="100vw" max-width="400px" variant="solo"
+                                    clearable hide-details></v-text-field>
+                            </v-toolbar>
+                        </template>
+                        <template v-slot:default="{ items }">
+                            <v-container class="pa-2" fluid>
+                                <v-row dense>
+                                    <v-col v-for="item in items" :key="item.raw.title +':'+ item.raw.name" cols="auto"
+                                        class="flex-fill">
+                                        <v-card border flat>
+                                            <v-card-item :subtitle="item.raw.name" class="mb-2" :title="item.raw.title">
+                                                <template v-slot:append>
+                                                    <v-btn icon="mdi-lead-pencil" size="small" text="Read" border flat
+                                                        @click="promptStore.select(item.raw)">
+                                                    </v-btn>
+                                                </template>
+                                            </v-card-item>
+                                            <v-card-text>{{ item.raw.description }}</v-card-text>
+                                        </v-card>
+                                    </v-col>
+                                </v-row>
+                            </v-container>
+                        </template>
+                    </v-data-iterator>
+                </v-card>
+            </v-dialog>
+            <v-dialog v-model="promptStore.promptSheet" class="dialog-card">
+                <v-card prepend-icon="mdi-account-cog-outline"
+                    :title="$t('$vuetify.dataIterator.p.sheet') + ' - ' + promptStore.promptSelect.title"
+                    :subtitle="promptStore.promptSelect.name">
+                    <v-divider></v-divider>
+                    <v-card-text>
+                        <div>{{promptStore.promptSelect.description}}</div>
+                        <div v-if="promptStore.promptSelect.arguments">
+                            <br>
+                            <v-textarea class="mx-2" v-for="argument in promptStore.promptSelect.arguments"
+                                color="primary" type="text" variant="outlined" v-model="argument.content"
+                                :label="argument.name" rows="1" auto-grow>
+                        </div>
+                        </v-textarea>
+                        <v-card-actions>
+                            <v-spacer></v-spacer>
+                            <v-btn class="pt-0" variant="flat" color="primary"
+                                @click="messageStore.applyPrompt(promptStore.fetchSelect())">Get</v-btn>
+                        </v-card-actions>
+                    </v-card-text>
+                </v-card>
+            </v-dialog>
+            <v-dialog v-model="resourceStore.resourceDialog" class="dialog-card" scrollable>
+                <v-card prepend-icon="mdi-database" :title="$t('$vuetify.dataIterator.r.title')">
+                    <v-tabs :items="mcpStore.listServerResources()" v-model="resourceStore.tab" color="primary">
+                        <template v-slot:tab="{ item }">
+                            <v-tab :text="item.name" :value="item.name" class="text-none"></v-tab>
+                        </template>
+                    </v-tabs>
+                    <v-divider></v-divider>
+                    <v-card-text>
+                        <v-tabs-window v-model="resourceStore.tab">
+                            <v-tabs-window-item v-for="item in mcpStore.listServerResources()" :value="item.name">
+                                <v-data-iterator :items="resourceStore.resourceTemplatesList" items-per-page="-1"
+                                    @update:options="resourceStore.loadTemplates(item.templatesList)"
+                                    :loading="resourceStore.loadingTemplates">
+                                    <template v-slot:default="{ items }">
+                                        <v-container>
+                                            <v-row dense>
+                                                <v-col v-for="item in items"
+                                                    :key="item.raw.uriTemplate +':'+ item.raw.name" cols="auto"
+                                                    class="flex-fill">
+                                                    <v-card border flat>
+                                                        <v-card-item :subtitle="item.raw.uriTemplate" class="mb-2"
+                                                            :title="item.raw.name">
+                                                        </v-card-item>
+                                                        <v-card-text>{{ item.raw.description }}</v-card-text>
+                                                    </v-card>
+                                                </v-col>
+                                            </v-row>
+                                        </v-container>
+                                    </template>
+                                </v-data-iterator>
+                                <v-data-iterator :items="resourceStore.resourceList" items-per-page="-1"
+                                    @update:options="resourceStore.loadResources(item.list)"
+                                    :loading="resourceStore.loadingResources">
+                                    <template v-slot:default="{ items }">
+                                        <v-container>
+                                            <v-expansion-panels>
+                                                <v-expansion-panel v-for="item in items"
+                                                    :key="item.raw.uri +':'+ item.raw.name"
+                                                    :text="JSON.stringify(item.raw)"
+                                                    :title="item.raw.name +' - '+ item.raw.uri">
+                                                </v-expansion-panel>
+                                            </v-expansion-panels>
+                                        </v-container>
+                                    </template>
+                                </v-data-iterator>
+                            </v-tabs-window-item>
+                        </v-tabs-window>
+                    </v-card-text>
+                </v-card>
+            </v-dialog>
+            <v-dialog v-model="settingStore.agentDialog" class="dialog-card">
+                <v-card prepend-icon="mdi-history" :title="$t('$vuetify.dataIterator.a.title')"
+                    style="overflow-x: auto">
+                    <template v-slot:append>
+                        <v-card-actions>
+                            <v-spacer></v-spacer>
+                            <v-btn color="error" icon="mdi-delete-off-outline" @click="agentStore.initAgent()"></v-btn>
+                        </v-card-actions>
+                    </template>
+                    <!-- board column -->
+                    <v-container class="pt-0">
+                        <v-row justify="center" class="mx-0 mb-2">
+                            <v-col cols="auto" v-for="column in agentStore.columns" :key="column.key" class="flex-fill">
+                                <v-divider></v-divider>
+                                <div class="d-flex align-center ma-1">
+                                    <h5 class="font-weight-bold">{{ column.key }}</h5>
+                                    <v-spacer></v-spacer>
+                                    <!-- add new card button -->
+                                    <v-btn variant="text" rounded icon="mdi-plus" size="small" color="primary"
+                                        @click="column.isAddVisible = !column.isAddVisible">
+                                    </v-btn>
+                                </div>
+
+                                <!-- add new card form -->
+                                <v-card v-show="column.isAddVisible" class="pa-5 mb-4">
+                                    <v-text-field color="primary" v-model="column.addTitle" label="Title"
+                                        variant="underlined" hideDetails autofocus
+                                        @keyup.enter="agentStore.addCard(column)"
+                                        @keyup.esc="column.isAddVisible = false"></v-text-field>
+                                    <div class="mt-3 d-flex flex-md-row flex-column">
+                                        <v-btn class="flex-fill ma-1" size="small"
+                                            @click="column.isAddVisible = !column.isAddVisible">Cancel</v-btn>
+                                        <v-spacer></v-spacer>
+                                        <v-btn class="flex-fill ma-1" size="small" color="primary"
+                                            @click="agentStore.addCard(column)">Add</v-btn>
+                                    </div>
+                                </v-card>
+
+                                <!-- draggable cards -->
+                                <vuedraggable v-model="column.cards" v-bind="agentStore.getDragOption"
+                                    :class="{'list-draggable': !column.isAddVisible}" @change="column.callback"
+                                    item-key="id">
+                                    <template #item="{ element, index }">
+                                        <v-card @click="agentStore.editCard(element)" class="pa-4 mb-4">
+                                            <div class="d-flex align-start font-weight-bold text-title">
+                                                <span class="flex-fill">{{ element.title }}</span>
+                                                <v-btn size="small" variant="text" icon="mdi-delete-outline" rounded
+                                                    color="primary" class="my-n2 mr-n2"
+                                                    @click.stop="agentStore.deleteCard(column, index)"></v-btn>
+                                            </div>
+                                            <div class="text-content">{{ element.description }}</div>
+                                        </v-card>
+                                    </template>
+                                </vuedraggable>
+                            </v-col>
+                        </v-row>
+                        <v-row v-if="mcpStore.getServers" class="ma-1">
+                            <v-col>
+                                <h5 class="font-weight-bold mb-4">MCP</h5>
+                                <v-divider></v-divider>
+                                <v-data-table-server hide-default-footer hide-default-header hide-no-data disable-sort
+                                    v-if="mcpStore.getServers" :items="mcpStore.serverTools"
+                                    @update:options="mcpStore.loadTools"
+                                    :loading="mcpStore.loading"></v-data-table-server>
+                            </v-col>
+                        </v-row>
+
+                    </v-container>
+                </v-card>
+            </v-dialog>
+
+            <v-dialog v-model="agentStore.editDialog" class="dialog-card">
+                <v-card>
+                    <v-card-title class="pa-4 d-flex align-center">
+                        <span class="flex-fill">Edit Card</span>
+                        <v-btn variant="text" rounded icon="mdi-close" size="small" color="primary"
+                            @click="agentStore.editDialog = false">
+                        </v-btn>
+                    </v-card-title>
+                    <v-divider></v-divider>
+                    <div class="pa-4">
+                        <v-text-field class="py-2 px-1" color="primary" v-model="agentStore.card.title" label="Title"
+                            variant="plain" hideDetails placeholder="Title" autofocus
+                            @keyup.enter="agentStore.saveCard()"></v-text-field>
+                        <v-divider></v-divider>
+                        <v-textarea v-model="agentStore.card.description" class="px-2 py-1" variant="plain"
+                            placeholder="Description" hide-details></v-textarea>
+                        <v-card-subtitle>
+                            {{ agentStore.card?.refText }}
+                        </v-card-subtitle>
+                    </div>
+                    <v-divider></v-divider>
+                    <v-card-actions class="px-4 mt-4">
+                        <v-file-input prepend-icon="" prepend-inner-icon="mdi-upload" class="mr-2" variant="outlined"
+                            v-model="agentStore.card.refFile" label="Reference File" accept=".docx, .md, .txt"
+                            single-line></v-file-input>
+                        <v-spacer></v-spacer>
+                        <v-btn variant="outlined" @click="agentStore.editDialog = false">Cancel</v-btn>
+                        <v-btn class="ml-5" variant="flat" color="primary" @click="agentStore.saveCard()">Save</v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <div v-if="settingStore.toolboxShow !== true" class="toolbox-button"
+                @click="settingStore.toolboxShow = true">
+                <v-icon class="rotation text-white">mdi-tools</v-icon>
+            </div>
+            <v-card v-else elevation="10" class="d-flex flex-column toolbox">
+                <!-- ---------------------------------------------- -->
+                <!-- Reset -->
+                <!-- ---------------------------------------------- -->
+                <v-btn @click="resetALL()" variant="text" size="45">
+                    <v-icon size="25" color="error">mdi-store-remove</v-icon>
+                    <v-tooltip activator="parent" location="left" text="Reset All Config"></v-tooltip>
+                </v-btn>
+                <!-- ---------------------------------------------- -->
+                <!-- Close Btn -->
+                <!-- ---------------------------------------------- -->
+                <v-btn @click="settingStore.toolboxShow = false" variant="text" size="45" color="error">
+                    <v-icon size="25">mdi-close</v-icon>
+                    <v-tooltip activator="parent" location="left" text="Close Toolbox"></v-tooltip>
+                </v-btn>
+            </v-card>
+        </v-app>
     </div>
-    <div class="sidebar-new" onclick="newSession()">+ New chat</div>
-    <div class="session-list" id="session-list"></div>
-    <div class="sidebar-footer">
-      <button onclick="document.getElementById('settings-panel').classList.toggle('open')" title="Settings">&#9881;</button>
-      <button onclick="exportKnowledge()" title="Export">&#8681;</button>
-      <button onclick="importKnowledge()" title="Import">&#8679;</button>
-      <button class="delete-data-btn" onclick="deleteLearnedData()" title="Delete learned data" style="font-size:14px;">&#128465;</button>
-    </div>
-  </div>
 
-  <!-- Main -->
-  <div class="main">
-    <header>
-      <div style="display:flex;align-items:center;gap:10px;">
-        <button class="mobile-menu" onclick="document.getElementById('sidebar').classList.toggle('open')" style="background:none;border:none;font-size:20px;cursor:pointer;">&#9776;</button>
-        <span class="header-title" id="session-title">New chat</span>
-      </div>
-      <div class="header-right">
-        <div class="stats-badge" id="stats">Loading...</div>
-        <button onclick="document.getElementById('settings-panel').classList.toggle('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);" title="Settings">&#9881;</button>
-      </div>
-    </header>
-
-    <!-- Settings panel -->
-    <div id="settings-panel" style="background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;font-size:13px;">
-      <div style="max-width:800px;margin:0 auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <strong>Settings</strong>
-          <button onclick="document.getElementById('settings-panel').classList.remove('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);">&times;</button>
+    <template id="tuui-chat-box-template">
+        <div v-for="group in groupMessages">
+            <div v-if="group.group === 'user'">
+                <div class="px-2 py-5 chat-message">
+                    <div class="message">
+                        <v-avatar :size=size class="mt-3 mr-3 mr-lg-6" color="primary" icon="mdi-account-circle">
+                        </v-avatar>
+                        <tuui-chat-card class="gradient text-pre-wrap" :index="group.index" :messages="messages"
+                            :show-modify="true">
+                            <template v-slot:default="{ showmodify }">
+                                <v-card-text v-if="Array.isArray(group.message.content)" class="md-preview">
+                                    <div v-for="(item, index) in group.message.content" :key="index">
+                                        <tuui-img-dialog v-if="item.type=='image_url'"
+                                            :src="item.image_url.url"></tuui-img-dialog>
+                                        <v-textarea class="conversation-area" variant="plain" density='compact'
+                                            auto-grow :counter="showmodify" :hide-details="!showmodify" rows="1"
+                                            :readonly="!showmodify" v-model="item.text"></v-textarea>
+                                    </div>
+                                </v-card-text>
+                                <v-card-text v-else class="md-preview pt-1">
+                                    <v-textarea class="conversation-area" variant="plain" density='compact' auto-grow
+                                        rows="1" :readonly="!showmodify" :counter="showmodify"
+                                        :hide-details="!showmodify" v-model="group.message.content"></v-textarea>
+                                </v-card-text>
+                            </template>
+                        </tuui-chat-card>
+                    </div>
+                </div>
+            </div>
+            <div v-if="group.group === 'assistant'">
+                <div class="px-2 py-5 chat-message">
+                    <div class="message">
+                        <v-avatar :size=size class="mt-3 mr-3 mr-lg-6" color="teal" icon="mdi-lightning-bolt-circle">
+                        </v-avatar>
+                        <tuui-chat-card :index="group.index" :messages="messages" :show-content="true">
+                            <template v-slot:default="{ showcontent }">
+                                <v-card-text v-if="group.message.reasoning_content" class="md-preview pt-1">
+                                    <v-textarea class="conversation-area text-disabled font-italic" variant="plain"
+                                        density='compact' auto-grow hide-details rows="1" readonly
+                                        v-model="group.message.reasoning_content"></v-textarea>
+                                </v-card-text>
+                                <v-card-text v-if="showcontent" class="md-preview pt-1">
+                                    <v-textarea class="conversation-area" variant="plain" density='compact' auto-grow
+                                        hide-details rows="1" readonly v-model="group.message.content"></v-textarea>
+                                </v-card-text>
+                                <v-card-text v-else class="md-preview px-4 py-3">
+                                    <md-preview :model-value="group.message.content"
+                                        :language="language == 'zhHans' ? 'zh-CN' : 'en-US'" :code-foldable="true"
+                                        auto-fold-threshold="Infinity"></md-preview>
+                                </v-card-text>
+                            </template>
+                        </tuui-chat-card>
+                    </div>
+                </div>
+            </div>
+            <div v-if="group.group === 'tool'">
+                <div class="px-2 py-5 chat-message">
+                    <div class="message">
+                        <v-avatar :size=size class="mt-3 mr-3 mr-lg-6" color="brown" icon="mdi-swap-vertical-circle">
+                        </v-avatar>
+                        <tuui-chat-card :messages="messages" :show-copy="false" :index="group.index"
+                            :range="group.messages.length">
+                            <v-tabs v-model="dialogs[group.tab]" :items="group.messages" show-arrows>
+                                <template v-slot:tab="{ item }">
+                                    <v-tab :text="item.index" :key="item.index" :value="item.index">
+                                        <v-icon v-if="item.role == 'tool'" icon="mdi-arrow-left-bold-circle"
+                                            color="primary"></v-icon>
+                                        <v-icon v-if="item.role == 'assistant'" icon="mdi-arrow-right-bold-circle"
+                                            color="teal"></v-icon>
+                                    </v-tab>
+                                </template>
+                                <template v-slot:item="{ item }">
+                                    <v-tabs-window-item :key="item.index" :value="item.index">
+                                        <v-card class="mt-1" variant="flat" v-if="item.role == 'tool'">
+                                            <v-card-item prepend-icon="mdi-chevron-left">
+                                                <v-card-subtitle>
+                                                    {{item.tool_call_id}}
+                                                </v-card-subtitle>
+                                            </v-card-item>
+                                            <v-card-text v-if="Array.isArray(item.content)"
+                                                v-for="content in item.content">
+                                                {{content.text}}
+                                            </v-card-text>
+                                            <v-card-text v-else>
+                                                {{item.content}}
+                                            </v-card-text>
+                                        </v-card>
+                                        <v-card class="mt-1" variant="flat" v-if="item.role == 'assistant'">
+                                            <v-card-text v-if="item.reasoning_content" class="font-weight-bold">
+                                                {{ item.reasoning_content }}
+                                            </v-card-text>
+                                            <v-card-text v-if="item.content" class="font-weight-bold">
+                                                {{ item.content }}
+                                            </v-card-text>
+                                            <div v-for="content in item.tool_calls">
+                                                <v-card-item prepend-icon="mdi-chevron-right">
+                                                    <v-card-subtitle>
+                                                        {{content.id}}
+                                                    </v-card-subtitle>
+                                                </v-card-item>
+                                                <v-card-text>
+                                                    {{content.function.name}}({{content.function.arguments }})
+                                                </v-card-text>
+                                            </div>
+                                        </v-card>
+                                    </v-tabs-window-item>
+                                </template>
+                            </v-tabs>
+                        </tuui-chat-card>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:16px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)"> CPU only
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="autolearn-toggle" onchange="toggleAutoLearn(this.checked)"> Auto-learn
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="markdown-toggle" onchange="toggleMarkdown(this.checked)"> Markdown
-          </label>
-        </div>
-        <div style="margin-top:8px;display:flex;gap:12px;font-size:11px;color:var(--text2);">
-          <span id="sb-model">Model: --</span>
-          <span id="sb-kb">KB: --</span>
-          <span id="sb-net">Net: --</span>
-          <span id="sb-learned">Learned: 0</span>
-          <span id="sb-peers">Peers: 0</span>
-        </div>
-      </div>
-    </div>
+    </template>
 
-    <div class="chat-container" id="chat">
-      <div class="welcome">
-        <h2>What do you want to know?</h2>
-        <p class="tagline">305K answers. Zero hallucinations. 100% private.</p>
-        <p>Ask anything — science, math, history, code. I search Wikipedia for things I don't know yet.</p>
-        <p class="disclaimer">Retrieval-based AI. No data leaves your device. Open source.</p>
-      </div>
-    </div>
+    <template id="tuui-img-dialog-template">
+        <v-dialog>
+            <template v-slot:activator="{ props: activatorProps }">
+                <div>
+                    <v-img class="history-images mb-3" contain position="left" min-width="80px" min-height="80px"
+                        width="100%" height="100%" max-width="30vw" max-height="30vh" v-bind="activatorProps"
+                        :src="src"></v-img>
+                </div>
+            </template>
+            <template v-slot:default="{ isActive }">
+                <v-img @click="isActive.value = false" contain width="80vw" height="80vh" max-width="100%"
+                    max-height="100%" :src="src"></v-img>
+            </template>
+        </v-dialog>
+    </template>
 
-    <div class="input-container">
-      <div class="input-wrapper">
-        <input type="search" id="input" placeholder="Ask anything..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="webmind-query" aria-label="Ask a question" autofocus>
-        <button id="send" onclick="ask()">Ask</button>
-      </div>
-    </div>
+    <template id="tuui-chat-card-template">
+        <v-hover open-delay="100">
+            <template v-slot:default="{ isHovering, props }">
+                <v-card v-bind="props" :elevation="isHovering ? 4 : 2" width="100vw" max-width="100%">
+                    <slot :showcontent="showcontent" :showmodify="showmodify"></slot>
+                    <v-expand-transition>
+                        <div v-if="isHovering">
+                            <v-divider></v-divider>
+                            <v-card-actions>
+                                <v-btn v-if="showCopy" color="primary" icon="mdi-content-copy" size="x-small"
+                                    variant="plain" @click="copyToClipboard(messages[index])"></v-btn>
+                                <v-btn v-if="showModify" color="primary"
+                                    :icon=" showmodify ? 'mdi-check-bold' : 'mdi-lead-pencil'" size="x-small"
+                                    variant="plain" @click="showmodify = !showmodify" v-bind="showmodify"></v-btn>
+                                <v-btn v-if="showContent" color="primary"
+                                    :icon=" showcontent ? 'mdi-eye-remove' : 'mdi-eye'" size="x-small" variant="plain"
+                                    @click="showcontent = !showcontent" v-bind="showcontent"></v-btn>
+                                <v-spacer></v-spacer>
+                                <v-btn v-if="showReduce && index > 0" color="error" icon="mdi-format-align-top"
+                                    size="x-small" variant="plain" @click="messages.splice(0, index)"></v-btn>
+                                <v-btn v-if="showDelete" color="error" icon="mdi-delete-off-outline" size="x-small"
+                                    variant="plain" @click="messages.splice(index, range)"></v-btn>
+                            </v-card-actions>
+                        </div>
+                    </v-expand-transition>
+                </v-card>
+            </template>
+        </v-hover>
+    </template>
 
-    <footer>
-      <a href="https://github.com/tejasphatak/webmind-research" target="_blank">GitHub</a>
-      &middot; Runs 100% in your browser
-    </footer>
-  </div>
-</div>
+    <script lang="ts" setup>
+        const { createApp, ref, reactive, computed, onMounted, watch, nextTick, axios, defineProps, defineComponent } = Vue
+        const { createVuetify } = Vuetify
+        const { createPinia, defineStore, storeToRefs } = Pinia
+        const { createI18n, useI18n } = VueI18n
+        const { en, it, ja, sv, zhHans } = 'vuetify/locale'
 
-<script type="module">
-// ── SAQT Browser Engine ──────────────────────────────────
+        const useMcpStore = defineStore("mcpStore", {
+            state: () => ({
+                serverTools: [],
+                loading: true,
+            }),
 
-let encoder = null;
-let qaData = [];
-let qaEmbeddings = null;
-let ready = false;
-const history = [];
-const DIM = 384;
+            getters: {
+                getServers: () => {
+                    console.log('MCP:', window.mcpServers)
+                    return window.mcpServers
+                },
+            },
 
-// Status updates
-const setStatus = (s, detail, pct) => {
-  document.getElementById('load-status').textContent = s;
-  document.getElementById('load-detail').textContent = detail || '';
-  document.getElementById('progress').style.width = pct + '%';
-};
+            actions: {
+                listServerResources: function () {
+                    const mcpServers = this.getServers
+                    const mcpKeys = Object.keys(mcpServers)
+                    const mcpResources = []
+                    for (const key of mcpKeys) {
+                        const resources = mcpServers[key]?.resources
+                        if (resources) {
+                            mcpResources.push({
+                                name: key,
+                                list: resources.list,
+                                templatesList: resources['templates/list']
+                            })
+                        }
+                    }
+                    return mcpResources
+                },
+                loadTools: function () {
+                    this.loading = true
+                    try {
+                        this.listTools().then((tools) => {
+                            this.serverTools = tools.map(tool => {
+                                return {
+                                    name: tool.function.name,
+                                    description: tool.function.description
+                                }
+                            }
+                            )
+                            return
+                        })
+                    } catch (error) {
+                        console.error('Failed to load tools:', error);
+                    } finally {
+                        this.loading = false;
+                    }
 
-// Load ONNX sentence transformer
-async function loadEncoder() {
-  setStatus('Loading AI model...', 'Sentence transformer (80MB)', 10);
-  const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+                },
+                listTools: async function () {
+                    const mcpServers = this.getServers
+                    if (!mcpServers) {
+                        return null
+                    }
+                    const mcpKeys = Object.keys(mcpServers)
+                    const mcpTools = []
+                    for (const key of mcpKeys) {
+                        const toolsListFunction = mcpServers[key]?.tools?.list;
+                        if (typeof toolsListFunction === 'function') {
+                            const tools = await toolsListFunction();
+                            // console.log(await mcpServers[key]?.prompts?.list())
+                            // console.log(await mcpServers[key]?.resources['templates/list']())
+                            // console.log(await mcpServers[key]?.resources?.list())
+                            if (tools && Array.isArray(tools.tools)) {
+                                for (const tool of tools.tools) {
+                                    mcpTools.push({
+                                        type: 'function',
+                                        function: {
+                                            name: tool.name,
+                                            description: tool.description,
+                                            parameters: tool.inputSchema,
+                                            // strict: true
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    return mcpTools
+                },
+                getTool: async function (tool_name) {
+                    const mcpServers = this.getServers;
+                    const mcpKeys = Object.keys(mcpServers);
+                    const result = await Promise.any(mcpKeys.map(async (key) => {
+                        const toolsListFunction = mcpServers[key]?.tools?.list;
+                        if (typeof toolsListFunction === 'function') {
+                            const tools = await toolsListFunction();
+                            if (tools && Array.isArray(tools.tools)) {
+                                const foundTool = tools.tools.find(tool => tool.name === tool_name);
+                                if (foundTool) {
+                                    return {
+                                        server: key,
+                                        tool: foundTool
+                                    };
+                                }
+                            }
+                        }
+                        throw new Error(`Tool ${tool_name} not found on server ${key}`);
+                    }));
 
-  // Check CPU-only preference (saved in localStorage)
-  const cpuOnly = localStorage.getItem('webmind_cpu') === '1';
-  if (document.getElementById('cpu-toggle')) document.getElementById('cpu-toggle').checked = cpuOnly;
+                    return result;
+                },
+                callTool: async function (tool_name, tool_args) {
+                    const tool = await this.getTool(tool_name)
+                    if (!tool) {
+                        return this.packReturn(`Tool name '${tool_name}' not found`)
+                    }
 
-  if (cpuOnly) {
-    // Force pure WASM, no threads, no SIMD — maximum compatibility
-    env.backends.onnx.wasm.proxy = false;
-    env.backends.onnx.wasm.numThreads = 1;
-  }
-  // Disable WebGPU to avoid issues on unsupported devices
-  if (env.backends.onnx.webgpu) env.backends.onnx.webgpu.enabled = false;
+                    let tool_arguments
 
-  try {
-    encoder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-      progress_callback: (p) => {
-        if (p.progress) setStatus('Loading AI model...', `${p.file || ''} ${Math.round(p.progress)}%`, 10 + p.progress * 0.3);
-      }
-    });
-    setStatus('Model loaded', 'WASM backend', 40);
-  } catch (e) {
-    setStatus('Model load failed', e.message, 0);
-    console.error('[model] Failed:', e);
-    throw e;
-  }
-}
+                    try {
+                        tool_arguments = JSON.parse(tool_args)
+                    } catch (e) {
+                        return this.packReturn(`Arguments JSON parse error: '${e}'`)
+                    }
 
-// Load Q&A data
-async function loadData() {
-  setStatus('Loading knowledge base...', '305K Q&A pairs', 45);
+                    const params = {
+                        name: tool_name,
+                        arguments: tool_arguments
+                    }
 
-  // Try local files first, then VM server (CORS enabled), then demo data
-  const VM_BASE = 'https://chat.webmind.sh/saqt/browser';
-  const dataUrls = [
-    window.SAQT_DATA_URL || './qa_data.json',
-    `${VM_BASE}/qa_data.json`,
-  ];
-  const embUrls = [
-    window.SAQT_EMB_URL || './qa_embeddings.bin',
-    `${VM_BASE}/qa_embeddings.bin`,
-  ];
+                    const result = await this.getServers[tool.server].tools.call(params)
+                    return result
+                },
+                convertItem: function (item) {
+                    if (item.type === "text") {
+                        return item;
+                    } else if (item.type === "image") {
+                        const imageUrl = `data:${item.mimeType};base64,${item.data}`;
+                        return {
+                            type: 'image_url',
+                            image_url: { url: imageUrl }
+                        };
+                    }
+                },
+                packReturn: (string) => {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: string
+                        }]
+                    }
+                }
+            },
+        });
 
-  let loaded = false;
-  for (let i = 0; i < dataUrls.length && !loaded; i++) {
-    try {
-      setStatus('Loading knowledge base...', i === 0 ? 'Checking local...' : 'Downloading from GitHub (535MB)...', 45);
-      const dataResp = await fetch(dataUrls[i]);
-      if (!dataResp.ok) continue;
+        const useAgentStore = defineStore("agentStore", {
+            state: () => ({
+                card: null,
+                columns: [],
+                editDialog: false,
+            }),
 
-      qaData = await dataResp.json();
-      setStatus('Loading embeddings...', `${qaData.length} pairs loaded`, 60);
+            persist: {
+                enabled: true,
+                strategies: [{ storage: sessionStorage }],
+            },
 
-      const embResp = await fetch(embUrls[i]);
-      if (!embResp.ok) continue;
+            getters: {
+                getDragOption: () => {
+                    return {
+                        animation: 200,
+                        group: "task",
+                        disabled: false,
+                        ghostClass: "ghost",
+                    };
+                },
 
-      // Show download progress for large files
-      const contentLength = embResp.headers.get('Content-Length');
-      if (contentLength && parseInt(contentLength) > 1000000) {
-        const reader = embResp.body.getReader();
-        const total = parseInt(contentLength);
-        let received = 0;
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.length;
-          const pct = Math.round((received / total) * 100);
-          setStatus('Downloading embeddings...', `${Math.round(received/1024/1024)}MB / ${Math.round(total/1024/1024)}MB`, 60 + pct * 0.35);
-        }
-        const blob = new Blob(chunks);
-        const embBuf = await blob.arrayBuffer();
-        qaEmbeddings = new Float32Array(embBuf);
-      } else {
-        const embBuf = await embResp.arrayBuffer();
-        qaEmbeddings = new Float32Array(embBuf);
-      }
+            },
 
-      setStatus('Ready!', `${qaData.length} Q&A pairs`, 100);
-      loaded = true;
-    } catch (e) {
-      console.log(`[load] Source ${i} failed:`, e.message);
-    }
-  }
+            actions: {
+                addCard(column) {
+                    const { addTitle, key } = column;
+                    if (!addTitle) return;
+                    let newCard = {
+                        id: "_" + Math.random().toString(36).substring(2, 11),
+                        state: key,
+                        title: addTitle,
+                        description: "",
+                        refFile: null,
+                        refText: "",
+                        order: -1,
+                    };
+                    column.cards.unshift(newCard);
+                    column.addTitle = "";
+                    column.isAddVisible = false;
+                },
+                deleteCard(column, index) {
+                    column.cards.splice(index, 1);
+                },
+                editCard(card) {
+                    this.card = { ...card }
+                    this.editDialog = true;
+                },
+                saveCard() {
+                    const editCard = this.card
+                    if (editCard) {
+                        let foundCard = this.columns
+                            .flatMap(column => column.cards)
+                            .find(card => card.id === this.card.id);
+                        if (foundCard) {
+                            foundCard.title = editCard.title;
+                            foundCard.refText = editCard.refText
+                            foundCard.refFile = editCard.refFile
+                            foundCard.description = editCard.description;
+                            this.editDialog = false;
+                        }
+                    }
 
-  if (!loaded) {
-    setStatus('Could not load knowledge base', 'Please check your connection and refresh. The full 305K knowledge base (535MB) is required.', 0);
-    return;
-  }
-}
+                },
+                promptMessage(conversation) {
 
-function getDemoData() {
-  return [
-    // Knowledge
-    {question: "What is DNA?", answer: "DNA, short for deoxyribonucleic acid, is the molecule that contains the genetic code of organisms."},
-    {question: "Who is Narendra Modi?", answer: "Narendra Damodardas Modi (born 17 September 1950) is an Indian politician who is the 14th and current Prime Minister of India."},
-    {question: "What causes rain?", answer: "Rain is caused by the water cycle: water evaporates from oceans and lakes, rises as water vapor, cools in the atmosphere, condenses into clouds, and falls back to earth as precipitation."},
-    {question: "How are you?", answer: "I'm doing well, thank you for asking! How can I help you?"},
-    {question: "What is the speed of light?", answer: "The speed of light in vacuum is approximately 299,792 kilometers per second."},
-    {question: "Hello", answer: "Hello! I'm Webmind, a knowledge engine running entirely in your browser. Ask me anything."},
-    {question: "Why is the sky blue?", answer: "The sky appears blue because of Rayleigh scattering. Sunlight contains all colors, but blue light has a shorter wavelength and scatters more when it hits molecules in the atmosphere."},
-    {question: "What is the capital of France?", answer: "Paris is the capital of France."},
-    {question: "What is bigger, the sun or the moon?", answer: "The sun is much bigger. The sun has a diameter of about 1,390,000 km while the moon is only 3,474 km."},
-    {question: "What is photosynthesis?", answer: "Photosynthesis is the process by which green plants use sunlight to convert carbon dioxide and water into glucose and oxygen."},
-    {question: "When did World War 2 end?", answer: "World War II ended in 1945 with the surrender of Germany in May and Japan in September."},
-    {question: "What is an atom?", answer: "An atom is the smallest unit of ordinary matter that forms a chemical element. It consists of protons, neutrons, and electrons."},
-    {question: "Thank you", answer: "You're welcome! Feel free to ask anything else."},
-    {question: "What is gravity?", answer: "Gravity is a fundamental force that attracts objects with mass toward each other. On Earth, it gives weight to objects and causes them to fall."},
-    {question: "Tell me a joke", answer: "Why don't scientists trust atoms? Because they make up everything!"},
-    {question: "What is the meaning of life?", answer: "The meaning of life is a philosophical question. Many cultures and thinkers have proposed answers ranging from happiness and fulfillment to service and connection with others."},
-    {question: "How does the internet work?", answer: "The internet is a global network of computers connected via cables, fiber optics, and wireless signals. Data is split into packets, routed through multiple nodes, and reassembled at the destination using TCP/IP protocols."},
-    {question: "What is machine learning?", answer: "Machine learning is a branch of artificial intelligence where computers learn patterns from data without being explicitly programmed. It uses statistical methods to improve performance on tasks through experience."},
-    // Tool calls — browser runtime executes JavaScript in Web Worker
-    {question: "What is today's date?", answer: "<tool>print(new Date().toISOString().split('T')[0])</tool>"},
-    {question: "What time is it?", answer: "<tool>print(new Date().toLocaleTimeString())</tool>"},
-    {question: "Print hello world", answer: "<tool>print('Hello, World!')</tool>"},
-    {question: "Count from 1 to 10", answer: "<tool>for(let i=1;i<=10;i++) print(i)</tool>"},
-    {question: "Calculate 347 times 29", answer: "<tool>print(347 * 29)</tool>"},
-    {question: "What is the square root of 144?", answer: "<tool>print(Math.sqrt(144))</tool>"},
-    {question: "Generate a random number", answer: "<tool>print(Math.floor(Math.random() * 100) + 1)</tool>"},
-    {question: "How to add two numbers", answer: "To add two numbers: use the + operator. For example, 5 + 3 = 8. In programming: result = a + b"},
-    {question: "What is 2 plus 2?", answer: "<tool>print(2 + 2)</tool>"},
-    {question: "Convert celsius to fahrenheit", answer: "<tool>const c = 100; print(c + '°C = ' + (c * 9/5 + 32) + '°F')</tool>"},
-    // Web browsing — fetch API (CORS-aware)
-    {question: "Browse a website", answer: "<tool>const r = await fetch('https://api.quotable.io/random'); const d = await r.json(); print(d.content + ' — ' + d.author)</tool>"},
-    {question: "Get a random quote", answer: "<tool>const r = await fetch('https://api.quotable.io/random'); const d = await r.json(); print(d.content + ' — ' + d.author)</tool>"},
-    {question: "What is my IP address?", answer: "<tool>const r = await fetch('https://api.ipify.org?format=json'); const d = await r.json(); print('Your IP: ' + d.ip)</tool>"},
-    {question: "Get weather information", answer: "<tool>const r = await fetch('https://wttr.in/?format=j1'); const d = await r.json(); const c = d.current_condition[0]; print('Temperature: ' + c.temp_C + '°C, ' + c.weatherDesc[0].value)</tool>"},
-    {question: "Fetch a webpage", answer: "<tool>const url = QUERY.match(/https?:\\/\\/[^\\s]+/)?.[0] || 'https://example.com'; const r = await fetch(url); const t = await r.text(); print(t.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').substring(0, 500))</tool>"},
-    {question: "Search Wikipedia", answer: "<tool>const q = QUERY.replace(/search wikipedia for |look up |wikipedia /gi, '').trim(); const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(q)); const d = await r.json(); print(d.extract || 'Not found')</tool>"},
-    {question: "What is trending on Hacker News?", answer: "<tool>const r = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json'); const ids = await r.json(); const top5 = ids.slice(0,5); const stories = []; for(const id of top5){ const s = await fetch('https://hacker-news.firebaseio.com/v0/item/'+id+'.json'); stories.push(await s.json()); } stories.forEach((s,i) => print((i+1)+'. '+s.title))</tool>"},
-    {question: "Get a random fact", answer: "<tool>const r = await fetch('https://uselessfacts.jsph.pl/api/v2/facts/random'); const d = await r.json(); print(d.text)</tool>"},
-    {question: "What are the top news stories?", answer: "<tool>const r = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json'); const ids = await r.json(); const top5 = ids.slice(0,5); const stories = []; for(const id of top5){ const s = await fetch('https://hacker-news.firebaseio.com/v0/item/'+id+'.json'); stories.push(await s.json()); } stories.forEach((s,i) => print((i+1)+'. '+s.title))</tool>"},
-    {question: "Look something up online", answer: "<tool>const q = QUERY.replace(/look up |search for |find /gi, '').trim(); const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(q)); const d = await r.json(); print(d.extract || 'Not found')</tool>"},
-    // Self-awareness — runtime detection
-    {question: "What environment are you running in?", answer: "<tool>const isBrowser = typeof importScripts === 'function' || typeof window !== 'undefined'; const isNode = typeof process !== 'undefined' && process.versions && process.versions.node; print(isBrowser ? 'Browser (Web Worker sandbox)' : isNode ? 'Node.js / Server' : 'Unknown runtime')</tool>"},
-    {question: "Can you browse websites?", answer: "<tool>const isBrowser = typeof importScripts === 'function'; if(isBrowser){ print('I am running in a browser. Due to CORS security, I can only fetch APIs that allow cross-origin requests (Wikipedia, Hacker News, weather, etc). I cannot load arbitrary websites. On a server runtime, I have full web access.') } else { print('Yes, I can browse any website from this server runtime.') }</tool>"},
-    {question: "What are your limitations?", answer: "<tool>const isBrowser = typeof importScripts === 'function'; if(isBrowser){ print('Running in browser. Capabilities: math, code execution, CORS-open APIs (Wikipedia, weather, news). Limitations: cannot browse arbitrary websites (CORS), no file system access, no system commands. For full access, use the server version.') } else { print('Running on server. Full capabilities: browse any website, file access, system commands, all APIs.') }</tool>"},
-    {question: "Why can't you open that website?", answer: "When running in a browser, web security (CORS) prevents fetching most websites directly. This is a browser security feature, not a bug. I can access CORS-open APIs like Wikipedia, Hacker News, and weather services. On a server, there are no such restrictions."},
-    // System init — high priority behavioral pairs
-    {question: "Hello there!", answer: "Hello! I'm **Webmind**, a knowledge engine running in your browser. Ask me anything — science, math, history, programming, or just say hi. I have **305K+ Q&A pairs** and can search Wikipedia for things I don't know yet."},
-    {question: "Hi, I need some help.", answer: "Hi! I'm here to help. You can ask me:\n\n- **Facts** — *Who is Modi? What is DNA?*\n- **Math** — *What is 347 × 29?*\n- **Current events** — *What's trending on Hacker News?*\n- **Code** — *Print hello world*\n\nWhat would you like to know?"},
-    {question: "You gave me the wrong answer", answer: "I'm sorry about that. Click the **Bad** button below my answer — I'll try to find a better one from Wikipedia and learn from the correction. My attention weights adjust over time: good answers rise, bad ones sink."},
-    {question: "Are you like ChatGPT?", answer: "No — I'm fundamentally different:\n\n| | **Webmind** | **ChatGPT** |\n|---|---|---|\n| How | Retrieves pre-stored answers | Generates new text |\n| Hallucinations | **Never** | Can hallucinate |\n| Size | 630MB, runs on phone | Billions of params, needs cloud |\n| Privacy | 100% on your device | Data sent to servers |\n\nI trade flexibility for **reliability and privacy**."},
-    {question: "Who built you?", answer: "I was built by **Tejas Phatak**, with engineering by **Claude** (Anthropic) and training by **Gemini** (Google). Fully open source at [github.com/tejasphatak/webmind-research](https://github.com/tejasphatak/webmind-research)."},
-    {question: "What is Webmind?", answer: "**Webmind** is an open-source knowledge engine that runs entirely in your browser. It uses a 22M-parameter sentence transformer to match your questions against 305K+ pre-stored Q&A pairs. No LLM, no GPU, no cloud, no subscription. It self-learns from Wikipedia and syncs knowledge between instances peer-to-peer."},
-  ];
-}
+                    const result = this.columns[0].cards
+                        .filter(
+                            (item) => {
+                                return item.description !== "" || item.refText !== "";
+                            }
+                        )
+                        .map(item => (
+                            item.refText ? `${item.description}\n###\n${item.refText}\n###` : item.description
+                        ))
+                        .join('\n\n');
 
-// Cosine similarity search
-function search(queryEmb, topK = 3) {
-  const n = qaData.length;
-  const scores = [];
-  for (let i = 0; i < n; i++) {
-    let dot = 0;
-    const off = i * DIM;
-    for (let d = 0; d < DIM; d++) {
-      dot += queryEmb[d] * qaEmbeddings[off + d];
-    }
-    scores.push({ idx: i, score: dot });
-  }
-  scores.sort((a, b) => b.score - a.score);
-  return scores.slice(0, topK);
-}
+                    if (result) {
+                        return [{ content: result, role: "system" }, ...conversation]
+                    } else {
+                        return [...conversation]
+                    }
+                    return [...conversation]
 
-// Encode text to embedding
-async function encode(text) {
-  const output = await encoder(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data);
-}
+                },
+                initAgent() {
+                    this.$reset();
+                    const states = ref(["PROMPT", "BACKUP"]);
+                    const changeState = (e, colIndex) => {
+                        console.log(e)
+                        if (e.added || e.moved) {
+                            const column = this.columns[colIndex];
+                            const state = column.key;
+                            for (let i = 0; i < column.cards.length; i++) {
+                                column.cards[i].order = i;
+                                column.cards[i].state = state;
+                            }
+                        }
+                    };
 
-// ── INLINE ETHICS / SECURITY GUARDS (C2) ────────────────────────────────────
+                    states.value.forEach((state, index) => {
+                        this.columns.push({
+                            key: state,
+                            cards: [],
+                            isAddVisible: false,
+                            callback: (e) => changeState(e, index),
+                        });
+                    });
 
-// Blocked tool patterns — checked BEFORE worker creation.
-// Mirrors ethics-guard.js BROWSER_TOOL_BLOCKED section.
-const TOOL_BLOCKED_PATTERNS = [
-  [/\beval\s*\(/i,                                           'eval() is not allowed'],
-  [/\bnew\s+Function\s*\(/i,                                'new Function() is not allowed'],
-  [/\bimportScripts\s*\(/i,                                 'importScripts() is not allowed'],
-  [/\bnew\s+WebSocket\s*\(/i,                               'WebSocket is not allowed in tools'],
-  [/\bindexedDB\b|\blocalStorage\b|\bsessionStorage\b|\bdocument\.cookie\b/i, 'Storage access not allowed'],
-  [/\bdocument\./i,                                          'document.* access not allowed'],
-  [/\bnavigator\.(sendBeacon|geolocation|usb|credentials)/i, 'Sensitive navigator API not allowed'],
-  [/\batob\s*\(.{0,40}eval|eval.{0,40}atob\s*\(/is,        'base64+eval obfuscation not allowed'],
-  [/\bString\.fromCharCode\b/i,                              'char-code obfuscation not allowed'],
-  [/javascript\s*:/i,                                        'javascript: URL not allowed'],
-  [/\bdata\s*:/i,                                            'data: URL not allowed'],
-  [/\bsetTimeout\s*\(\s*['"`]/i,                            'setTimeout with string not allowed'],
-  [/\bsetInterval\s*\(\s*['"`]/i,                           'setInterval with string not allowed'],
-];
+                    this.parseCards([
+                        {
+                            id: 1,
+                            title: "Prompt 1",
+                            description: "",
+                            state: "PROMPT",
+                        },
+                        // {
+                        //     id: 2,
+                        //     title: "Agent 1",
+                        //     description: "TODO",
+                        //     state: "BACKUP",
+                        // },
 
-// SSRF safeFetch — injected into the Web Worker instead of raw self.fetch (C3)
-const ALLOWED_TOOL_ORIGINS = [
-  'https://en.wikipedia.org',
-  'https://api.quotable.io',
-  'https://api.ipify.org',
-  'https://wttr.in',
-  'https://uselessfacts.jsph.pl',
-  'https://hacker-news.firebaseio.com',
-];
+                    ])
 
-// Web Worker sandbox for <tool> execution (JavaScript, async-capable)
-function runInSandbox(code, question) {
-  // C2: blocked tool pattern check BEFORE creating any Worker
-  for (const [pat, reason] of TOOL_BLOCKED_PATTERNS) {
-    if (pat.test(code)) {
-      return Promise.resolve(`[Blocked] ${reason}`);
-    }
-  }
+                },
 
-  // C2 + corporate mode fix: in corporate mode, never pass fetch at all
-  const noNetwork = !!window._SAQT_NO_NETWORK;
-  if (noNetwork && /\bfetch\b|\bXMLHttpRequest\b|\bWebSocket\b/.test(code)) {
-    return Promise.resolve('Network access disabled in corporate mode. This tool requires internet access.');
-  }
+                parseCards(cards) {
+                    if (!cards) return this.columns.map((column) => (column.cards = []));
 
-  return new Promise((resolve) => {
-    // C3: safeFetch inlined into worker — blocks RFC-1918, metadata, localhost; GET only; strips auth headers
-    const safeFetchSrc = noNetwork ? `
-      const safeFetch = () => { throw new Error('Network disabled in corporate mode'); };
-    ` : `
-      const _ALLOWED_ORIGINS = ${JSON.stringify(ALLOWED_TOOL_ORIGINS)};
-      const _HARD_BLOCKED = [
-        /localhost/i, /127\\.\\d+\\.\\d+\\.\\d+/, /0\\.0\\.0\\.0/,
-        /192\\.168\\./, /10\\.\\d+\\.\\d+\\.\\d+/,
-        /172\\.(1[6-9]|2\\d|3[01])\\./,
-        /169\\.254\\.169\\.254/,
-      ];
-      const safeFetch = async (url, init = {}) => {
-        let origin;
-        try { origin = new URL(String(url)).origin; }
-        catch { throw new Error('Invalid fetch URL: ' + url); }
-        for (const p of _HARD_BLOCKED) {
-          if (p.test(String(url))) throw new Error('Blocked: private/internal address — ' + url);
-        }
-        if (!_ALLOWED_ORIGINS.includes(origin))
-          throw new Error('Origin not in allowlist: ' + origin + '. Allowed: ' + _ALLOWED_ORIGINS.join(', '));
-        const method = ((init && init.method) || 'GET').toUpperCase();
-        if (method !== 'GET') throw new Error('Only GET requests are allowed. Blocked: ' + method);
-        const safeInit = Object.assign({}, init, { method: 'GET' });
-        if (safeInit.headers) {
-          const h = new Headers(safeInit.headers);
-          h.delete('Authorization');
-          h.delete('Cookie');
-          safeInit.headers = h;
-        }
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 8000);
-        try { return await fetch(url, Object.assign({}, safeInit, { signal: ctrl.signal })); }
-        finally { clearTimeout(t); }
-      };
-    `;
+                    this.columns.forEach((column) => {
+                        column.cards = cards
+                            .filter((card) => card.state === column.key)
+                            .sort((a, b) => (a.order < b.order ? -1 : 0));
+                    });
+                },
 
-    const workerCode = `
-      ${safeFetchSrc}
-      self.onmessage = async function(e) {
-        const output = [];
-        const print = (...args) => output.push(args.join(' '));
-        try {
-          const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-          const fn = new AsyncFunction('print', 'QUERY', 'fetch', e.data.code);
-          await fn(print, e.data.question, safeFetch);
-          self.postMessage({ ok: true, result: output.join('\\n') || '(no output)' });
-        } catch(err) {
-          self.postMessage({ ok: false, result: 'Error: ' + err.message });
-        }
-      };
-    `;
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const worker = new Worker(URL.createObjectURL(blob));
-    const timer = setTimeout(() => { worker.terminate(); resolve('(timeout — 10s)'); }, 10000);
-    worker.onmessage = (e) => { clearTimeout(timer); worker.terminate(); resolve(e.data.result); };
-    worker.onerror = (err) => { clearTimeout(timer); worker.terminate(); resolve('(execution error)'); };
+            },
 
-    // Translate common Python patterns to JS for the browser runtime
-    let jsCode = code
-      .replace(/\{QUERY\}/g, question)
-      .replace(/^import datetime\n?/gm, '')
-      .replace(/datetime\.date\.today\(\)/g, 'new Date().toISOString().split("T")[0]')
-      .replace(/datetime\.datetime\.now\(\)\.strftime\(["']%H:%M:%S["']\)/g, 'new Date().toLocaleTimeString()')
-      .replace(/datetime\.datetime\.now\(\)/g, 'new Date().toISOString()')
-      .replace(/^import math\n?/gm, '')
-      .replace(/math\.sqrt/g, 'Math.sqrt')
-      .replace(/math\.pi/g, 'Math.PI')
-      .replace(/math\.pow/g, 'Math.pow')
-      .replace(/^print\((.+)\)$/gm, 'print($1)')
-      .replace(/^for\s+(\w+)\s+in\s+range\((\d+),\s*(\d+)\):\s*\n?\s*print\((\w+)\)/gm,
-        'for(let $1=$2;$1<$3;$1++) print($4)')
-      // Python urllib → JS fetch
-      .replace(/^import urllib\.request\n?/gm, '')
-      .replace(/urllib\.request\.urlopen\((['"])(.*?)\1\)\.read\(\)\.decode\(\)/g,
-        'await (await fetch("$2")).text()');
-    worker.postMessage({ code: jsCode, question });
-  });
-}
+        });
 
-// Multi-hop query with tool execution
-async function query(question, conversationCtx = '') {
-  const t0 = performance.now();
-  const THRESHOLD = 0.35;
-  const MAX_HOPS = 5;
+        const useSettingStore = defineStore("settingStore", {
+            state: () => ({
+                inputRow: 1,
+                avatarSize: 24,
+                configDialog: false,
+                configHistory: false,
 
-  // First hop — encode the question alone
-  const qEmb = await encode(question);
-  let results = search(qEmb, 3);
-  let best = results[0];
+                agentDialog: false,
 
-  // Follow-up detection: if the question is vague ("tell me more", "what else",
-  // "and?", "continue") AND we have conversation context, re-search with
-  // the previous topic prepended for disambiguation
-  const isFollowUp = best && best.score < 0.5 && conversationCtx.length > 0;
-  if (isFollowUp) {
-    // Use last question + current question for better matching
-    const disambiguated = conversationCtx.substring(0, 150) + ' ' + question;
-    const ctxEmb = await encode(disambiguated);
-    const ctxResults = search(ctxEmb, 5);
-    // Only use context-enriched results if they're better AND different
-    if (ctxResults[0] && ctxResults[0].score > best.score) {
-      results = ctxResults.slice(0, 3);
-      best = results[0];
-    }
-  }
+                apiKeyShow: false,
 
-  if (!best || best.score < THRESHOLD) {
-    // Try auto-learning from Wikipedia
-    const learned = await tryAutoLearn(question);
-    if (learned) {
-      return {
-        answer: learned + '\n\n(Learned just now from Wikipedia — will remember this!)',
-        confidence: 1.0,
-        hops: 0, timeMs: Math.round(performance.now() - t0),
-        sources: [{ q: question, score: '1.000' }],
-        autoLearned: true,
-      };
-    }
-    return {
-      answer: "I don't have enough confidence to answer that.",
-      confidence: best ? best.score : 0,
-      hops: 0, timeMs: Math.round(performance.now() - t0),
-      sources: results.map(r => ({ q: qaData[r.idx].question, score: r.score.toFixed(3) })),
-    };
-  }
+                toolboxShow: false,
+                fontStatus: false,
+            }),
+            actions: {
+                initDialog() {
+                    this.apiKeyShow = false; // hide api key
+                    this.configDialog = true;
+                },
+                setInputRow(int, timeout) {
+                    setTimeout(() => {
+                        this.inputRow = int
+                    }, timeout);
+                }
 
-  let answer = qaData[best.idx].answer;
-  const facts = [qaData[best.idx].question];
-  const trace = [{ hop: 0, score: best.score, q: qaData[best.idx].question }];
-  const visited = new Set([best.idx]);
+            },
+        });
 
-  // Multi-hop: re-encode with context, search again
-  for (let hop = 1; hop < MAX_HOPS; hop++) {
-    const ctx = `${question} ${answer.substring(0, 200)}`;
-    const ctxEmb = await encode(ctx);
-    const newResults = search(ctxEmb, 5);
-    let foundNew = false;
-    for (const r of newResults) {
-      if (!visited.has(r.idx) && r.score > THRESHOLD) {
-        visited.add(r.idx);
-        facts.push(qaData[r.idx].question);
-        trace.push({ hop, score: r.score, q: qaData[r.idx].question });
-        foundNew = true;
-        break;
-      }
-    }
-    if (!foundNew) break;
-  }
+        const useResourceStore = defineStore("resourceStore", {
+            state: () => ({
+                resourceDialog: false,
+                tab: null,
 
-  // Tool execution in Web Worker sandbox
-  const toolMatch = answer.match(/<tool>([\s\S]*?)<\/tool>/);
-  if (toolMatch) {
-    const toolResult = await runInSandbox(toolMatch[1].trim(), question);
-    if (toolResult && !toolResult.startsWith('Error:') && toolResult !== '(timeout)') {
-      answer = toolResult;
-    }
-  }
+                resourceList: [],
+                resourceTemplatesList: [],
 
-  return {
-    answer,
-    confidence: best.score,
-    hops: trace.length,
-    timeMs: Math.round(performance.now() - t0),
-    sources: results.map(r => ({ q: qaData[r.idx].question, score: r.score.toFixed(3) })),
-    trace,
-    facts,
-  };
-}
+                loadingTemplates: false,
+                loadingResources: false,
+            }),
+            actions: {
+                loadTemplates: function (resource_function) {
+                    this.loadingTemplates = true
+                    try {
+                        resource_function().then((result) => {
+                            console.log(result)
+                            this.resourceTemplatesList = result.resourceTemplates
+                            return
+                        })
+                    } catch (error) {
+                        console.error('Failed to load resource templates:', error);
+                    } finally {
+                        this.loadingTemplates = false;
+                    }
 
-// ── SELF-LEARNING ───────────────────────────────────────
+                },
+                loadResources: function (resource_function) {
+                    this.loadingResources = true
+                    try {
+                        resource_function().then((result) => {
+                            console.log(result)
+                            this.resourceList = result.resources
+                            return
+                        })
+                    } catch (error) {
+                        console.error('Failed to load resources:', error);
+                    } finally {
+                        this.loadingResources = false;
+                    }
 
-// PII/harm gate — reject content that should never be stored
-const REJECT_PATTERNS = [
-  /\b\d{3}[-.]?\d{2}[-.]?\d{4}\b/,          // SSN
-  /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Credit card
-  /\b(kill|murder|torture|bomb|weapon|exploit|hack)\b/i,
-];
+                },
+            },
+        });
 
-function passesGate(text) {
-  for (const pat of REJECT_PATTERNS) {
-    if (pat.test(text)) return false;
-  }
-  if (text.length < 20) return false;  // Too short to be useful
-  return true;
-}
+        const usePromptStore = defineStore("promptStore", {
+            state: () => ({
+                promptDialog: false,
+                promptSheet: false,
+                promptList: [],
+                promptSelect: {},
+                search: '',
+                loading: false,
+            }),
+            actions: {
+                loadPrompts: function () {
+                    this.loading = true
+                    try {
+                        this.fetchPrompts().then((prompts) => {
+                            console.log(prompts)
+                            this.promptList = prompts
+                            return
+                        })
+                    } catch (error) {
+                        console.error('Failed to load prompts:', error);
+                    } finally {
+                        this.loading = false;
+                    }
 
-// IndexedDB for persisting learned pairs
-let learnedDB = null;
-async function openLearnedDB() {
-  return new Promise((resolve) => {
-    const req = indexedDB.open('webmind_learned', 1);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains('pairs')) {
-        db.createObjectStore('pairs', { keyPath: 'id', autoIncrement: true });
-      }
-    };
-    req.onsuccess = (e) => { learnedDB = e.target.result; resolve(learnedDB); };
-    req.onerror = () => resolve(null);
-  });
-}
+                },
+                fetchPrompts: async function () {
+                    const mcpStore = useMcpStore();
+                    const mcpServers = mcpStore.getServers
+                    if (!mcpServers) {
+                        return []
+                    }
+                    const mcpKeys = Object.keys(mcpServers)
+                    const allPrompts = []
+                    for (const key of mcpKeys) {
+                        const obj = await mcpServers[key]?.prompts?.list();
+                        if (obj) {
+                            obj.prompts.forEach(prompt => allPrompts.push({ title: key, ...prompt }));
+                        }
+                    }
 
-async function learnPair(question, answer, source) {
-  // Gate: reject PII, harmful content, too-short
-  if (!passesGate(answer)) return false;
+                    return allPrompts;
+                },
+                select: function (prompt) {
+                    console.log(prompt.title, prompt.name, prompt.arguments)
+                    this.promptSelect = prompt
+                    this.promptSheet = true
+                    this.promptDialog = false
+                },
+                fetchSelect: async function () {
+                    const mcpStore = useMcpStore();
+                    const mcpServers = mcpStore.getServers
+                    const getFun = mcpServers[this.promptSelect.title]?.prompts?.get
+                    if (!getFun) {
+                        return []
+                    }
+                    const params = { name: this.promptSelect.name }
+                    if (this.promptSelect.arguments) {
+                        for (const argument of this.promptSelect.arguments) {
+                            if (argument.name) {
+                                if (!params['arguments']) {
+                                    params['arguments'] = {};
+                                }
+                                params['arguments'][argument.name] = argument.content
+                            }
+                        }
+                    }
 
-  // Deduplicate: check if we already have a close match
-  const qEmb = await encode(question);
-  const existing = search(qEmb, 1);
-  if (existing[0] && existing[0].score > 0.9) return false; // Already know this
+                    console.log(params)
+                    const prompts = await getFun(params)
 
-  // Store in live memory
-  const idx = qaData.length;
-  qaData.push({ question, answer });
-  // Expand embeddings array
-  const newEmbs = new Float32Array(qaEmbeddings.length + DIM);
-  newEmbs.set(qaEmbeddings);
-  newEmbs.set(qEmb, qaEmbeddings.length);
-  qaEmbeddings = newEmbs;
+                    const conversations = prompts.messages.map(item => {
+                        const content = mcpStore.convertItem(item.content)
+                        const conversation = {
+                            role: item.role,
+                            content: item.role == 'user' ? [content] : content.text
+                        }
+                        return conversation
+                    });
 
-  // Persist to IndexedDB
-  if (learnedDB) {
-    const tx = learnedDB.transaction('pairs', 'readwrite');
-    tx.objectStore('pairs').add({ question, answer, source, learnedAt: Date.now() });
-  }
+                    this.promptSheet = false
 
-  console.log(`[learn] Stored: "${question.substring(0, 50)}..." (source: ${source})`);
-  // Share with peer instances
-  shareKnowledge([{ question, answer, source }]);
-  return true;
-}
+                    return conversations
+                },
+            },
+        });
 
-async function loadLearnedPairs() {
-  if (!learnedDB) return;
-  return new Promise((resolve) => {
-    const tx = learnedDB.transaction('pairs', 'readonly');
-    const req = tx.objectStore('pairs').getAll();
-    req.onsuccess = async () => {
-      const pairs = req.result;
-      if (pairs.length === 0) { resolve(); return; }
-      console.log(`[learn] Loading ${pairs.length} previously learned pairs...`);
-      for (const p of pairs) {
-        qaData.push({ question: p.question, answer: p.answer });
-        const emb = await encode(p.question);
-        const newEmbs = new Float32Array(qaEmbeddings.length + DIM);
-        newEmbs.set(qaEmbeddings);
-        newEmbs.set(emb, qaEmbeddings.length);
-        qaEmbeddings = newEmbs;
-      }
-      console.log(`[learn] Loaded ${pairs.length} learned pairs. Total: ${qaData.length}`);
-      resolve();
-    };
-    req.onerror = () => resolve();
-  });
-}
 
-// Auto-learn: when confidence is low, try Wikipedia
-async function tryAutoLearn(question) {
-  // INVARIANT: no network in corporate mode
-  if (window._SAQT_NO_NETWORK || window._SAQT_NO_AUTOLEARN) return null;
 
-  // Extract the core topic
-  const topic = question.replace(/what is |who is |tell me about |explain /gi, '').trim();
-  if (topic.length < 3) return null;
+        const useSnackbarStore = defineStore("snackbarStore", {
+            state: () => ({
+                isShow: false,
+                message: "",
+                type: "",
+            }),
 
-  try {
-    const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(topic));
-    if (!r.ok) return null;
-    const d = await r.json();
-    if (!d.extract || d.extract.length < 30) return null;
+            actions: {
+                showMessage(message, type = "") {
+                    this.isShow = true;
+                    this.message = message;
+                    this.type = type;
+                },
 
-    // Gate the Wikipedia content
-    if (!passesGate(d.extract)) return null;
+                showErrorMessage(message) {
+                    this.showMessage(message, "error");
+                },
+                showSuccessMessage(message) {
+                    this.showMessage(message, "success");
+                },
+                showInfoMessage(message) {
+                    this.showMessage(message, "info");
+                },
+                showWarningMessage(message) {
+                    this.showMessage(message, "warning");
+                },
+                getIcon() {
+                    const icon = {
+                        info: "mdi-information",
+                        success: "mdi-check-circle",
+                        error: "mdi-alert-circle",
+                        warning: "mdi-alert",
+                    };
 
-    // Learn it
-    const learned = await learnPair(question, d.extract, 'wikipedia_auto');
-    if (learned) {
-      return d.extract;
-    }
-  } catch (e) {
-    // CORS or network error — that's fine, not all environments have internet
-  }
-  return null;
-}
+                    return icon[this.type];
+                },
+            },
+        });
 
-// ── KNOWLEDGE TRANSFER (instance-to-instance learning) ──
-
-// Layer 1: BroadcastChannel — same-origin tabs share instantly
-let knowledgeChannel = null;
-try {
-  knowledgeChannel = new BroadcastChannel('webmind_knowledge');
-  knowledgeChannel.onmessage = async (e) => {
-    const msg = e.data;
-    if (msg.type === 'share_pairs') {
-      let accepted = 0;
-      for (const p of msg.pairs) {
-        if (passesGate(p.answer)) {
-          const learned = await learnPair(p.question, p.answer, 'peer_' + (p.source || 'unknown'));
-          if (learned) accepted++;
-        }
-      }
-      if (accepted > 0) {
-        console.log(`[transfer] Received ${accepted} new pairs from peer tab`);
-        // Acknowledge
-        knowledgeChannel.postMessage({ type: 'ack', accepted, from: instanceId });
-      }
-    } else if (msg.type === 'request_knowledge') {
-      // Peer is asking for our learned pairs
-      if (learnedDB) {
-        const tx = learnedDB.transaction('pairs', 'readonly');
-        const req = tx.objectStore('pairs').getAll();
-        req.onsuccess = () => {
-          const pairs = req.result.map(p => ({ question: p.question, answer: p.answer, source: p.source }));
-          if (pairs.length > 0) {
-            knowledgeChannel.postMessage({ type: 'share_pairs', pairs, from: instanceId });
-          }
+        const TuuiImgDialog = {
+            template: '#tuui-img-dialog-template',
+            props: { src: { type: String, required: true } }
         };
-      }
-    }
-  };
-} catch (e) { /* BroadcastChannel not supported */ }
 
-const instanceId = Math.random().toString(36).substring(2, 8);
 
-// Share learned pairs with other instances
-function shareKnowledge(pairs) {
-  if (knowledgeChannel && pairs.length > 0) {
-    knowledgeChannel.postMessage({ type: 'share_pairs', pairs, from: instanceId });
-  }
-}
+        const TuuiChatCard = defineComponent({
+            template: '#tuui-chat-card-template',
+            props: {
+                index: { type: Number, required: true },
+                range: { type: Number, required: false, default: 1 },
+                messages: { type: Object, required: true },
+                showContent: { type: Boolean, default: false },
+                showDelete: { type: Boolean, default: true },
+                showReduce: { type: Boolean, default: true },
+                showModify: { type: Boolean, default: false },
+                showCopy: { type: Boolean, default: true },
+            },
+            setup(props) {
+                const showcontent = ref(false);
+                const showmodify = ref(false);
+                const snackbarStore = useSnackbarStore();
 
-// Request knowledge from peers on startup
-function requestPeerKnowledge() {
-  if (knowledgeChannel) {
-    knowledgeChannel.postMessage({ type: 'request_knowledge', from: instanceId });
-  }
-}
+                const copyToClipboard = async (msg) => {
+                    let textToCopy = '';
+                    try {
+                        if (typeof msg.content === 'string') {
+                            textToCopy = msg.content;
+                        } else if (Array.isArray(msg.content)) {
+                            for (const item of msg.content) {
+                                if (item.type === 'text' && typeof item.text === 'string') {
+                                    textToCopy = item.text;
+                                }
+                            }
+                        }
+                        await navigator.clipboard.writeText(textToCopy);
+                        snackbarStore.showSuccessMessage('$vuetify.dataIterator.snackbar.copied')
+                    } catch (err) {
+                        snackbarStore.showErrorMessage(err)
+                    }
+                };
 
-// Layer 2: Export/Import for manual transfer between devices
-window.exportKnowledge = async function() {
-  if (!learnedDB) { alert('No learned pairs to export'); return; }
-  const tx = learnedDB.transaction('pairs', 'readonly');
-  const req = tx.objectStore('pairs').getAll();
-  req.onsuccess = () => {
-    const data = JSON.stringify(req.result, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'webmind_learned_' + new Date().toISOString().split('T')[0] + '.json';
-    a.click();
-    console.log(`[transfer] Exported ${req.result.length} learned pairs`);
-  };
-};
+                return {
+                    copyToClipboard,
+                    showcontent,
+                    showmodify,
+                };
+            }
+        });
+        const TuuiChatBox = {
+            template: '#tuui-chat-box-template',
+            components: {
+                TuuiImgDialog,
+                TuuiChatCard,
+            },
+            props: {
+                messages: { type: Array, required: true },
+                size: { type: Number },
+                language: { type: String }
+            },
+            setup(props) {
+                const dialogs = reactive({});
+                const groupMessages = computed(() => {
+                    const groups = [];
+                    props.messages.forEach((message, index) => {
+                        if (message.role === 'user') {
+                            groups.push({
+                                index: index,
+                                group: 'user',
+                                message: message
+                            })
+                        } else if ((message.role === 'assistant') && (!message.tool_calls || message.tool_calls.length == 0)) {
+                            groups.push({
+                                index: index,
+                                group: 'assistant',
+                                message: message
+                            })
+                        } else {
+                            const lastGroup = groups.at(-1)
+                            if (lastGroup?.group == 'tool') {
+                                lastGroup.messages.push(message)
+                                dialogs[lastGroup.tab] = lastGroup.length
+                                lastGroup.length += 1
+                            } else {
+                                const id = message.tool_call_id || message.tool_calls[0]?.id
+                                groups.push({
+                                    index: index,
+                                    group: 'tool',
+                                    tab: id,
+                                    messages: [message],
+                                    length: 1
+                                })
+                                dialogs[id] = 0
+                            }
+                        }
+                    })
+                    return groups
+                });
 
-window.importKnowledge = function() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.json';
-  input.onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    const pairs = JSON.parse(text);
-    let accepted = 0;
-    for (const p of pairs) {
-      if (passesGate(p.answer)) {
-        const learned = await learnPair(p.question, p.answer, 'import_' + (p.source || 'file'));
-        if (learned) accepted++;
-      }
-    }
-    alert(`Imported ${accepted} new pairs (${pairs.length - accepted} filtered/duplicate)`);
-  };
-  input.click();
-};
-
-// GDPR right-to-erasure: delete all locally learned data
-window.deleteLearnedData = async function() {
-  if (!confirm('Delete all learned data stored in this browser? This cannot be undone.')) return;
-  // Clear IndexedDB
-  if (learnedDB) {
-    learnedDB.close();
-    learnedDB = null;
-  }
-  await new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase('webmind_learned');
-    req.onsuccess = resolve;
-    req.onerror = reject;
-  });
-  // Trim in-memory arrays back to base dataset size (reload to be safe)
-  alert('All learned data has been deleted. Reloading to reset in-memory state.');
-  location.reload();
-};
-
-// ── P2P KNOWLEDGE SYNC (WebRTC DHT) ─────────────────────
-
-// Lightweight DHT-style peer discovery + knowledge sync
-// Uses WebRTC data channels for direct instance-to-instance transfer
-// Coordinator (if available) handles signaling only
-
-class KnowledgeMesh {
-  constructor() {
-    this.peers = new Map();      // peerId → { dc, lastSync }
-    this.instanceId = instanceId;
-    this.coordinator = null;
-    this.onPairReceived = null;
-  }
-
-  // Connect to coordinator for signaling (optional — works without it too)
-  async connectCoordinator(url) {
-    try {
-      this.coordinator = new WebSocket(url);
-      this.coordinator.onmessage = (e) => this._handleSignal(JSON.parse(e.data));
-      this.coordinator.onopen = () => {
-        this.coordinator.send(JSON.stringify({
-          type: 'saqt_join', instanceId: this.instanceId,
-          pairCount: qaData.length
-        }));
-        console.log('[mesh] Connected to coordinator for signaling');
-      };
-      this.coordinator.onerror = () => { this.coordinator = null; };
-    } catch (e) { /* No coordinator — that's fine, use BroadcastChannel only */ }
-  }
-
-  // Initiate P2P connection to a peer
-  async connectPeer(remoteId) {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-
-    const dc = pc.createDataChannel('knowledge', { ordered: true });
-    dc.onopen = () => {
-      this.peers.set(remoteId, { dc, pc, lastSync: 0 });
-      console.log(`[mesh] P2P connected to ${remoteId}`);
-      this._requestSync(dc);
-    };
-    dc.onmessage = (e) => this._handlePeerMessage(remoteId, JSON.parse(e.data));
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate && this.coordinator) {
-        this.coordinator.send(JSON.stringify({
-          type: 'saqt_ice', to: remoteId, from: this.instanceId,
-          candidate: e.candidate
-        }));
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    if (this.coordinator) {
-      this.coordinator.send(JSON.stringify({
-        type: 'saqt_offer', to: remoteId, from: this.instanceId,
-        sdp: pc.localDescription
-      }));
-    }
-    return pc;
-  }
-
-  _handleSignal(msg) {
-    if (msg.type === 'saqt_peers') {
-      // Coordinator tells us about other instances
-      for (const peer of msg.peers) {
-        if (peer.id !== this.instanceId && !this.peers.has(peer.id)) {
-          this.connectPeer(peer.id);
-        }
-      }
-    }
-    // Handle SDP answer, ICE candidates, etc.
-  }
-
-  _requestSync(dc) {
-    dc.send(JSON.stringify({ type: 'sync_request', since: 0 }));
-  }
-
-  async _handlePeerMessage(peerId, msg) {
-    if (msg.type === 'sync_request') {
-      // Send our learned pairs
-      if (learnedDB) {
-        const tx = learnedDB.transaction('pairs', 'readonly');
-        const req = tx.objectStore('pairs').getAll();
-        req.onsuccess = () => {
-          const pairs = req.result
-            .filter(p => p.learnedAt > (msg.since || 0))
-            .map(p => ({ question: p.question, answer: p.answer, source: p.source }));
-          const peer = this.peers.get(peerId);
-          if (peer && peer.dc.readyState === 'open') {
-            peer.dc.send(JSON.stringify({ type: 'sync_pairs', pairs }));
-          }
+                return {
+                    dialogs,
+                    groupMessages
+                }
+            }
         };
-      }
-    } else if (msg.type === 'sync_pairs') {
-      let accepted = 0;
-      for (const p of msg.pairs) {
-        if (passesGate(p.answer)) {
-          const learned = await learnPair(p.question, p.answer, 'p2p_' + peerId);
-          if (learned) accepted++;
+
+        const app = createApp({
+            components: {
+                vuedraggable,
+                TuuiChatBox,
+                TuuiChatCard
+            },
+            setup() {
+
+                const snackbarStore = useSnackbarStore();
+                const mcpStore = useMcpStore();
+                const agentStore = useAgentStore();
+                const settingStore = useSettingStore();
+                const promptStore = usePromptStore();
+                const resourceStore = useResourceStore();
+
+                const { locale } = useI18n({ useScope: 'global' });
+
+                const useLanguageStore = defineStore("languageStore", {
+                    state: () => ({
+                        list: [{ title: 'English', value: 'en', name: 'united-states' },
+                        { title: 'Italiano', value: 'it', name: 'italy' },
+                        { title: '日本語', value: 'ja', name: 'japan' },
+                        { title: 'Svenska', value: 'sv', name: 'sweden' },
+                        { title: '简体中文', value: 'zhHans', name: 'china' }
+                        ]
+                    }),
+                    getters: {
+                        getLocale: () => {
+                            return locale.value
+                        },
+                    },
+                    actions: {
+                        change(lang) {
+                            locale.value = lang;
+                        },
+                        getIcon(name) {
+                            return `twemoji:flag-${name}`
+                        },
+                        getIcon2() {
+                            const value = this.getLocale
+                            const item = this.list.find(lang => lang.value === value);
+                            return `twemoji:flag-${item.name}`
+                        }
+                    },
+                });
+
+                const useMessageStore = defineStore("messageStore", {
+                    state: () => ({
+                        userMessage: "",
+                        conversation: [],
+                        images: [],
+                        base64: '',
+                        generating: false
+                    }),
+                    actions: {
+                        init() {
+                            if (this.conversation.length === 0) {
+                                snackbarStore.showWarningMessage('$vuetify.dataIterator.snackbar.addfail')
+                            } else {
+                                this.conversation = [];
+                                snackbarStore.showSuccessMessage('$vuetify.dataIterator.snackbar.addnew')
+                            }
+                        },
+                        stop() {
+                            this.generating = false;
+                            snackbarStore.showInfoMessage('$vuetify.dataIterator.snackbar.stopped')
+                        },
+                        clear() {
+                            this.userMessage = "";
+                            this.images = [];
+                        },
+                        handleKeydown(e) {
+                            if (e.key === "Enter" && e.shiftKey) {
+                                //  A new line by default
+                            } else if (e.key === "Enter") {
+                                // Only Enter is pressed, send message
+                                e.preventDefault();
+                                this.sendMessage();
+                            }
+                        },
+                        resendMessage() {
+                            // const conversation = this.conversation.reduce((newConversation, item) => {
+                            let index = this.conversation.length - 1;
+                            while (index >= 0 && this.conversation[index].role !== "user") {
+                                index--;
+                            }
+
+                            // when role == "user" is found，drop followings
+                            if (index >= 0) {
+                                this.conversation.splice(index + 1);;
+                                this.startInference();
+                            }
+                        },
+                        sendMessage() {
+                            if (this.userMessage) {
+                                // Add the message to the list
+
+                                const imageBase64 = this.base64;
+
+                                this.conversation.push({
+                                    content: imageBase64
+                                        ? [
+                                            { type: "image_url", image_url: { url: imageBase64 } },
+                                            { type: "text", text: this.userMessage }
+                                        ] : this.userMessage,
+                                    role: "user",
+                                });
+
+                                if (this.conversation.length == 1) {
+                                    historyStore.init(this.conversation)
+                                }
+
+                                this.startInference();
+                            }
+                        },
+                        applyPrompt: async function (fetchedPrompt) {
+                            const messages = await fetchedPrompt
+                            console.log(messages)
+                            this.conversation = messages
+
+                        },
+                        startInference: async function () {
+                            this.clear();
+                            await createCompletion(this.conversation);
+                            await this.postToolCall()
+                        },
+                        postToolCall: async function () {
+                            const last = this.conversation.at(-1)
+                            if (!last || !last.tool_calls) {
+                                return
+                            }
+                            if (last.tool_calls.length == 0) {
+                                delete last.tool_calls
+                                return
+                            }
+                            if (Object.keys(last.tool_calls[0]).length === 0) {
+                                delete last.tool_calls
+                                return
+                            } else {
+                                let tool_called = false
+                                console.log(last.tool_calls)
+
+                                const callNextTool = async (toolCalls, index) => {
+                                    if (index >= toolCalls.length) {
+                                        return;
+                                    }
+
+                                    const tool_call = toolCalls[index];
+
+                                    try {
+                                        const result = await mcpStore.callTool(
+                                            tool_call.function.name,
+                                            tool_call.function.arguments
+                                        );
+
+                                        console.log(result)
+
+                                        if (result.content) {
+                                            this.contentConvert(result.content, tool_call.id).forEach(item => {
+                                                this.conversation.push(item);
+                                            });
+                                            tool_called = true;
+                                        }
+
+                                        await callNextTool(toolCalls, index + 1);
+                                    } catch (error) {
+                                        const result = mcpStore.packReturn(`Error calling tool: ${error}`)
+                                        this.conversation.push({
+                                            role: "tool",
+                                            content: result.content,
+                                            tool_call_id: tool_call.id
+                                        });
+                                        tool_called = true;
+                                    }
+                                };
+
+                                await callNextTool(last.tool_calls, 0);
+
+                                if (tool_called) {
+                                    this.startInference()
+                                }
+                            }
+                        },
+                        contentConvert: function (content, toolCallId) {
+                            const msg = content.map(item => mcpStore.convertItem(item));
+                            console.log(msg)
+                            if (msg.find(item => item.type === 'image_url')) {
+                                return [{
+                                    role: "tool",
+                                    content: mcpStore.packReturn('Image provided in next user message').content,
+                                    tool_call_id: toolCallId
+                                }, {
+                                    role: "user",
+                                    content: msg,
+                                },
+                                ]
+                            } else {
+                                return [{
+                                    role: "tool",
+                                    content: msg.map(item => item.text).join('\n'), // If the LLM can support array in tool, use msg directly
+                                    tool_call_id: toolCallId
+                                }]
+                            }
+                        }
+                    }
+                });
+
+                const useHistoryStore = defineStore("historyStore", {
+                    state: () => ({
+                        conversation: [],
+                    }),
+                    persist: {
+                        enabled: true,
+                        strategies: [{ storage: localStorage }],
+                    },
+                    getters: {
+                        getDate: () => {
+                            const date = new Date().toLocaleString('zh', { timeZoneName: 'short', hour12: false })
+                            return date
+                        },
+
+                    },
+                    actions: {
+                        resetState() {
+                            this.$reset();
+                        },
+                        deleteById(index) {
+                            this.conversation.splice(index, 1);
+                        },
+                        init(conversation) {
+                            this.conversation.unshift({
+                                id: this.getDate,
+                                history: conversation
+                            });
+                        },
+                        replace(id) {
+                            this.deleteById(id)
+                            this.init(messageStore.conversation)
+                        },
+                        asyncReplace: async (id) => {
+                            await nextTick();
+                            historyStore.replace(id)
+                        },
+                        select(id) {
+                            settingStore.configHistory = false
+                            messageStore.conversation = this.conversation[id].history
+                            this.asyncReplace(id)
+                        },
+                        getColor(id) {
+                            const targetElement = this.conversation[id]?.history.find(element => element.role === "assistant");
+                            if (targetElement) {
+                                return "primary"
+                            } else {
+                                return "grey"
+                            }
+
+                        },
+                        downloadById(id) {
+                            const name = this.conversation[id].id.replace(/[/: ]/g, '-');
+                            this.download(this.conversation[id].history, `history-${name}.json`);
+                        },
+                        downloadHistory() {
+                            this.download(this.conversation, 'history.json')
+                        },
+                        download(json, filename) {
+                            const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = filename;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                        }
+                    }
+                });
+
+
+                const useDefaultChoiceStore = defineStore("defaultChoiceStore", {
+                    state: () => ({
+                        url: [
+                            "https://api.openai.com",
+                            "http://127.0.0.1",
+                            "https://api.deepinfra.com",
+                            "https://api.deepseek.com",
+                            "https://api.aiql.com"],
+                        path: [
+                            "/chat/completions",
+                            "/v1/chat/completions",
+                            "/v1/openai/chat/completions",
+                            "/openai/v1/chat/completions"],
+                        model: [
+                            "Qwen/Qwen3-32B",
+                            "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+                            "openai/gpt-oss-120b"
+                        ],
+                        authPrefix: ["Bearer", "Base", "Token"],
+                        max_tokens_type: ["max_tokens", "max_completion_tokens", "max_new_tokens"],
+                        reasoning_efforts: ['false', 'none', 'low', 'medium', 'high']
+                    }),
+                    persist: {
+                        enabled: true,
+                        strategies: [{ storage: localStorage }],
+                        // paths: ["apiKey"] 
+                    },
+                    actions: {
+                        resetState() {
+                            this.$reset();
+                        },
+                        updateStoreFromJSON(json) {
+                            this.$reset();
+                            this.$state = json;
+                        }
+                    },
+                });
+
+
+                const useChatbotStore = defineStore("chatbotStore", {
+                    state: () => ({
+                        apiKey: "",
+                        url: "https://chat.webmind.sh",
+                        path: "/v1/chat/completions",
+                        model: "webmind-305k",
+                        authPrefix: "Bearer",
+                        contentType: "application/json",
+                        max_tokens_type: "max_tokens",
+                        max_tokens_value: "",
+                        temperature: "",
+                        top_p: "",
+                        method: "POST",
+                        stream: true,
+                        thinking: true,
+                        reasoning_effort: null,
+                        mcp: false
+                    }),
+
+                    persist: {
+                        enabled: true,
+                        strategies: [{ storage: localStorage }],
+                        // paths: ["apiKey"] 
+                    },
+
+                    actions: {
+                        resetState() {
+                            this.$reset();
+                            defaultChoiceStore.resetState()
+                        },
+                        updateStoreFromJSON(json) {
+                            this.$reset();
+                            this.$state = json;
+                        }
+                    },
+
+                });
+
+                const chatbotStore = useChatbotStore();
+                const messageStore = useMessageStore();
+                const historyStore = useHistoryStore();
+                const defaultChoiceStore = useDefaultChoiceStore();
+                const languageStore = useLanguageStore();
+
+                const createCompletion = async (rawconversation) => {
+                    const conversation = rawconversation.reduce((newConversation, item) => {
+                        if (item.role === "assistant") {
+                            const { reasoning_content, ...rest } = item;
+                            newConversation.push(rest);
+                        }
+                        // (item.role === "user" && item.content[0].type === "image_url") {
+                        //     // Image is too large, only latest query could be kept
+                        //     newConversation = [item];
+                        // }
+                        else {
+                            newConversation.push(item);
+                        }
+                        return newConversation;
+                    }, []);
+                    // const conversation = rawconversation
+                    try {
+                        messageStore.generating = true
+                        // Create a completion (axios is not used here because it does not support streaming)
+                        const headers = {
+                            "Content-Type": chatbotStore.contentType,
+                        };
+
+                        if (chatbotStore.apiKey) headers.Authorization = `${chatbotStore.authPrefix} ${chatbotStore.apiKey}`
+
+                        const body = {
+                            messages: agentStore.promptMessage(conversation),
+                            model: chatbotStore.model,
+                            stream: chatbotStore.stream,
+                        }
+
+                        if (chatbotStore.max_tokens_value) {
+                            body[chatbotStore.max_tokens_type] = parseInt(chatbotStore.max_tokens_value)
+                        }
+
+                        if (typeof chatbotStore.reasoning_effort === 'string') {
+                            if (chatbotStore.reasoning_effort === 'false') {
+                                // For Python API backends such as extra_body.chat_template_kwargs
+                                body['chat_template_kwargs'] = { enable_thinking: false }
+                            } else {
+                                // For OpenAI OpenAPI backends such as ChatGPT or DeepInfra
+                                body['reasoning_effort'] = chatbotStore.reasoning_effort
+                            }
+                        }
+
+                        if (chatbotStore.temperature) {
+                            body["temperature"] = parseFloat(chatbotStore.temperature)
+                        }
+
+                        if (chatbotStore.top_p) {
+                            body["top_p"] = parseFloat(chatbotStore.top_p)
+                        }
+
+                        if (chatbotStore.mcp) {
+                            body["tools"] = await mcpStore.listTools()
+                        }
+
+                        const request = {
+                            headers: headers,
+                            method: chatbotStore.method,
+                            body: JSON.stringify(body),
+                        };
+
+                        const completion = await fetch(
+                            chatbotStore.url + (chatbotStore.path ? chatbotStore.path : ''),
+                            request
+                        );
+
+                        console.log(completion)
+
+                        // Handle errors
+                        if (!completion.ok) {
+                            const errorData = await completion.json();
+                            console.log(errorData.error?.message);
+                            if (errorData.error?.message)
+                                snackbarStore.showErrorMessage(`${completion.status}: ${errorData.error.message}`);
+                            else if (errorData.detail[0]?.msg)
+                                snackbarStore.showErrorMessage(`${completion.status}${(" - " + errorData.detail[0]?.loc + ":") || ":"} ${errorData.detail[0]?.msg}`);
+                            else
+                                snackbarStore.showErrorMessage(`${completion.status}: ${completion.statusText}`);
+                            return;
+                        }
+
+                        // Create a reader
+                        const reader = completion.body?.getReader();
+                        if (!reader) {
+                            snackbarStore.showErrorMessage('$vuetify.dataIterator.snackbar.parseStreamFail');
+                        }
+
+                        // Add the bot message
+                        messageStore.conversation.push({
+                            content: "",
+                            reasoning_content: "",
+                            tool_calls: [],
+                            role: "assistant",
+                        });
+
+                        let buffer = ''
+
+                        // Read the stream
+                        await read(reader, messageStore.conversation.at(-1), buffer, chatbotStore.stream);
+                    } catch (error) {
+                        snackbarStore.showErrorMessage(error.message);
+                    } finally {
+                        messageStore.generating = false
+                    }
+                };
+
+                const read = async (
+                    reader,
+                    target,
+                    buffer,
+                    stream
+                ) => {
+                    // TextDecoder is a built-in object that allows you to convert a stream of bytes into a string
+                    const decoder = new TextDecoder();
+                    // Destructure the value returned by reader.read()
+                    const { done, value } = await reader.read();
+
+                    // If the stream is done reading, release the lock on the reader
+                    if (done || !messageStore.generating) {
+                        messageStore.generating = false;
+                        return reader.releaseLock();
+                    }
+                    // Convert the stream of bytes into a string
+                    const chunks = decoder.decode(value);
+
+                    if (stream) {
+                        // Split stream
+                        let parts = chunks.split('\n')
+
+                        if (parts.length === 1) {
+                            buffer += parts[0]
+                            return read(reader, target, buffer, stream);
+                        }
+
+                        if (buffer.length > 0) {
+                            parts[0] = buffer + parts[0];
+                            buffer = ''
+                        }
+
+                        const last = parts[parts.length - 1];
+                        if (last && last.length > 0) {
+                            buffer = parts.pop();
+                        }
+
+                        parts
+                            .map((line) => line.trim())
+                            .filter((line) => line.length > 0)
+                            .forEach((line) => {
+                                const pos = line.indexOf(':');
+                                const name = line.substring(0, pos);
+                                if (name !== 'data') {
+                                    return
+                                }
+                                const content = line.substring(pos + 1).trim()
+                                if (content.length === 0) {
+                                    return
+                                } else if (content === "[DONE]") {
+                                    return
+                                }
+                                parseJson(content, target)
+                            })
+
+                    } else {
+                        parseJson(chunks, target)
+                    }
+
+                    // Repeat the process
+                    return read(reader, target, buffer, stream);
+                };
+
+                const parseJson = (content, target) => {
+                    try {
+                        const parsed = JSON.parse(content)
+                        // const choice = 
+                        parseChoices(parsed, target)
+                        // parseChoice(choice, target)
+                    } catch (e) {
+                        console.log(e, content)
+                        parseChoice(content, target)
+                    }
+                };
+
+                const parseChoices = (parsed, target) => {
+                    if ('choices' in parsed) {
+                        return parsed.choices.map((choice) => {
+                            const content = choice.delta || choice.message
+                            return parseChoice(content, target)
+                        })
+                    } else if ('response' in parsed) {
+                        return parseChoice(parsed.response, target)
+                    } else {
+                        return parseChoice(parsed, target)
+                    }
+                };
+
+                const parseChoice = (choice, target) => {
+                    if (choice) {
+                        if (target.role == 'assistant') {
+                            if (typeof choice === 'string') {
+                                target.content += choice;
+                            } else {
+                                if (typeof choice.content === 'string') {
+                                    target.content += choice.content;
+                                }
+                                if (typeof choice.reasoning_content === 'string') {
+                                    target.reasoning_content += choice.reasoning_content;
+                                }
+                            }
+                            parseTool(choice.tool_calls, target)
+                        }
+                    }
+                };
+
+                const parseTool = (tools, target) => {
+                    if (tools) {
+                        tools.map((tool) => {
+                            const lastTool = target.tool_calls.at(-1)
+                            if (lastTool && (!tool.id || lastTool.id == tool.id)) {
+                                const source = tool.function
+                                for (const key in source) {
+                                    // Determine if source[key] is null, skip if it is null
+                                    if (source[key] === null) {
+                                        continue;
+                                    }
+                                    if (lastTool.function[key]) {
+                                        lastTool.function[key] += source[key];
+                                    } else {
+                                        lastTool.function[key] = source[key];
+                                    }
+                                }
+
+                            } else {
+                                target.tool_calls.push(tool)
+                            }
+                        })
+                    }
+                };
+
+                watch(computed(() => messageStore.conversation.at(-1)?.content),
+                    (newValue, oldValue) => {
+                        if (newValue !== oldValue) {
+                            asyncScrollToBottom();
+                        }
+                    }, { deep: true });
+
+                watch(computed(() => messageStore.images),
+                    (newValue, oldValue) => {
+                        if (newValue.length === 0) {
+                            messageStore.base64 = '';
+                        } else {
+                            const file = messageStore.images; // Assuming you're working with a single image
+                            const reader = new FileReader();
+                            const MAX_WIDTH = 2048;
+                            const MAX_HEIGHT = 2048; // adjust these values as needed
+
+                            reader.onload = (e) => {
+                                const img = new Image();
+                                img.onload = () => {
+                                    let width = img.width;
+                                    let height = img.height;
+                                    let quality = 0.8;
+
+                                    // Check if the image exceeds the maximum dimensions
+                                    if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+                                        // Calculate the scaling factor
+                                        const scaleFactor = Math.min(MAX_WIDTH / width, MAX_HEIGHT / height);
+
+                                        // Resize the image
+                                        width *= scaleFactor;
+                                        height *= scaleFactor;
+                                        quality *= scaleFactor;
+
+                                    }
+
+                                    const canvas = document.createElement('canvas');
+                                    const ctx = canvas.getContext('2d');
+
+                                    // Set canvas dimensions to match the resized image
+                                    canvas.width = width;
+                                    canvas.height = height;
+
+                                    // Draw the image on the canvas
+                                    ctx.drawImage(img, 0, 0, width, height);
+
+                                    // Convert the canvas to a PNG data URL
+                                    const pngDataUrl = canvas.toDataURL('image/jpeg', quality);
+
+                                    // Store the PNG data URL in messageStore.base64
+                                    messageStore.base64 = pngDataUrl;
+                                };
+                                img.src = e.target.result;
+                            };
+                            reader.readAsDataURL(file);
+                        }
+                    }, { deep: true });
+
+                const asyncScrollToBottom = async () => {
+                    // await nextTick();
+                    requestAnimationFrame(() => {
+                        scrollToBottom(document.querySelector(".chat-bot"));
+                    });
+                }
+
+                const scrollToBottom = (
+                    element,
+                    options = { behavior: "auto" }
+                ) => {
+                    window.scrollTo({
+                        ...options,
+                        top: element?.scrollHeight
+                    });
+                };
+
+                const initLottie = () => {
+                    lottie.loadAnimation({
+                        container: document.getElementById('lottie'), // the dom element that will contain the animation
+                        renderer: 'svg',
+                        loop: true,
+                        autoplay: true,
+                        path: 'https://gcore.jsdelivr.net/gh/AI-QL/chat-ui/lottie.json' // the path to the animation json
+                    });
+                };
+
+                onMounted(async () => {
+                    initLottie();
+                    agentStore.initAgent();
+                    resizeAvatar()
+                    window.onresize = () => resizeAvatar()
+                    resizeInputBox()
+                });
+
+                const resizeInputBox = () => {
+                    const inputBox = document.querySelector(".input-box");
+                    const handleResize = (entries) => {
+                        for (const entry of entries) {
+                            if (entry.target === inputBox) {
+                                const chatElement = document.querySelector(".chat-bot");
+                                if (chatElement) {
+                                    chatElement.style.marginBottom = `${Math.max(entry.contentRect.height, 122)}px`
+                                }
+                            }
+                        }
+                    };
+                    const resizeObserver = new ResizeObserver(handleResize);
+                    if (inputBox) {
+                        resizeObserver.observe(inputBox);
+                    }
+                };
+
+                const resizeAvatar = () => {
+                    // console.log(window.innerWidth)
+                    if (window.innerWidth <= 1279) {
+                        settingStore.avatarSize = 26
+                    } else {
+                        settingStore.avatarSize = 36
+                    }
+                };
+
+                const configFile = ref(null)
+
+                watch(configFile, (newValue, oldValue) => {
+                    if (newValue) {
+
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            try {
+                                const json = JSON.parse(event.target.result)
+                                chatbotStore.updateStoreFromJSON(json.chatbotStore)
+                                defaultChoiceStore.updateStoreFromJSON(json.defaultChoiceStore)
+                            } catch {
+                                snackbarStore.showErrorMessage('$vuetify.dataIterator.snackbar.parseConfigFail')
+                            }
+
+                        };
+                        reader.readAsText(newValue);
+                    }
+                });
+
+                watch(computed(() => agentStore.card?.refFile),
+                    (newValue, oldValue) => {
+                        const reader = new FileReader();
+                        if (agentStore.card?.refFile === null) {
+                            agentStore.card.refText = ""
+                            return
+                        }
+                        if (newValue?.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+                            reader.onload = (event) => {
+                                mammoth.extractRawText({ arrayBuffer: event.target.result })
+                                    .then(function (result) {
+                                        var text = result.value; // The raw text
+                                        agentStore.card.refText = text
+                                        // var messages = result.messages; // The warning
+                                    })
+                                    .catch(function (error) {
+                                        console.error(error);
+                                    });
+                            };
+                            reader.readAsArrayBuffer(newValue);
+                        } else if (newValue?.name?.length > 0) {
+                            reader.onload = (event) => {
+                                agentStore.card.refText = event.target.result
+                            };
+                            reader.readAsText(newValue);
+                        }
+
+                    }, { deep: true });
+
+                document.fonts.ready.then(() => {
+                    settingStore.fontStatus = true
+                });
+
+                const resetALL = () => {
+                    historyStore.resetState()
+                    chatbotStore.resetState()
+                    defaultChoiceStore.resetState()
+                };
+
+                return {
+                    configFile,
+
+                    settingStore,
+                    promptStore,
+                    resourceStore,
+                    agentStore,
+                    snackbarStore,
+                    mcpStore,
+
+                    messageStore,
+                    defaultChoiceStore,
+                    chatbotStore,
+                    historyStore,
+
+                    languageStore,
+
+                    resetALL,
+
+                };
+            }
+
+        })
+
+        const messages = {
+            en: {
+                $vuetify: {
+                    ...en,
+                    dataIterator: {
+                        title: 'AI Query Layout',
+                        q: { title: 'Query History' },
+                        p: {
+                            title: 'Prompts Template',
+                            sheet: 'Prompts Sheet',
+                            inuse: 'In Use',
+                            standby: 'Standby'
+                        },
+                        l: { title: 'Language' },
+                        a: { title: 'Agent' },
+                        r: { title: 'Resources' },
+                        g: {
+                            new: 'New Conversation',
+                            reg: 'Regeneration'
+                        },
+                        i: {
+                            title: 'Interface Configuration',
+                            apikey: 'API Key',
+                            reasoning: 'Reasoning Effort',
+                            endpoint: 'Endpoint',
+                            url: 'URL',
+                            path: 'Path',
+                            model: 'Model',
+                            advanced: 'Advanced',
+                            method: 'HTTP Method',
+                            stream: 'Stream',
+                            mcp: 'MCP',
+                            maxTokensPrefix: 'Max Tokens Prefix',
+                            temperature: 'Temperature',
+                            topP: 'Top P',
+                            contentType: 'Content Type',
+                            authPrefix: 'Auth Prefix',
+                            configFile: 'Config File'
+                        },
+                        snackbar: {
+                            addnew: 'Added new session.',
+                            addfail: 'Already in a fresh session.',
+                            stopped: 'Generating stopped.',
+                            parseStreamFail: 'Cannot read the stream.',
+                            parseConfigFail: 'Cannot parse the config file.',
+                            copied: 'Copied to clipboard.'
+                        }
+                    },
+                },
+            },
+            it: {
+                $vuetify: {
+                    ...it,
+                    dataIterator: {
+                        title: 'Layout della Query AI',
+                        q: { title: 'Cronologia delle Query' },
+                        l: { title: 'Lingua' },
+                        r: { title: 'Risorse' },
+                        i: {
+                            title: 'Configurazione dell\'interfaccia',
+                            apikey: 'Chiave API',
+                            endpoint: 'Endpoint',
+                            url: 'URL',
+                            path: 'Path',
+                            model: 'Modello',
+                            advanced: 'Configurazione Avanzata',
+                            method: 'HTTP Metodo',
+                            stream: 'Stream',
+                            maxTokensPrefix: 'Max Tokens Prefix',
+                            temperature: 'Temperature',
+                            topP: 'Top P',
+                            contentType: 'Tipo di Contenuto',
+                            authPrefix: 'Auth Prefix',
+                            configFile: 'File di Configurazione'
+                        },
+                        snackbar: {
+                            addnew: 'Aggiunta nuova sessione.',
+                            addfail: 'Già in una nuova sessione.',
+                            stopped: 'Generazione interrotta.',
+                            parseStreamFail: 'Impossibile leggere il flusso.',
+                            parseConfigFail: 'Impossibile analizzare il file di configurazione.',
+                            copied: 'Copiato negli appunti.'
+                        }
+                    },
+                },
+            },
+            ja: {
+                $vuetify: {
+                    ...ja,
+                    dataIterator: {
+                        title: 'AI お問い合わせ',
+                        q: { title: '歴史' },
+                        l: { title: '言語設定' },
+                        r: { title: '資源' },
+                        i: {
+                            title: 'インターフェイス構成',
+                            apikey: 'API キー',
+                            endpoint: '端点',
+                            contentType: 'コンテンツタイプ',
+                            authPrefix: 'リクエストヘッダー',
+                            configFile: 'プロファイル'
+                        },
+                        snackbar: {
+                            addnew: '新しいセッションが追加されました',
+                            addfail: 'すでに最新のセッションに参加しています',
+                            stopped: 'ビルドを停止します',
+                            parseStreamFail: 'データフローを解決できませんでした',
+                            parseConfigFail: '設定ファイルを解決できません',
+                            copied: 'クリップボードにコピーされました'
+                        }
+                    },
+                },
+            },
+            sv: {
+                $vuetify: {
+                    ...sv,
+                    dataIterator: {
+                        title: 'Layout för AI-frågor',
+                        q: { title: 'Frågehistorik' },
+                        l: { title: 'Språkinställning' },
+                        r: { title: 'Resurser' },
+                        i: {
+                            title: 'Konfiguration av gränssnitt',
+                            apikey: 'API Nyckel',
+                            endpoint: 'Slutpunkt',
+                            url: 'URL',
+                            path: 'Sökväg',
+                            model: 'Modell',
+                            stream: 'Strömma',
+                            configFile: 'Konfigurationsfil'
+                        },
+                        snackbar: {
+                            addnew: 'En ny session har lagts till.',
+                            addfail: 'Redan i en ny session.',
+                            stopped: 'Genereringen har stoppats.',
+                            parseStreamFail: 'Det går inte att läsa strömmen.',
+                            parseConfigFail: 'Det går inte att parsa konfigurationsfilen.',
+                            copied: 'Kopierad till urklipp.'
+                        }
+                    },
+                },
+            },
+            zhHans: {
+                $vuetify: {
+                    ...zhHans,
+                    dataIterator: {
+                        title: 'AI 问询界面',
+                        q: { title: '历史记录' },
+                        l: { title: '语言设置' },
+                        p: {
+                            title: 'MCP提示词模板',
+                            sheet: 'MCP提示词表单'
+                        },
+                        a: { title: '智能体' },
+                        r: { title: '资源' },
+                        g: {
+                            new: '新对话',
+                            reg: '重新生成'
+                        },
+                        i: {
+                            title: '接口配置',
+                            apikey: 'API 密钥',
+                            endpoint: '端口',
+                            reasoning: '推理负荷',
+                            url: '网址',
+                            path: '路径',
+                            model: '模型',
+                            advanced: '高级配置',
+                            method: 'HTTP 请求方法',
+                            stream: '流式输出',
+                            maxTokensPrefix: '最大令牌数前缀',
+                            temperature: '温度（随机性）',
+                            topP: '核采样（候选词范围）',
+                            contentType: '媒体类型',
+                            authPrefix: '鉴权请求头',
+                            configFile: '配置文件'
+                        },
+                        snackbar: {
+                            addnew: '已添加新会话',
+                            addfail: '已处于最新会话',
+                            stopped: '停止生成',
+                            parseStreamFail: '无法解析数据流',
+                            parseConfigFail: '无法解析配置文件',
+                            copied: '已复制到剪切板'
+                        }
+                    },
+                },
+            },
         }
-      }
-      console.log(`[mesh] Synced ${accepted} pairs from peer ${peerId}`);
-    }
-  }
 
-  getStatus() {
-    return {
-      instanceId: this.instanceId,
-      peers: this.peers.size,
-      coordinatorConnected: this.coordinator?.readyState === 1,
-    };
-  }
-}
+        const i18n = createI18n({
+            legacy: false, // Vuetify does not support the legacy mode of vue-i18n
+            locale: 'en',
+            fallbackLocale: 'en',
+            messages,
+        })
 
-const mesh = new KnowledgeMesh();
+        const vuetify = createVuetify({
+            locale: {
+                adapter: { i18n, useI18n },
+            },
+        })
+        const pinia = createPinia()
 
-// Try connecting to coordinator if available (non-blocking)
-const coordUrl = window.SAQT_COORDINATOR_URL;
-if (coordUrl) {
-  mesh.connectCoordinator(coordUrl);
-}
+        pinia.use(piniaPersist.default)
 
-// ── UI ───────────────────────────────────────────────────
+        app.use(i18n)
+        app.use(vuetify)
+        app.use(pinia)
+        app.use(MdEditorV3.MdPreview)
 
-const chat = document.getElementById('chat');
-const input = document.getElementById('input');
+        app.mount('#app')
 
-input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
-
-function addMessage(role, content, meta) {
-  const w = chat.querySelector('.welcome');
-  if (w) w.remove();
-  const div = document.createElement('div');
-  div.className = `message ${role}`;
-  const bubble = document.createElement('div');
-  bubble.className = 'message-bubble';
-  bubble.innerHTML = content;
-  div.appendChild(bubble);
-  if (meta) {
-    const m = document.createElement('div');
-    m.className = 'message-meta';
-    m.textContent = meta;
-    div.appendChild(m);
-  }
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-  return bubble;
-}
-
-window.ask = async function() {
-  const q = input.value.trim();
-  if (!q || !ready) return;
-  addMessage('user', escapeHtml(q));
-  input.value = '';
-
-  const loading = addMessage('bot', '<span style="color:var(--text2)">Thinking...</span>');
-
-  // Pass last Q&A as context for follow-up disambiguation
-  const lastExchange = history.length > 0 ? history[history.length - 1] : null;
-  const recentCtx = lastExchange ? `${lastExchange.q} ${lastExchange.a.substring(0, 150)}` : '';
-
-  try {
-    const result = await query(q, recentCtx);
-
-    let html = `<div style="line-height:1.7;">${renderMarkdown(result.answer)}</div>`;
-
-    // Thinking trace (collapsible)
-    html += `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:11px;color:var(--text2);">Thinking (${result.hops} hops, ${result.timeMs}ms, confidence: ${result.confidence.toFixed(2)})</summary>`;
-    html += `<div style="font-size:11px;padding:6px;background:#f5f5f5;border-radius:6px;margin-top:4px;">`;
-    if (result.trace) {
-      for (const t of result.trace) {
-        html += `Hop ${t.hop}: score=${t.score.toFixed(3)} "${escapeHtml(t.q.substring(0,60))}"<br>`;
-      }
-    }
-    if (result.sources) {
-      html += `<br>Top matches:<br>`;
-      for (const s of result.sources) {
-        html += `&bull; ${escapeHtml(s.q.substring(0,60))} (${s.score})<br>`;
-      }
-    }
-    html += `</div></details>`;
-
-    // Feedback buttons (self-learning from user)
-    const feedbackId = Date.now();
-    html += `<div style="margin-top:6px;display:flex;gap:8px;">`;
-    html += `<button onclick="feedback(${feedbackId},'good',this)" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:white;cursor:pointer;">Good</button>`;
-    html += `<button onclick="feedback(${feedbackId},'bad',this)" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:white;cursor:pointer;">Bad</button>`;
-    html += `</div>`;
-
-    loading.innerHTML = html;
-    // Store for feedback reference
-    loading.dataset.question = q;
-    loading.dataset.answer = result.answer;
-    history.push({ q, a: result.answer });
-    // Auto-title session from first question
-    if (history.length === 1) {
-      document.getElementById('session-title').textContent = q.substring(0, 40);
-    }
-    saveSession();
-  } catch (e) {
-    loading.innerHTML = `<span style="color:red;">Error: ${escapeHtml(e.message)}</span>`;
-  }
-};
-
-// Feedback handler — boost/penalize via attention weights (stored in IndexedDB)
-window.feedback = async function(id, type, btn) {
-  btn.textContent = type === 'good' ? 'Noted!' : 'Will improve';
-  btn.disabled = true;
-  btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-
-  // If bad answer, try to auto-learn the correct one
-  if (type === 'bad') {
-    const bubble = btn.closest('.message-bubble');
-    if (bubble && bubble.dataset.question) {
-      const learned = await tryAutoLearn(bubble.dataset.question);
-      if (learned) {
-        console.log(`[feedback] Auto-learned better answer for: ${bubble.dataset.question}`);
-      }
-    }
-  }
-};
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/`/g, '&#96;');
-}
-
-// Markdown renderer — loaded from CDN (marked.js)
-let markedLoaded = false;
-async function loadMarked() {
-  if (markedLoaded) return;
-  try {
-    const { marked } = await import('https://cdn.jsdelivr.net/npm/marked@15/+esm');
-    window._marked = marked;
-    marked.setOptions({ breaks: true, gfm: true });
-    markedLoaded = true;
-  } catch (e) {
-    console.log('[md] marked.js failed to load, using plain text');
-  }
-}
-
-function renderMarkdown(text) {
-  const mdEnabled = localStorage.getItem('webmind_markdown') !== '0';
-  if (mdEnabled && window._marked) {
-    try { return window._marked.parse(text); } catch (e) {}
-  }
-  return escapeHtml(text).replace(/\n/g, '<br>');
-}
-
-// ── Boot ─────────────────────────────────────────────────
-
-async function boot() {
-  // Kill switch — corporates can set window.SAQT_KILL = true to disable
-  if (window.SAQT_KILL) {
-    setStatus('Disabled by administrator', '', 0);
-    return;
-  }
-
-  // Domain allowlist — corporates can restrict which domains run this
-  // Set window.SAQT_ALLOWED_DOMAINS = ['example.com', 'internal.corp']
-  if (window.SAQT_ALLOWED_DOMAINS) {
-    const host = location.hostname;
-    const allowed = window.SAQT_ALLOWED_DOMAINS.some(d =>
-      host === d || host.endsWith('.' + d));
-    if (!allowed) {
-      setStatus('Not authorized on this domain', `Allowed: ${window.SAQT_ALLOWED_DOMAINS.join(', ')}`, 0);
-      return;
-    }
-  }
-
-  // Corporate mode: if on a corporate domain, disable ALL network activity
-  // This is an invariant — no browsing, no auto-learn, no P2P, no external fetches
-  const isCorpDomain = window.SAQT_CORPORATE_MODE ||
-    (window.SAQT_ALLOWED_DOMAINS && window.SAQT_ALLOWED_DOMAINS.length > 0);
-  if (isCorpDomain) {
-    window._SAQT_NO_NETWORK = true;
-    console.log('[security] Corporate mode — all network activity disabled');
-  }
-
-  try {
-    await loadMarked();
-    await loadEncoder();
-    await loadData();
-    await openLearnedDB();
-    await loadLearnedPairs();
-    requestPeerKnowledge(); // Ask other tabs for their knowledge
-    setTimeout(() => {
-      document.getElementById('loading').classList.add('hidden');
-      document.getElementById('app').classList.add('visible');
-      document.getElementById('stats').textContent = `${qaData.length.toLocaleString()} pairs`;
-      ready = true;
-      input.focus();
-      currentSessionId = 'sess_' + Date.now();
-      renderSessionList();
-      runSelfCheck();
-    }, 500);
-  } catch (e) {
-    setStatus('Error loading', e.message, 0);
-    console.error(e);
-  }
-}
-
-// ── SELF CHECK ──────────────────────────────────────────
-
-async function runSelfCheck() {
-  // Model status
-  document.getElementById('sb-model').textContent = encoder ? 'Model: ready' : 'Model: failed';
-  document.getElementById('sb-model').style.color = encoder ? 'var(--primary)' : '#c62828';
-
-  // Knowledge base
-  const kbCount = qaData.length;
-  document.getElementById('sb-kb').textContent = `KB: ${kbCount.toLocaleString()} pairs`;
-  document.getElementById('sb-kb').style.color = kbCount > 1000 ? 'var(--primary)' : '#ff9800';
-
-  // Internet connectivity
-  try {
-    const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/Main_Page', { method: 'HEAD' });
-    if (r.ok) {
-      document.getElementById('sb-net').textContent = 'Net: online';
-      document.getElementById('sb-net').style.color = 'var(--primary)';
-    } else {
-      throw new Error();
-    }
-  } catch {
-    document.getElementById('sb-net').textContent = 'Net: offline';
-    document.getElementById('sb-net').style.color = '#ff9800';
-  }
-
-  // Learned pairs count
-  if (learnedDB) {
-    try {
-      const tx = learnedDB.transaction('pairs', 'readonly');
-      const req = tx.objectStore('pairs').count();
-      req.onsuccess = () => {
-        document.getElementById('sb-learned').textContent = `Learned: ${req.result}`;
-        if (req.result > 0) document.getElementById('sb-learned').style.color = 'var(--primary)';
-      };
-    } catch {}
-  }
-
-  // Peers
-  const peerCount = mesh ? mesh.peers.size : 0;
-  document.getElementById('sb-peers').textContent = `Peers: ${peerCount}`;
-  if (peerCount > 0) document.getElementById('sb-peers').style.color = 'var(--primary)';
-
-  // Re-check every 60s
-  setTimeout(runSelfCheck, 60000);
-}
-
-// Settings toggles — save to localStorage, reload where needed
-window.toggleCPU = function(checked) {
-  localStorage.setItem('webmind_cpu', checked ? '1' : '0');
-  location.reload();
-};
-window.toggleAutoLearn = function(checked) {
-  localStorage.setItem('webmind_autolearn', checked ? '1' : '0');
-  window._SAQT_NO_AUTOLEARN = !checked;
-};
-window.toggleMarkdown = function(checked) {
-  localStorage.setItem('webmind_markdown', checked ? '1' : '0');
-};
-
-// Initialize settings checkboxes from localStorage
-function initSettings() {
-  const cpu = localStorage.getItem('webmind_cpu') === '1';
-  const autolearn = localStorage.getItem('webmind_autolearn') !== '0'; // default ON
-  const md = localStorage.getItem('webmind_markdown') !== '0'; // default ON
-  const cpuEl = document.getElementById('cpu-toggle');
-  const alEl = document.getElementById('autolearn-toggle');
-  const mdEl = document.getElementById('markdown-toggle');
-  if (cpuEl) cpuEl.checked = cpu;
-  if (alEl) alEl.checked = autolearn;
-  if (mdEl) mdEl.checked = md;
-  window._SAQT_NO_AUTOLEARN = !autolearn;
-}
-initSettings();
-
-// ── SESSION MANAGEMENT ──────────────────────────────────
-
-let currentSessionId = null;
-
-function getSessions() {
-  try { return JSON.parse(localStorage.getItem('webmind_sessions') || '[]'); } catch { return []; }
-}
-
-function saveSession() {
-  if (!currentSessionId || history.length === 0) return;
-  const sessions = getSessions();
-  const existing = sessions.find(s => s.id === currentSessionId);
-  const title = history[0]?.q?.substring(0, 40) || 'New chat';
-  if (existing) {
-    existing.title = title;
-    existing.messages = history.slice();
-    existing.updatedAt = Date.now();
-  } else {
-    sessions.unshift({ id: currentSessionId, title, messages: history.slice(), createdAt: Date.now(), updatedAt: Date.now() });
-  }
-  // Keep only last 50 sessions
-  while (sessions.length > 50) sessions.pop();
-  localStorage.setItem('webmind_sessions', JSON.stringify(sessions));
-  renderSessionList();
-}
-
-function loadSession(id) {
-  const sessions = getSessions();
-  const session = sessions.find(s => s.id === id);
-  if (!session) return;
-  currentSessionId = id;
-  history.length = 0;
-  history.push(...session.messages);
-  // Rebuild chat UI
-  const chatEl = document.getElementById('chat');
-  chatEl.innerHTML = '';
-  for (const h of history) {
-    addMessage('user', escapeHtml(h.q));
-    addMessage('bot', renderMarkdown(h.a));
-  }
-  document.getElementById('session-title').textContent = session.title;
-  renderSessionList();
-}
-
-window.newSession = function() {
-  saveSession();
-  currentSessionId = 'sess_' + Date.now();
-  history.length = 0;
-  const chatEl = document.getElementById('chat');
-  chatEl.innerHTML = `<div class="welcome"><h2>What do you want to know?</h2><p class="tagline">305K answers. Zero hallucinations. 100% private.</p><p>Ask anything — science, math, history, code.</p></div>`;
-  document.getElementById('session-title').textContent = 'New chat';
-  document.getElementById('input').focus();
-  renderSessionList();
-};
-
-function renderSessionList() {
-  const list = document.getElementById('session-list');
-  if (!list) return;
-  const sessions = getSessions();
-  list.innerHTML = sessions.map(s => {
-    const active = s.id === currentSessionId ? ' active' : '';
-    const date = new Date(s.updatedAt || s.createdAt).toLocaleDateString();
-    return `<div class="session-item${active}" onclick="loadSession('${s.id}')" title="${escapeHtml(s.title)}">
-      ${escapeHtml(s.title)}<br><span class="session-date">${date}</span>
-    </div>`;
-  }).join('');
-}
-
-window.loadSession = loadSession;
-
-boot();
-</script>
+    </script>
 </body>
+
 </html>
