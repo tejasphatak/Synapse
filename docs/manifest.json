@@ -1,7 +1,7 @@
 {
   "name": "Webmind",
   "short_name": "Webmind",
-  "description": "Knowledge engine. Retrieval-based, self-evolving, runs in your browser.",
+  "description": "Search, learn, answer. Gets smarter with every question.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#fefefe",

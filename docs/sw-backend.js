@@ -1,4 +1,4 @@
-/* sw-version: 6 */
+/* sw-version: 7 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -208,7 +208,7 @@ async function handleAPI(request) {
 
   // Models
   if (path === '/api/models' || path.startsWith('/api/models'))
-    return json({ data: [{ id: 'W', name: 'W', object: 'model', owned_by: 'webmind', info: { id: 'W', name: 'W', meta: { description: 'Knowledge engine. Retrieval-based, self-evolving, runs in your browser.', profile_image_url: '' }, params: {} }, preset: true, actions: [], arena: false, tags: [], urlIdx: 0 }] });
+    return json({ data: [{ id: 'W', name: 'W', object: 'model', owned_by: 'webmind', info: { id: 'W', name: 'W', meta: { description: 'Search, learn, answer. Gets smarter with every question.', profile_image_url: '' }, params: {} }, preset: true, actions: [], arena: false, tags: [], urlIdx: 0 }] });
 
   if (path.startsWith('/openai/models'))
     return json({ data: [{ id: 'W', object: 'model', owned_by: 'webmind' }] });
