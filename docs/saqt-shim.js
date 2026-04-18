@@ -741,8 +741,9 @@
           }).catch(() => {});
         }
 
-        const thinkingBlock = `<details type="reasoning" done="true" duration="${elapsed}">\n${thinking.join('\n')}\n</details>\n\n`;
-        answer = thinkingBlock + answer;
+        // Emit thinking as a final status event (visible in status timeline)
+        // Don't prepend <details> — Open WebUI's tokenizer doesn't handle attributes in detailsStart
+        emitStatus(chatId, messageId, 'knowledge_search', `Thought for ${elapsed}s`, true, { query: thinking.join(' | ').substring(0, 200) });
 
         // Tool execution on final answer
         const toolMatch = answer.match(/<tool>([\s\S]*?)<\/tool>/);
