@@ -291,8 +291,17 @@
               const out = [];
               const print = (...a) => out.push(a.join(' '));
               const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-              const fn = new AsyncFunction('print', 'QUERY', toolCode);
-              await fn(print, question);
+              // Web search helper available to tool code
+              const searchWeb = async (query) => {
+                try {
+                  const q = encodeURIComponent(query);
+                  const r = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${q}`);
+                  if (r.ok) { const d = await r.json(); return d.extract || ''; }
+                } catch(e) {}
+                return '';
+              };
+              const fn = new AsyncFunction('print', 'QUERY', 'searchWeb', toolCode);
+              await fn(print, question, searchWeb);
               if (out.length) answer = out.join('\n');
             } catch(e) { /* tool failed, return raw answer */ }
           }
