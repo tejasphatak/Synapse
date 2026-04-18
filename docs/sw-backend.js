@@ -40,9 +40,12 @@ let queryId = 0;
 const pendingQueries = new Map();
 
 self.addEventListener('message', (event) => {
+  console.log('[sw] message received:', event.data?.type, 'ports:', event.ports?.length);
   if (event.data?.type === 'saqt-port') {
     queryPort = event.ports[0];
+    console.log('[sw] SAQT port received');
     queryPort.onmessage = (e) => {
+      console.log('[sw] Got answer from main thread:', e.data?.id);
       const { id, answer } = e.data;
       const resolve = pendingQueries.get(id);
       if (resolve) { resolve(answer); pendingQueries.delete(id); }
@@ -51,6 +54,7 @@ self.addEventListener('message', (event) => {
 });
 
 function saqtQuery(question) {
+  console.log('[sw] saqtQuery called, port exists:', !!queryPort, 'question:', question?.substring(0,30));
   if (!queryPort) return Promise.resolve("SAQT engine not ready. Please refresh the page.");
   return new Promise((resolve) => {
     const id = ++queryId;
