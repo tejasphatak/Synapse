@@ -691,30 +691,27 @@
         }
 
         // Step 4: Compose — if answer is shorter than the data's own p25,
-        // it's unusually terse for this KB. Enrich with related entries.
+        // search for more context using ONLY the original question.
+        // Don't search by raw answer — that finds topically unrelated matches
+        // (e.g. "Madonna" the singer → "Madonna" the Virgin Mary).
         if (answer && answer.length < dataP25 && visited.size > 0) {
           think(`Answer (${answer.length} chars) below KB p25 (${dataP25}). Enriching...`);
 
-          // Search with answer as context to find elaborations
-          const searches = await Promise.all([
-            searchKB(`${question} ${answer}`),
-            searchKB(answer)
-          ]);
+          // Search with question + answer context to find elaborations on the SAME topic
+          const { bestIdx: relIdx, bestScore: relScore } = await searchKB(`${question} ${answer}`);
 
-          const composed = [answer];
-          for (const { bestIdx: idx, bestScore: score } of searches) {
-            if (score > noiseFloor && !visited.has(idx) && qaData[idx].answer !== answer) {
-              const s = qaData[idx].answer;
-              if (s.length > 30 && !composed.some(c => c.includes(s.substring(0, 30)))) {
-                composed.push(s);
-                visited.add(idx);
-                think(`  +related: "${qaData[idx].question.substring(0, 50)}" (${(score * 100).toFixed(0)}%)`);
-              }
+          if (relScore > noiseFloor && !visited.has(relIdx)) {
+            const related = qaData[relIdx].answer;
+            // Only add if it's actually about the same topic (shares words with question)
+            const questionWords = new Set(question.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+            const relatedWords = new Set(qaData[relIdx].question.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+            const overlap = [...questionWords].filter(w => relatedWords.has(w)).length;
+
+            if (overlap > 0 && related.length > 30 && !answer.includes(related.substring(0, 30))) {
+              answer = answer + '\n\n' + related;
+              visited.add(relIdx);
+              think(`  +related (${overlap} shared words): "${qaData[relIdx].question.substring(0, 50)}" (${(relScore * 100).toFixed(0)}%)`);
             }
-          }
-          if (composed.length > 1) {
-            answer = composed.join('\n\n');
-            think(`  Enriched: ${answer.length} chars from ${composed.length} sources.`);
           }
         }
 
