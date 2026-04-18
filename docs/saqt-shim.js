@@ -109,10 +109,26 @@
     permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true } }
   };
 
-  // Pre-set auth token so the frontend doesn't redirect to login
+  // Pre-set auth token and skip onboarding
   if (!localStorage.getItem('token')) {
     localStorage.setItem('token', 'webmind-local-token');
   }
+  // Mark onboarding/changelog as seen
+  localStorage.setItem('dismissedChangelog', 'true');
+  localStorage.setItem('onboarding', 'false');
+  localStorage.setItem('version', '0.8.12');
+
+  // Suppress WebSocket errors — we don't need real-time updates
+  const OrigWebSocket = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    if (url.includes('/ws/socket.io')) {
+      // Return a fake WebSocket that does nothing
+      return { close(){}, send(){}, addEventListener(){}, removeEventListener(){},
+        readyState: 3, CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
+    }
+    return new OrigWebSocket(url, protocols);
+  };
+  window.WebSocket.prototype = OrigWebSocket.prototype;
 
   // Intercept fetch
   const originalFetch = window.fetch;
@@ -121,7 +137,11 @@
     const urlStr = typeof url === 'string' ? url : url?.url || '';
     const method = (opts?.method || 'GET').toUpperCase();
 
-    // Only intercept API calls when SAQT is ready (or auth/config calls always)
+    // Profile image — return a placeholder
+    if (urlStr.includes('/profile/image') || urlStr.includes('/user.png'))
+      return originalFetch('data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="#2d8a4e"/><text x="50" y="65" text-anchor="middle" fill="white" font-size="40" font-family="sans-serif">W</text></svg>'));
+
+    // Only intercept API calls
     const isApiCall = urlStr.includes('/api/') || urlStr.includes('/openai/') || urlStr.includes('/ollama/');
     if (!isApiCall) return originalFetch.apply(this, arguments);
 
@@ -225,7 +245,7 @@
     if (urlStr.includes('/api/v1/notes')) return jsonResponse({ data: [] });
     if (urlStr.includes('/api/usage')) return jsonResponse({});
     if (urlStr.includes('/api/v1/analytics')) return jsonResponse({});
-    if (urlStr.includes('/api/changelog')) return jsonResponse([]);
+    if (urlStr.includes('/api/changelog')) return jsonResponse({ dismissed: true, latest: '0.8.12', changelog: [] });
     if (urlStr.includes('/api/community')) return jsonResponse([]);
 
     // --- OLLAMA ---
@@ -251,6 +271,8 @@
       setStatus('Loading AI model...', 'Sentence transformer (80MB)', 10);
       const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
       if (env.backends?.onnx?.webgpu) env.backends.onnx.webgpu.enabled = false;
+      // Force model loading from HuggingFace CDN, not local origin
+      env.allowLocalModels = false;
       encoder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
         progress_callback: (p) => { if (p.progress) setStatus('Loading AI model...', Math.round(p.progress) + '%', 10 + p.progress * 0.3); }
       });
