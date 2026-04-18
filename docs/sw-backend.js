@@ -1,4 +1,4 @@
-/* sw-version: 15 */
+/* sw-version: 16 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -229,25 +229,17 @@ async function handleAPI(request) {
   if (path.includes('/chat/completions')) {
     const messages = body.messages || [];
 
-    // Build context from conversation history — last user message + recent context
-    // "Tell me more about him" needs to know "him" = Shah Rukh Khan from previous messages
+    // Build search query from full conversation — every message is context.
+    // The embedding model decides what's relevant, not us.
     let q = '';
-    const context = [];
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const content = typeof messages[i].content === 'string' ? messages[i].content :
-          (Array.isArray(messages[i].content) ? messages[i].content.map(c => c.text || '').join(' ') : '');
-      if (!content) continue;
-      if (messages[i].role === 'user' && !q) {
-        q = content; // last user message = the query
-      } else if (context.length < 3) {
-        // Include up to 3 previous messages as context (truncated)
-        context.unshift(content.substring(0, 150));
-      }
+    const parts = [];
+    for (const msg of messages) {
+      const content = typeof msg.content === 'string' ? msg.content :
+          (Array.isArray(msg.content) ? msg.content.map(c => c.text || '').join(' ') : '');
+      if (content) parts.push(content.substring(0, 200));
     }
-    // If query uses pronouns or short references, prepend context
-    if (q && context.length > 0 && q.length < 50) {
-      q = context.join(' ') + ' ' + q;
-    }
+    // Full context for search — last few messages, most recent last
+    q = parts.slice(-5).join(' ');
     if (!q) return json({ error: { message: 'No user message' } }, 400);
 
     const taskId = 'task-' + Date.now();
