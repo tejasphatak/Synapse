@@ -528,22 +528,22 @@
     // Pre-compute query embedding once, reuse Float32Array for speed
     const queryBuf = new Float32Array(DIM);
 
-    async function searchKB(queryText) {
+    // Search KB — returns top-K candidates, not just top-1
+    async function searchKB(queryText, topK = 20) {
       const output = await encoder(queryText, { pooling: 'mean', normalize: true });
       queryBuf.set(output.data);
 
-      // Optimized dot product scan — use Float32Array directly, avoid inner loop overhead
-      // Process in chunks to yield to the event loop (prevents UI freeze on mobile)
       const N = qaData.length;
-      let bestIdx = 0, bestScore = -1;
-      const CHUNK = 50000; // process 50K pairs per tick
+      const CHUNK = 50000;
+
+      // Min-heap of top-K results
+      const topResults = [];
 
       for (let start = 0; start < N; start += CHUNK) {
         const end = Math.min(start + CHUNK, N);
         for (let i = start; i < end; i++) {
           let dot = 0;
           const off = i * DIM;
-          // Unrolled inner loop — 4x per iteration for speed
           let d = 0;
           for (; d <= DIM - 4; d += 4) {
             dot += queryBuf[d] * qaEmbeddings[off + d]
@@ -552,12 +552,44 @@
                  + queryBuf[d+3] * qaEmbeddings[off + d+3];
           }
           for (; d < DIM; d++) dot += queryBuf[d] * qaEmbeddings[off + d];
-          if (dot > bestScore) { bestScore = dot; bestIdx = i; }
+
+          if (topResults.length < topK) {
+            topResults.push({ idx: i, qSim: dot });
+            if (topResults.length === topK) topResults.sort((a, b) => a.qSim - b.qSim);
+          } else if (dot > topResults[0].qSim) {
+            topResults[0] = { idx: i, qSim: dot };
+            topResults.sort((a, b) => a.qSim - b.qSim);
+          }
         }
-        // Yield to event loop between chunks so UI stays responsive
         if (start + CHUNK < N) await new Promise(r => setTimeout(r, 0));
       }
-      return { bestIdx, bestScore };
+
+      topResults.sort((a, b) => b.qSim - a.qSim);
+      return topResults;
+    }
+
+    // Re-rank top-K candidates by answer alignment
+    // Uses weighted linear scoring: 0.4·Q_sim + 0.4·A_sim + 0.2·weight_factor
+    async function rerankCandidates(queryText, candidates) {
+      const qEmb = (await encoder(queryText.substring(0, 200), { pooling: 'mean', normalize: true })).data;
+
+      for (const c of candidates) {
+        // Compute answer-question alignment
+        const aEmb = (await encoder(qaData[c.idx].answer.substring(0, 200), { pooling: 'mean', normalize: true })).data;
+        let aSim = 0;
+        for (let d = 0; d < DIM; d++) aSim += qEmb[d] * aEmb[d];
+        c.aSim = aSim;
+
+        // Weight factor (normalized)
+        const w = qaData[c.idx].weight || 1.0;
+        c.weightFactor = Math.log(1 + w) / Math.log(1 + 10); // normalize: weight 10 → 1.0
+
+        // Weighted linear score — not multiplicative
+        c.score = 0.4 * c.qSim + 0.4 * c.aSim + 0.2 * c.weightFactor;
+      }
+
+      candidates.sort((a, b) => b.score - a.score);
+      return candidates;
     }
 
     // ─── Status emitter for thinking/hop display ───
@@ -597,53 +629,50 @@
         // The embedding model already captures intent. Multi-hop refines it.
         emitStatus(chatId, messageId, 'queries_generated', `Searching "${question.substring(0, 50)}"`, false, { queries: [question.substring(0, 60)] });
 
-        const kbPromise = searchKB(question);
+        // Retrieve top-20 candidates by question similarity
+        const kbPromise = searchKB(question, 20);
         const webPromise = searchWebMulti(question);
+        const [candidates, webResults] = await Promise.all([kbPromise, webPromise]);
 
-        const [{ bestIdx: firstIdx, bestScore: firstScore }, webResults] = await Promise.all([kbPromise, webPromise]);
-
+        const noiseFloor = 1 / Math.sqrt(qaData.length);
         let answer = '';
-        let bestOverallScore = firstScore;
+        let bestOverallScore = 0;
         const visited = new Set();
         const facts = [];
         let usedWeb = false;
 
-        think(`KB: "${qaData[firstIdx].question.substring(0, 80)}" → ${(firstScore * 100).toFixed(1)}%`);
+        // Re-rank top-5 candidates by answer alignment (weighted linear scoring)
+        // Only re-rank top-5 to save encoder calls on mobile
+        const toRerank = candidates.slice(0, 5).filter(c => c.qSim > noiseFloor);
 
-        // Use top match — the score IS the confidence (no hardcoded threshold needed,
-        // but we need a floor below which "no answer" is better than noise.
-        // Use 1/sqrt(N) as the random-chance baseline for this embedding space)
-        const noiseFloor = 1 / Math.sqrt(qaData.length);
+        if (toRerank.length > 0) {
+          emitStatus(chatId, messageId, 'sources_retrieved', `Evaluating ${toRerank.length} candidates...`, false, { count: toRerank.length });
+          const ranked = await rerankCandidates(question, toRerank);
+          const best = ranked[0];
 
-        // Measure answer-question alignment using embeddings
-        // A high KB score doesn't mean the answer is relevant — "PCA" matching "cupcakes" is noise
-        let answerAligned = false;
-        if (firstScore > noiseFloor) {
-          const answerOut = await encoder(qaData[firstIdx].answer.substring(0, 200), { pooling: 'mean', normalize: true });
-          const questionOut = await encoder(question.substring(0, 200), { pooling: 'mean', normalize: true });
-          let alignment = 0;
-          for (let d = 0; d < DIM; d++) alignment += answerOut.data[d] * questionOut.data[d];
-          answerAligned = alignment > noiseFloor * 5;
-          think(`KB: "${qaData[firstIdx].question.substring(0, 60)}" → score=${(firstScore * 100).toFixed(1)}%, alignment=${(alignment * 100).toFixed(1)}%`);
+          think(`Top candidates (Q-sim → re-ranked):`);
+          ranked.slice(0, 3).forEach((c, i) =>
+            think(`  ${i+1}. "${qaData[c.idx].question.substring(0, 50)}" Q=${(c.qSim*100).toFixed(0)}% A=${(c.aSim*100).toFixed(0)}% → score=${(c.score*100).toFixed(0)}%`)
+          );
 
-          if (answerAligned) {
-            answer = qaData[firstIdx].answer;
-            visited.add(firstIdx);
-            facts.push(qaData[firstIdx].question);
-            think(`✓ Answer aligns with question. Using as primary.`);
-            emitStatus(chatId, messageId, 'sources_retrieved', `Matched: "${qaData[firstIdx].question.substring(0, 60)}" (${(firstScore * 100).toFixed(0)}%)`, true, { count: 1 });
+          if (best.score > noiseFloor) {
+            answer = qaData[best.idx].answer;
+            bestOverallScore = best.score;
+            visited.add(best.idx);
+            facts.push(qaData[best.idx].question);
+            think(`✓ Best: "${qaData[best.idx].question.substring(0, 50)}" (score=${(best.score*100).toFixed(0)}%)`);
+            emitStatus(chatId, messageId, 'sources_retrieved', `Matched: "${qaData[best.idx].question.substring(0, 60)}"`, true, { count: 1 });
           } else {
-            think(`✗ KB match found but answer doesn't align with question. Searching web.`);
-            emitStatus(chatId, messageId, 'sources_retrieved', `Weak match — searching further`, true, { count: 0 });
+            think(`✗ All candidates below noise floor after re-ranking.`);
+            emitStatus(chatId, messageId, 'sources_retrieved', `No confident match`, true, { count: 0 });
           }
         } else {
-          think(`✗ Below noise floor. KB has nothing relevant.`);
-          emitStatus(chatId, messageId, 'sources_retrieved', `No confident match`, true, { count: 0 });
+          think(`✗ No candidates above noise floor.`);
+          emitStatus(chatId, messageId, 'sources_retrieved', `No match found`, true, { count: 0 });
         }
 
-        // Step 2: Iterative web search — crawl until we have a solid answer
-        // Fires when KB is weak OR answer doesn't align with question
-        const kbWeak = !answerAligned;
+        // Step 2: Web search when KB is weak
+        const kbWeak = bestOverallScore < noiseFloor * 3;
         if (kbWeak) {
           usedWeb = true;
           let allWebResults = [...webResults];
