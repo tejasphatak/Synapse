@@ -103,22 +103,62 @@
     const DIM = 384;
     setStatus('Engine ready', qaData.length.toLocaleString() + ' pairs', 95);
 
+    // ─── Two-pass query understanding ───
+
+    // Pass 1: Extract topic from format requests
+    // "Can you create a markdown for current affairs?" → "current affairs"
+    function extractTopic(query) {
+      const patterns = [
+        // "create/make/write a markdown/list/table about/for/of TOPIC"
+        /(?:can you |please |could you |i need |i want )?(?:create|make|write|generate|draft|prepare|give me|provide|build|compose|put together|show me)(?:\s+me)?\s+(?:a|an|the|some)?\s*(?:markdown|md|list|table|document|doc|summary|report|essay|article|outline|presentation|slides?|spreadsheet|csv|json|html|text|paragraph|bullets?|overview|brief|writeup|write-up|notes?|chart|graph|diagram)\s*(?:about|for|of|on|regarding|related to|covering|explaining|describing|summarizing|detailing)\s+(.+)/i,
+        // "TOPIC in markdown/list format"
+        /(.+?)\s+(?:in|using|as|formatted as|formatted in)\s+(?:a\s+)?(?:markdown|md|list|table|document|summary|report|essay|article|outline|bullets?|html|text|paragraph)\s*(?:format)?$/i,
+        // "summarize/explain/describe TOPIC"
+        /(?:can you |please |could you )?(?:summarize|explain|describe|elaborate on|tell me about|give me info on|give me information about|what do you know about)\s+(.+)/i,
+      ];
+
+      for (const pattern of patterns) {
+        const match = query.match(pattern);
+        if (match && match[1]) {
+          const topic = match[1].replace(/[?.!,]+$/, '').trim();
+          if (topic.length > 2) return topic;
+        }
+      }
+      return null;
+    }
+
+    // Pass 2: Search with topic-focused embedding
+    async function searchKB(queryText) {
+      const output = await encoder(queryText, { pooling: 'mean', normalize: true });
+      const qEmb = Array.from(output.data);
+
+      let bestIdx = 0, bestScore = -1;
+      for (let i = 0; i < qaData.length; i++) {
+        let dot = 0;
+        const off = i * DIM;
+        for (let d = 0; d < DIM; d++) dot += qEmb[d] * qaEmbeddings[off + d];
+        if (dot > bestScore) { bestScore = dot; bestIdx = i; }
+      }
+      return { bestIdx, bestScore };
+    }
+
     // Step 5: Handle queries from Service Worker
     channel.port1.onmessage = async (event) => {
       const { id, question } = event.data;
       try {
-        // Encode question
-        const output = await encoder(question, { pooling: 'mean', normalize: true });
-        const qEmb = Array.from(output.data);
+        // Two-pass: extract topic if this is a format/action request
+        const topic = extractTopic(question);
+        let searchQuery = question;
+        let usedTopic = false;
 
-        // Cosine similarity search
-        let bestIdx = 0, bestScore = -1;
-        for (let i = 0; i < qaData.length; i++) {
-          let dot = 0;
-          const off = i * DIM;
-          for (let d = 0; d < DIM; d++) dot += qEmb[d] * qaEmbeddings[off + d];
-          if (dot > bestScore) { bestScore = dot; bestIdx = i; }
+        if (topic) {
+          // Pass 1 confirmed this is a format request — use topic for search
+          searchQuery = topic;
+          usedTopic = true;
         }
+
+        // Search with topic (if extracted) or full query
+        const { bestIdx, bestScore } = await searchKB(searchQuery);
 
         let answer;
         if (bestScore < 0.35) {

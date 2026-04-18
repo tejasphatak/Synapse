@@ -91,9 +91,32 @@ class SAQTEngine:
             self.db.execute("UPDATE qa SET weight = MAX(weight * 0.9, 0.1) WHERE id=?", (pair_id,))
             self.db.commit()
 
+    def extract_topic(self, query):
+        """Two-pass query understanding: extract topic from format/action requests."""
+        patterns = [
+            # "create/make/write a markdown/list about/for TOPIC"
+            r'(?:can you |please |could you |i need |i want )?(?:create|make|write|generate|draft|prepare|give me|provide|build|compose|put together|show me)(?:\s+me)?\s+(?:a|an|the|some)?\s*(?:markdown|md|list|table|document|doc|summary|report|essay|article|outline|presentation|slides?|spreadsheet|csv|json|html|text|paragraph|bullets?|overview|brief|writeup|write-up|notes?|chart|graph|diagram)\s*(?:about|for|of|on|regarding|related to|covering|explaining|describing|summarizing|detailing)\s+(.+)',
+            # "TOPIC in markdown format"
+            r'(.+?)\s+(?:in|using|as|formatted as|formatted in)\s+(?:a\s+)?(?:markdown|md|list|table|document|summary|report|essay|article|outline|bullets?|html|text|paragraph)\s*(?:format)?$',
+            # "summarize/explain TOPIC"
+            r'(?:can you |please |could you )?(?:summarize|explain|describe|elaborate on|tell me about|give me info on|give me information about|what do you know about)\s+(.+)',
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, query, re.IGNORECASE)
+            if match and match.group(1):
+                topic = match.group(1).rstrip('?.!,').strip()
+                if len(topic) > 2:
+                    return topic
+        return None
+
     def query(self, question, max_hops=5):
         t0 = time.time()
-        results = self.search(question, top_k=3)
+
+        # Two-pass: extract topic if format/action request
+        topic = self.extract_topic(question)
+        search_query = topic if topic else question
+
+        results = self.search(search_query, top_k=3)
 
         if not results or results[0]["score"] < CONFIDENCE_THRESHOLD:
             return {
@@ -184,7 +207,43 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
-        if self.path == '/api/saqt/query':
+        # OpenAI-compatible chat completions endpoint
+        if self.path == '/v1/chat/completions':
+            messages = body.get('messages', [])
+            # Extract the last user message
+            q = ''
+            for m in reversed(messages):
+                if m.get('role') == 'user':
+                    content = m.get('content', '')
+                    if isinstance(content, list):
+                        content = ' '.join(c.get('text', '') for c in content if c.get('type') == 'text')
+                    q = content
+                    break
+            if not q:
+                self._json({"error": {"message": "No user message"}}, 400)
+                return
+            result = engine.query(q, max_hops=5)
+            # Format as OpenAI response
+            self._json({
+                "id": f"wmind-{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "webmind-305k",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": result["answer"]},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "_webmind": {
+                    "confidence": result.get("confidence", 0),
+                    "hops": result.get("hops", 0),
+                    "timeMs": result.get("timeMs", 0),
+                    "matchId": result.get("matchId"),
+                }
+            })
+            return
+        elif self.path == '/api/saqt/query':
             q = body.get('question', '')
             ctx = body.get('context', '')
             if not q: self._json({"error": "Missing question"}, 400); return
@@ -214,7 +273,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _cors(self):
         for h, v in [('Access-Control-Allow-Origin', '*'),
                       ('Access-Control-Allow-Methods', 'GET,POST,OPTIONS'),
-                      ('Access-Control-Allow-Headers', 'Content-Type')]:
+                      ('Access-Control-Allow-Headers', 'Content-Type, Authorization')]:
             self.send_header(h, v)
 
     def log_message(self, fmt, *a):
