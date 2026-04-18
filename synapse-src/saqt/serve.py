@@ -195,15 +195,13 @@ class SAQTEngine:
 
         elapsed_ms = int((time.time() - t0) * 1000)
 
-        # Synthesize answer from retrieved facts
-        answer = ""
+        # Answer = best retrieved fact or direct answer. No external API.
         if answers:
             answer = answers[0]
         elif facts:
             answer = facts[0]
-
-        # Try to synthesize a coherent answer using retrieved facts
-        answer = self._synthesize(question, facts, answers)
+        else:
+            answer = ""
 
         return {
             "question": question,
