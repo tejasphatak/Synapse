@@ -1,4 +1,4 @@
-/* sw-version: 14 */
+/* sw-version: 15 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -228,13 +228,25 @@ async function handleAPI(request) {
   // Chat completions — async: return task_id, stream answer via socket.io
   if (path.includes('/chat/completions')) {
     const messages = body.messages || [];
+
+    // Build context from conversation history — last user message + recent context
+    // "Tell me more about him" needs to know "him" = Shah Rukh Khan from previous messages
     let q = '';
+    const context = [];
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        q = typeof messages[i].content === 'string' ? messages[i].content :
-            (Array.isArray(messages[i].content) ? messages[i].content.map(c => c.text || '').join(' ') : '');
-        break;
+      const content = typeof messages[i].content === 'string' ? messages[i].content :
+          (Array.isArray(messages[i].content) ? messages[i].content.map(c => c.text || '').join(' ') : '');
+      if (!content) continue;
+      if (messages[i].role === 'user' && !q) {
+        q = content; // last user message = the query
+      } else if (context.length < 3) {
+        // Include up to 3 previous messages as context (truncated)
+        context.unshift(content.substring(0, 150));
       }
+    }
+    // If query uses pronouns or short references, prepend context
+    if (q && context.length > 0 && q.length < 50) {
+      q = context.join(' ') + ' ' + q;
     }
     if (!q) return json({ error: { message: 'No user message' } }, 400);
 
