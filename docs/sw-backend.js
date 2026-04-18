@@ -3,6 +3,11 @@
  * Intercepts ALL fetch requests at the network level.
  * No monkey-patching, no almostnode, no dependencies.
  * The browser's built-in Service Worker API IS the server.
+ *
+ * Implements:
+ * - REST API endpoints (auth, models, chats, config, etc.)
+ * - Socket.io polling transport (engine.io v4) for streaming chat responses
+ * - MessageChannel to main thread for SAQT query execution
  */
 
 const USER = {
@@ -18,34 +23,119 @@ function json(data, status = 200) {
   });
 }
 
-function sse(text) {
-  const chunk = JSON.stringify({
-    id: 'wmind-' + Date.now(), object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000), model: 'W',
-    choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }]
-  });
-  const done = JSON.stringify({
-    id: 'wmind-' + Date.now(), object: 'chat.completion.chunk',
-    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
-  });
-  return new Response(`data: ${chunk}\n\ndata: ${done}\n\ndata: [DONE]\n\n`, {
+// ─── Socket.io polling transport (engine.io v4) ───
+
+const SIO_SID = 'wmind-' + Math.random().toString(36).substring(2, 14);
+const SIO_NS_SID = 'wmind-ns-' + Math.random().toString(36).substring(2, 14);
+let sioConnected = false;
+let eventQueue = [];
+let pollResolvers = [];
+
+function textResponse(body) {
+  return new Response(body, {
     status: 200,
-    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' }
+    headers: {
+      'Content-Type': 'text/plain; charset=UTF-8',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true'
+    }
   });
 }
 
-// SAQT query — uses message channel to main thread
+function queueSocketEvent(eventName, data) {
+  const payload = '42' + JSON.stringify([eventName, data]);
+  eventQueue.push(payload);
+  // Wake any waiting long-poll
+  if (pollResolvers.length > 0) {
+    const resolve = pollResolvers.shift();
+    const events = eventQueue.splice(0);
+    resolve(textResponse(events.join('\x1e')));
+  }
+}
+
+function handleSocketIO(request) {
+  const url = new URL(request.url);
+  const sid = url.searchParams.get('sid');
+  const method = request.method;
+
+  if (method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Allow-Credentials': 'true'
+      }
+    });
+  }
+
+  // Handshake (no sid yet)
+  if (method === 'GET' && !sid) {
+    sioConnected = false;
+    const handshake = '0' + JSON.stringify({
+      sid: SIO_SID,
+      upgrades: [],
+      pingInterval: 25000,
+      pingTimeout: 20000,
+      maxPayload: 1000000
+    });
+    return textResponse(handshake);
+  }
+
+  // POST — client sends connect packet or ping
+  if (method === 'POST' && sid) {
+    // Client sends '40' (connect) or '2' (ping) or '42[...]' (event)
+    // We just acknowledge
+    return textResponse('ok');
+  }
+
+  // GET with sid — poll for events
+  if (method === 'GET' && sid) {
+    // First poll after handshake: send namespace connect ack
+    if (!sioConnected) {
+      sioConnected = true;
+      const connectAck = '40' + JSON.stringify({ sid: SIO_NS_SID });
+      if (eventQueue.length > 0) {
+        const events = eventQueue.splice(0);
+        return textResponse(connectAck + '\x1e' + events.join('\x1e'));
+      }
+      return textResponse(connectAck);
+    }
+
+    // Return queued events if any
+    if (eventQueue.length > 0) {
+      const events = eventQueue.splice(0);
+      return textResponse(events.join('\x1e'));
+    }
+
+    // Long-poll: wait for events or timeout with pong
+    return new Promise((resolve) => {
+      pollResolvers.push(resolve);
+      setTimeout(() => {
+        const idx = pollResolvers.indexOf(resolve);
+        if (idx !== -1) {
+          pollResolvers.splice(idx, 1);
+          resolve(textResponse('3')); // pong
+        }
+      }, 25000);
+    });
+  }
+
+  return textResponse('ok');
+}
+
+// ─── SAQT query — uses message channel to main thread ───
+
 let queryPort = null;
 let queryId = 0;
 const pendingQueries = new Map();
 
 self.addEventListener('message', (event) => {
-  console.log('[sw] message received:', event.data?.type, 'ports:', event.ports?.length);
   if (event.data?.type === 'saqt-port') {
     queryPort = event.ports[0];
     console.log('[sw] SAQT port received');
     queryPort.onmessage = (e) => {
-      console.log('[sw] Got answer from main thread:', e.data?.id);
       const { id, answer } = e.data;
       const resolve = pendingQueries.get(id);
       if (resolve) { resolve(answer); pendingQueries.delete(id); }
@@ -54,22 +144,24 @@ self.addEventListener('message', (event) => {
 });
 
 function saqtQuery(question) {
-  console.log('[sw] saqtQuery called, port exists:', !!queryPort, 'question:', question?.substring(0,30));
   if (!queryPort) return Promise.resolve("SAQT engine not ready. Please refresh the page.");
   return new Promise((resolve) => {
     const id = ++queryId;
     pendingQueries.set(id, resolve);
     queryPort.postMessage({ id, question });
-    // Timeout after 30s
     setTimeout(() => { if (pendingQueries.has(id)) { pendingQueries.delete(id); resolve("Query timed out."); } }, 30000);
   });
 }
 
-// Route table
+// ─── REST API Route table ───
+
 async function handleAPI(request) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
+
+  // Socket.io polling
+  if (path.startsWith('/ws/socket.io')) return handleSocketIO(request);
 
   if (method === 'OPTIONS')
     return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' } });
@@ -83,6 +175,8 @@ async function handleAPI(request) {
   if (path === '/api/config')
     return json({ status: true, name: 'Webmind', version: '0.8.12', default_locale: 'en-US', default_models: 'W', default_prompt_suggestions: [], features: { auth: false, auth_trusted_header: false, enable_signup: false, enable_login_form: true, enable_websocket: false, enable_direct_connections: false, enable_web_search: false, enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false, enable_admin_chat_access: false }, onboarding: false, permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true }, chat: { file_upload: false, delete: true, edit: true, temporary: true } }, oauth: { providers: {} } });
 
+  if (path === '/api/version/updates')
+    return json({ current: '0.8.12', latest: '0.8.12' });
   if (path === '/api/version')
     return json({ version: '0.8.12', deployment_id: null });
 
@@ -104,7 +198,7 @@ async function handleAPI(request) {
   if (path.includes('/users/'))
     return json(USER);
 
-  // Chat completions
+  // Chat completions — async: return task_id, stream answer via socket.io
   if (path.includes('/chat/completions')) {
     const messages = body.messages || [];
     let q = '';
@@ -116,12 +210,48 @@ async function handleAPI(request) {
       }
     }
     if (!q) return json({ error: { message: 'No user message' } }, 400);
-    const answer = await saqtQuery(q);
-    return sse(answer);
+
+    const taskId = 'task-' + Date.now();
+    const responseMessageId = body.id;
+    const chatId = body.chat_id;
+
+    // Fire SAQT query asynchronously, deliver answer via socket.io events
+    saqtQuery(q).then((answer) => {
+      // Send non-streaming completion via socket event
+      queueSocketEvent('events', {
+        chat_id: chatId,
+        message_id: responseMessageId,
+        data: {
+          type: 'chat:completion',
+          data: {
+            id: taskId,
+            done: false,
+            choices: [{ message: { content: answer } }]
+          }
+        }
+      });
+      // Send done event
+      queueSocketEvent('events', {
+        chat_id: chatId,
+        message_id: responseMessageId,
+        data: {
+          type: 'chat:completion',
+          data: {
+            id: taskId,
+            done: true,
+            choices: [{ delta: {}, finish_reason: 'stop' }]
+          }
+        }
+      });
+    });
+
+    return json({ task_id: taskId });
   }
 
   // Tasks
-  if (path.includes('/tasks/title')) return json({ choices: [{ message: { content: JSON.stringify({ title: (body.prompt || 'Chat').substring(0, 40) }) } }] });
+  if (path.includes('/tasks/stop')) return json({ status: true });
+  if (path.includes('/tasks/chat/')) return json([]);
+  if (path.includes('/tasks/title')) return json({ choices: [{ message: { content: JSON.stringify({ title: (body.prompt || body.messages?.[body.messages?.length - 1]?.content || 'Chat').substring(0, 40) }) } }] });
   if (path.includes('/tasks/tags')) return json({ choices: [{ message: { content: '{"tags": []}' } }] });
   if (path.includes('/tasks/emoji')) return json({ choices: [{ message: { content: '"💬"' } }] });
   if (path.includes('/tasks/follow_ups')) return json({ choices: [{ message: { content: '{"follow_ups": []}' } }] });
@@ -132,10 +262,14 @@ async function handleAPI(request) {
   if (path.includes('/configs/banners')) return json([]);
   if (path.includes('/tools')) return json([]);
   if (path.includes('/chats/tags')) return json([]);
-  if (path.includes('/chats/list')) return json({ data: [] });
-  if (path.includes('/chats/search')) return json({ data: [] });
-  if (path.includes('/chats') && method === 'GET') return json({ data: [] });
-  if (path.includes('/chats') && method === 'POST') return json({ id: 'local-' + Date.now(), title: 'Chat', models: ['W'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: body });
+  if (path.includes('/chats/list')) return json([]);
+  if (path.includes('/chats/search')) return json([]);
+  // Individual chat by ID
+  if (path.match(/\/chats\/[^/]+$/) && method === 'GET') return json({ id: path.split('/').pop(), title: 'Chat', models: ['W'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: {}, updated_at: new Date().toISOString() });
+  // Chat list
+  if (path.includes('/chats') && method === 'GET') return json([]);
+  if (path.match(/\/chats\/new/) && method === 'POST') return json({ id: 'local-' + Date.now(), title: 'Chat', models: ['W'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: body, updated_at: new Date().toISOString() });
+  if (path.includes('/chats') && method === 'POST') return json({ id: path.split('/').pop() || ('local-' + Date.now()), title: 'Chat', models: ['W'], tags: [], history: body?.chat?.history || { messages: {}, currentId: null }, messages: body?.chat?.messages || [], chat: body?.chat || body, updated_at: new Date().toISOString() });
   if (path.includes('/chats') && method === 'DELETE') return json({ success: true });
   if (path.includes('/knowledge')) return json({ data: [] });
   if (path.includes('/memories')) return json({ data: [] });
@@ -163,15 +297,14 @@ async function handleAPI(request) {
   return json(method === 'GET' ? [] : {});
 }
 
-// Intercept fetch events
+// ─── Intercept fetch events ───
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  // Only intercept API calls to same origin
   if (url.origin === self.location.origin &&
-      (url.pathname.startsWith('/api/') || url.pathname.startsWith('/openai/') || url.pathname.startsWith('/ollama/'))) {
+      (url.pathname.startsWith('/api/') || url.pathname.startsWith('/openai/') || url.pathname.startsWith('/ollama/') || url.pathname.startsWith('/ws/'))) {
     event.respondWith(handleAPI(event.request));
   }
-  // Everything else (static files, CDN) passes through normally
 });
 
 self.addEventListener('install', () => self.skipWaiting());
