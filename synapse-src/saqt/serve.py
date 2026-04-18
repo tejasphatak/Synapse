@@ -328,28 +328,8 @@ class SAQTEngine:
             else:
                 answer = ""
 
-        # If answer looks like code, execute it and return output
-        if answer and any(kw in answer for kw in ['print(', 'import ', 'for ', 'def ']):
-            import io, datetime as _dt, math as _math
-            safe_globals = {
-                "__builtins__": {"print": print, "range": range, "len": len,
-                                "str": str, "int": int, "float": float,
-                                "list": list, "dict": dict, "abs": abs,
-                                "round": round, "sum": sum, "min": min, "max": max,
-                                "sorted": sorted, "enumerate": enumerate, "zip": zip,
-                                "True": True, "False": False, "None": None,
-                                "__import__": lambda name: {"datetime": _dt, "math": _math}.get(name)},
-                "math": _math, "datetime": _dt,
-            }
-            output = io.StringIO()
-            safe_globals["__builtins__"]["print"] = lambda *a, **kw: output.write(' '.join(str(x) for x in a) + '\n')
-            try:
-                exec(answer, safe_globals)
-                result = output.getvalue().strip()
-                if result:
-                    answer = result
-            except:
-                pass  # Keep original answer if exec fails
+        # Tool call: if answer contains <tool> tag, execute it
+        answer = self._exec_tool(answer)
 
         return {
             "question": question,
@@ -475,6 +455,31 @@ class SAQTEngine:
                         return fact  # Return the fact that contains the causal explanation
 
         return None
+
+    def _exec_tool(self, answer):
+        """If answer has <tool> tag, run it in sandbox. That's it. No logic."""
+        import re, subprocess as sp
+        if not answer or '<tool' not in answer:
+            return answer
+
+        match = re.search(r'<tool[^>]*>(.*?)</tool>', answer, re.DOTALL)
+        if not match:
+            return answer
+
+        code = match.group(1).strip()
+        try:
+            result = sp.run(
+                ["python3", "-c", code],
+                capture_output=True, text=True, timeout=5,
+                env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+                cwd="/tmp",
+            )
+            output = result.stdout.strip()
+            return output if output else answer
+        except sp.TimeoutExpired:
+            return "Timed out"
+        except:
+            return answer
 
     def _try_eval(self, text):
         """Try to evaluate any executable content in retrieved text.
