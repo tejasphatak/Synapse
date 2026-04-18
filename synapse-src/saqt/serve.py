@@ -325,12 +325,40 @@ class SAQTEngine:
         print(f"[saqt] Sync complete: {len(rows)} pairs, {size_json:.1f}MB JSON, {size_emb:.1f}MB embeddings", flush=True)
         return {"ok": True, "pairs": len(rows), "json_mb": round(size_json, 1), "emb_mb": round(size_emb, 1)}
 
+    def delta(self, after_id=0, limit=1000):
+        """Return pairs added after a given ID (watermark-based delta sync).
+        Like a DB redo log — client sends its last known ID, gets only new pairs."""
+        if self.mode != "faiss":
+            return {"error": "delta requires faiss mode"}
+
+        rows = self.db.execute(
+            "SELECT id, question, answer, source, weight FROM qa WHERE id > ? ORDER BY id LIMIT ?",
+            (after_id, limit)).fetchall()
+
+        pairs = [{"id": r[0], "question": r[1], "answer": r[2], "source": r[3], "weight": r[4]} for r in rows]
+        max_id = self.db.execute("SELECT MAX(id) FROM qa").fetchone()[0] or 0
+
+        # Also encode the new questions for embeddings
+        embeddings = None
+        if pairs:
+            questions = [p["question"] for p in pairs]
+            embs = self.encoder.encode(questions, normalize_embeddings=True).astype(np.float32)
+            embeddings = embs.tobytes()
+
+        return {
+            "pairs": pairs,
+            "max_id": max_id,
+            "has_more": len(rows) == limit,
+            "embeddings_b64": __import__('base64').b64encode(embeddings).decode() if embeddings else None
+        }
+
     def stats(self):
         if self.mode == "faiss":
             count = self.db.execute("SELECT COUNT(*) FROM qa").fetchone()[0]
         else:
             count = len(self.pairs)
-        return {"ready": True, "chunks": count, "mode": self.mode}
+        max_id = self.db.execute("SELECT MAX(id) FROM qa").fetchone()[0] if self.mode == "faiss" else len(self.pairs)
+        return {"ready": True, "chunks": count, "mode": self.mode, "max_id": max_id}
 
 
 # ── HTTP ──────────────────────────────────────────────────
@@ -422,6 +450,11 @@ class Handler(SimpleHTTPRequestHandler):
         elif self.path == '/api/saqt/sync':
             # Full rebuild of browser data — expensive, run sparingly
             result = engine.sync_browser_data()
+            self._json(result)
+        elif self.path == '/api/saqt/delta':
+            after_id = int(body.get('after_id', 0))
+            limit = min(int(body.get('limit', 1000)), 5000)
+            result = engine.delta(after_id=after_id, limit=limit)
             self._json(result)
         else:
             self.send_error(404)

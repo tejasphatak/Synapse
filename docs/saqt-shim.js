@@ -117,27 +117,26 @@
     let qaData, qaEmbeddings;
     const cacheDB = await openCache().catch(() => null);
 
-    // Check remote version via HEAD request (Content-Length as fingerprint)
-    let remoteDataSize = null;
-    try {
-      const headResp = await fetch(VM_BASE + '/qa_data.json', { method: 'HEAD' });
-      remoteDataSize = headResp.headers.get('Content-Length');
-    } catch(e) {}
+    // Strategy: load from cache FIRST (instant), then sync from remote in background.
+    // User can start chatting immediately with cached data.
+    let loadedFromCache = false;
 
-    const cachedVersion = cacheDB ? await idbGet(cacheDB, 'version') : null;
-    const cacheHit = cachedVersion && remoteDataSize && cachedVersion === remoteDataSize;
+    if (cacheDB) {
+      const cachedData = await idbGet(cacheDB, 'qaData');
+      const cachedEmb = await idbGet(cacheDB, 'qaEmbeddings');
+      if (cachedData && cachedEmb) {
+        setStatus('Loading from cache...', '', 45);
+        qaData = cachedData;
+        qaEmbeddings = new Float32Array(cachedEmb);
+        loadedFromCache = true;
+        setStatus('Ready', qaData.length.toLocaleString() + ' pairs', 85);
+        console.log('[webmind] Cache hit — ' + qaData.length.toLocaleString() + ' pairs (syncing in background)');
+      }
+    }
 
-    if (cacheHit && cacheDB) {
-      // Use cached data
-      setStatus('Loading from cache...', '', 45);
-      qaData = await idbGet(cacheDB, 'qaData');
-      const embBuf = await idbGet(cacheDB, 'qaEmbeddings');
-      qaEmbeddings = new Float32Array(embBuf);
-      setStatus('Loaded from cache', qaData.length.toLocaleString() + ' pairs', 85);
-      console.log('[webmind] Cache hit — ' + qaData.length.toLocaleString() + ' pairs');
-    } else {
-      // Download fresh
-      setStatus('Downloading knowledge base...', '', 40);
+    if (!loadedFromCache) {
+      // No cache — must download before user can chat
+      setStatus('Downloading knowledge base...', 'First load — this takes a moment', 40);
       const dataResp = await fetch(VM_BASE + '/qa_data.json');
       qaData = await dataResp.json();
       setStatus('Loading embeddings...', qaData.length.toLocaleString() + ' pairs', 55);
@@ -166,12 +165,72 @@
         setStatus('Caching for next visit...', '', 86);
         await idbPut(cacheDB, 'qaData', qaData);
         await idbPut(cacheDB, 'qaEmbeddings', qaEmbeddings.buffer);
-        if (remoteDataSize) await idbPut(cacheDB, 'version', remoteDataSize);
+        const cl2 = (await fetch(VM_BASE + '/qa_data.json', { method: 'HEAD' })).headers.get('Content-Length');
+        if (cl2) await idbPut(cacheDB, 'version', cl2);
         console.log('[webmind] Cached ' + qaData.length.toLocaleString() + ' pairs to IndexedDB');
       }
     }
 
     const DIM = 384;
+
+    // Background delta sync — watermark-based, like a DB redo log
+    // Only downloads NEW pairs added since last sync. No full re-download.
+    // Runs AFTER the UI is ready, so user can chat immediately.
+    const DELTA_API = VM_BASE.replace('/saqt/browser', '') + '/api/saqt/delta';
+    const STATS_API = VM_BASE.replace('/saqt/browser', '') + '/api/saqt/stats';
+    if (loadedFromCache) {
+      (async () => {
+        try {
+          // Check if server has more pairs than we do
+          const statsResp = await fetch(STATS_API);
+          const stats = await statsResp.json();
+          const localCount = qaData.length;
+          const remoteMax = stats.max_id || stats.chunks;
+
+          if (remoteMax <= localCount) {
+            console.log('[webmind] Data is up to date (' + localCount.toLocaleString() + ' pairs)');
+            return;
+          }
+
+          // Delta sync — fetch only new pairs after our watermark
+          console.log(`[webmind] Delta sync: local=${localCount}, remote=${remoteMax}, fetching ${remoteMax - localCount} new pairs...`);
+          const deltaResp = await fetch(DELTA_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ after_id: localCount })
+          });
+          const delta = await deltaResp.json();
+
+          if (delta.pairs && delta.pairs.length > 0) {
+            // Append new pairs to qaData
+            for (const p of delta.pairs) {
+              qaData.push({ question: p.question, answer: p.answer, source: p.source, weight: p.weight });
+            }
+
+            // Append new embeddings
+            if (delta.embeddings_b64) {
+              const newEmbBytes = Uint8Array.from(atob(delta.embeddings_b64), c => c.charCodeAt(0));
+              const newEmb = new Float32Array(newEmbBytes.buffer);
+              const merged = new Float32Array(qaEmbeddings.length + newEmb.length);
+              merged.set(qaEmbeddings);
+              merged.set(newEmb, qaEmbeddings.length);
+              qaEmbeddings = merged;
+            }
+
+            // Update cache
+            if (cacheDB) {
+              await idbPut(cacheDB, 'qaData', qaData);
+              await idbPut(cacheDB, 'qaEmbeddings', qaEmbeddings.buffer);
+              await idbPut(cacheDB, 'version', String(qaData.length));
+            }
+
+            console.log(`[webmind] Delta sync complete — added ${delta.pairs.length} pairs, now ${qaData.length.toLocaleString()} total`);
+          }
+        } catch(e) {
+          console.log('[webmind] Delta sync failed (offline?) — using cached data');
+        }
+      })();
+    }
 
     // ─── Google CSE search (CX from Programmable Search Engine) ───
     const GOOGLE_CSE_CX = 'c4ba99d848f5d433b';
