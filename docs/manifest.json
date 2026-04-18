@@ -1,1 +1,13 @@
-{}
+{
+  "name": "Webmind",
+  "short_name": "Webmind",
+  "description": "305K answers. Zero hallucinations. 100% private. Runs entirely on your device.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fefefe",
+  "theme_color": "#2d8a4e",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
