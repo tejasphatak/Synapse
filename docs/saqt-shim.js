@@ -31,7 +31,7 @@
   try {
     // Step 1: Import almostnode
     setStatus('Loading runtime...', 'almostnode', 5);
-    const { createContainer, getServerBridge } = await import('https://cdn.jsdelivr.net/npm/almostnode@latest/dist/index.mjs');
+    const { createContainer, getServerBridge } = await import('/almostnode.bundle.js');
 
     // Step 2: Create container
     setStatus('Booting backend...', 'Express server', 10);
