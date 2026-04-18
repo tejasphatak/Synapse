@@ -6,12 +6,7 @@
  */
 
 const BASE = process.argv[2] || 'https://chat.webmind.sh';
-const API_KEY = process.env.ANTHROPIC_API_KEY;
-
-if (!API_KEY) {
-  console.error('Set ANTHROPIC_API_KEY to run LLM-judged tests');
-  process.exit(1);
-}
+import { execSync } from 'child_process';
 
 let passed = 0, failed = 0;
 const results = [];
@@ -25,35 +20,23 @@ async function fetchJSON(path, opts = {}) {
 }
 
 async function judge(question, answer, criteria) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': API_KEY,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200,
-      messages: [{
-        role: 'user',
-        content: `You are evaluating a knowledge engine's answer. Be strict but fair.
+  const prompt = `You are evaluating a knowledge engine's answer. Be strict but fair.
 
 Question: "${question}"
 Answer: "${answer}"
 
 Criteria: ${criteria}
 
-Respond with ONLY a JSON object: {"pass": true/false, "reason": "one sentence"}`
-      }]
-    })
-  });
-  const data = await res.json();
-  const text = data.content?.[0]?.text || '';
+Respond with ONLY a JSON object: {"pass": true/false, "reason": "one sentence"}`;
+
   try {
-    return JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || '{"pass":false,"reason":"parse error"}');
-  } catch {
-    return { pass: false, reason: `LLM response: ${text.substring(0, 100)}` };
+    const result = execSync(
+      `echo ${JSON.stringify(prompt)} | claude --print`,
+      { timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+    return JSON.parse(result.match(/\{[\s\S]*\}/)?.[0] || '{"pass":false,"reason":"parse error"}');
+  } catch (e) {
+    return { pass: false, reason: `judge failed: ${e.message?.substring(0, 80)}` };
   }
 }
 
