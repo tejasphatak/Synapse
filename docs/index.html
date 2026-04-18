@@ -99,6 +99,14 @@
     <div class="stats-badge" id="stats">Loading...</div>
   </header>
 
+  <div id="status-bar" style="background:var(--primary-light);border-bottom:1px solid var(--border);padding:4px 20px;font-size:11px;color:var(--text2);display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+    <span id="sb-model">Model: --</span>
+    <span id="sb-kb">KB: --</span>
+    <span id="sb-net">Net: checking...</span>
+    <span id="sb-learned">Learned: 0</span>
+    <span id="sb-peers">Peers: 0</span>
+  </div>
+
   <div class="chat-container" id="chat">
     <div class="welcome">
       <h2>Ask anything</h2>
@@ -1027,14 +1035,62 @@ async function boot() {
     setTimeout(() => {
       document.getElementById('loading').classList.add('hidden');
       document.getElementById('app').classList.add('visible');
-      document.getElementById('stats').textContent = `${qaData.length} pairs · browser-only`;
+      document.getElementById('stats').textContent = `${qaData.length.toLocaleString()} pairs`;
       ready = true;
       input.focus();
+      runSelfCheck();
     }, 500);
   } catch (e) {
     setStatus('Error loading', e.message, 0);
     console.error(e);
   }
+}
+
+// ── SELF CHECK ──────────────────────────────────────────
+
+async function runSelfCheck() {
+  // Model status
+  document.getElementById('sb-model').textContent = encoder ? 'Model: ready' : 'Model: failed';
+  document.getElementById('sb-model').style.color = encoder ? 'var(--primary)' : '#c62828';
+
+  // Knowledge base
+  const kbCount = qaData.length;
+  document.getElementById('sb-kb').textContent = `KB: ${kbCount.toLocaleString()} pairs`;
+  document.getElementById('sb-kb').style.color = kbCount > 1000 ? 'var(--primary)' : '#ff9800';
+
+  // Internet connectivity
+  try {
+    const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/Main_Page', { method: 'HEAD' });
+    if (r.ok) {
+      document.getElementById('sb-net').textContent = 'Net: online';
+      document.getElementById('sb-net').style.color = 'var(--primary)';
+    } else {
+      throw new Error();
+    }
+  } catch {
+    document.getElementById('sb-net').textContent = 'Net: offline';
+    document.getElementById('sb-net').style.color = '#ff9800';
+  }
+
+  // Learned pairs count
+  if (learnedDB) {
+    try {
+      const tx = learnedDB.transaction('pairs', 'readonly');
+      const req = tx.objectStore('pairs').count();
+      req.onsuccess = () => {
+        document.getElementById('sb-learned').textContent = `Learned: ${req.result}`;
+        if (req.result > 0) document.getElementById('sb-learned').style.color = 'var(--primary)';
+      };
+    } catch {}
+  }
+
+  // Peers
+  const peerCount = mesh ? mesh.peers.size : 0;
+  document.getElementById('sb-peers').textContent = `Peers: ${peerCount}`;
+  if (peerCount > 0) document.getElementById('sb-peers').style.color = 'var(--primary)';
+
+  // Re-check every 60s
+  setTimeout(runSelfCheck, 60000);
 }
 
 boot();
