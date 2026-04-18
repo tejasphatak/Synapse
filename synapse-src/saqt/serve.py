@@ -306,6 +306,14 @@ class SAQTEngine:
         self.index.add(emb)
 
         print(f"[saqt] Learned #{new_id} (w={initial_weight}): {question[:60]}...", flush=True)
+
+        # Auto-save FAISS every 50 learns to persist across restarts
+        learn_count = getattr(self, '_learn_count', 0) + 1
+        self._learn_count = learn_count
+        if learn_count % 50 == 0:
+            faiss.write_index(self.index, INDEX_PATH)
+            print(f"[saqt] FAISS saved ({self.index.ntotal} vectors)", flush=True)
+
         return {"ok": True, "id": new_id, "weight": initial_weight}
 
     def sync_browser_data(self):
