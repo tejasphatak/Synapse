@@ -430,27 +430,8 @@
 
     // Pass 1: Extract topic from format requests
     // "Can you create a markdown for current affairs?" → "current affairs"
-    function extractTopic(query) {
-      const patterns = [
-        // "create/make/write a markdown/list/table about/for/of TOPIC"
-        /(?:can you |please |could you |i need |i want )?(?:create|make|write|generate|draft|prepare|give me|provide|build|compose|put together|show me)(?:\s+me)?\s+(?:a|an|the|some)?\s*(?:markdown|md|list|table|document|doc|summary|report|essay|article|outline|presentation|slides?|spreadsheet|csv|json|html|text|paragraph|bullets?|overview|brief|writeup|write-up|notes?|chart|graph|diagram)\s*(?:about|for|of|on|regarding|related to|covering|explaining|describing|summarizing|detailing)\s+(.+)/i,
-        // "TOPIC in markdown/list format"
-        /(.+?)\s+(?:in|using|as|formatted as|formatted in)\s+(?:a\s+)?(?:markdown|md|list|table|document|summary|report|essay|article|outline|bullets?|html|text|paragraph)\s*(?:format)?$/i,
-        // "summarize/explain/describe TOPIC"
-        /(?:can you |please |could you )?(?:summarize|explain|describe|elaborate on|tell me about|give me info on|give me information about|what do you know about)\s+(.+)/i,
-      ];
-
-      for (const pattern of patterns) {
-        const match = query.match(pattern);
-        if (match && match[1]) {
-          const topic = match[1].replace(/[?.!,]+$/, '').trim();
-          if (topic.length > 2) return topic;
-        }
-      }
-      return null;
-    }
-
-    // Pass 2: Search with topic-focused embedding
+    // No hardcoded extractTopic() — the KB learns intent from its own data.
+    // Format/action requests ("create a list about X") are handled by teaching pairs.
     async function searchKB(queryText) {
       const output = await encoder(queryText, { pooling: 'mean', normalize: true });
       const qEmb = Array.from(output.data);
@@ -477,223 +458,160 @@
     }
 
     // Step 5: Handle queries from Service Worker
+    // Derive thresholds from data distribution (computed once at load time)
+    // p25 of answer lengths = what counts as "short" for this KB
+    const sortedLens = qaData.map(q => q.answer.length).sort((a, b) => a - b);
+    const dataP25 = sortedLens[Math.floor(sortedLens.length * 0.25)];
+    const dataMedian = sortedLens[Math.floor(sortedLens.length * 0.5)];
+    console.log(`[webmind] Answer length distribution: p25=${dataP25}, median=${dataMedian}`);
+
     channel.port1.onmessage = async (event) => {
       const { id, question, chatId, messageId } = event.data;
       try {
-        // Two-pass: extract topic if this is a format/action request
-        const topic = extractTopic(question);
-        let searchQuery = question;
-        let usedTopic = false;
+        // ─── Pure search engine: no hardcoded intent detection ───
+        // The KB teaches intent via weighted pairs (tool calls, system prompts).
+        // The engine just searches, composes, and lets the data decide.
 
-        if (topic) {
-          // Search both interpretations to detect ambiguity
-          const topicResult = await searchKB(topic);
-          const fullResult = await searchKB(question);
-
-          const AMBIGUITY_THRESHOLD = 0.5;
-          const topicStrong = topicResult.bestScore >= AMBIGUITY_THRESHOLD;
-          const fullStrong = fullResult.bestScore >= AMBIGUITY_THRESHOLD;
-
-          // Check if matches are about DIFFERENT topics by comparing their embeddings
-          let matchSimilarity = 0;
-          if (topicResult.bestIdx !== fullResult.bestIdx) {
-            const offA = topicResult.bestIdx * DIM, offB = fullResult.bestIdx * DIM;
-            for (let d = 0; d < DIM; d++) matchSimilarity += qaEmbeddings[offA + d] * qaEmbeddings[offB + d];
-          } else {
-            matchSimilarity = 1.0; // same pair = not ambiguous
-          }
-
-          // Both strong + matches about different topics (low similarity) → genuinely ambiguous
-          if (topicStrong && fullStrong && matchSimilarity < 0.5) {
-            const topicQ = qaData[topicResult.bestIdx].question;
-            const fullQ = qaData[fullResult.bestIdx].question;
-            const clarification = `I found strong matches for different interpretations of your question:\n\n` +
-              `1. **${topic}** — "${topicQ.substring(0, 80)}"\n` +
-              `2. **${question}** — "${fullQ.substring(0, 80)}"\n\n` +
-              `Could you clarify what you're looking for?`;
-            channel.port1.postMessage({ id, answer: clarification });
-            return;
-          }
-
-          // Only one interpretation is strong — use it
-          if (topicStrong) {
-            searchQuery = topic;
-            usedTopic = true;
-          }
-          // else: topic weak, use full query as-is
-        }
-
-        // ─── Multi-hop search with web as a hop ───
-        const MAX_HOPS = 5;
-        const CONFIDENCE_THRESHOLD = 0.35;
-        const WEB_HOP_THRESHOLD = 0.35; // only web-search if KB has no confident match
-        const MIN_WEB_QUERY_LEN = 8; // skip web for trivial queries like "hi", "hello"
-        const SHORT_THRESHOLD = 200; // answers shorter than this get enriched
-        let answer = '';
-        let facts = [];
-        let visited = new Set();
-        let context = searchQuery;
-        let bestOverallScore = 0;
-        let usedWeb = false;
-
-        // Internal monologue — builds the thinking block
         const thinking = [];
         const t0 = Date.now();
         const think = (line) => thinking.push(line);
 
-        // Step 1: Parallel gathering — KB search + web search (if needed) at once
         think(`Query: "${question}"`);
-        if (usedTopic) think(`Extracted topic: "${searchQuery}"`);
 
-        emitStatus(chatId, messageId, 'queries_generated', `Searching "${searchQuery.substring(0, 50)}"`, false, { queries: [searchQuery.substring(0, 60)] });
+        // Step 1: Search KB — fire in parallel with web (web results used only if KB is weak)
+        emitStatus(chatId, messageId, 'queries_generated', `Searching "${question.substring(0, 50)}"`, false, { queries: [question.substring(0, 60)] });
 
-        // Fire KB search
-        const kbPromise = searchKB(searchQuery);
+        const kbPromise = searchKB(question);
+        const webPromise = searchWebMulti(question); // always fire — data decides if we use it
 
-        // Fire web search in parallel if query is long enough (we'll use results only if KB is weak)
-        const needsWebCandidate = searchQuery.length >= MIN_WEB_QUERY_LEN;
-        const webPromise = needsWebCandidate ? searchWebMulti(searchQuery) : Promise.resolve([]);
-
-        // Await both in parallel
         const [{ bestIdx: firstIdx, bestScore: firstScore }, webResults] = await Promise.all([kbPromise, webPromise]);
-        bestOverallScore = firstScore;
 
-        think(`KB search: best match "${qaData[firstIdx].question.substring(0, 80)}" → ${(firstScore * 100).toFixed(1)}% confidence`);
+        let answer = '';
+        let bestOverallScore = firstScore;
+        const visited = new Set();
+        const facts = [];
+        let usedWeb = false;
 
-        if (firstScore >= CONFIDENCE_THRESHOLD) {
+        think(`KB: "${qaData[firstIdx].question.substring(0, 80)}" → ${(firstScore * 100).toFixed(1)}%`);
+
+        // Use top match — the score IS the confidence (no hardcoded threshold needed,
+        // but we need a floor below which "no answer" is better than noise.
+        // Use 1/sqrt(N) as the random-chance baseline for this embedding space)
+        const noiseFloor = 1 / Math.sqrt(qaData.length);
+
+        if (firstScore > noiseFloor) {
           answer = qaData[firstIdx].answer;
           visited.add(firstIdx);
           facts.push(qaData[firstIdx].question);
-          think(`✓ Confident match found. Using this as primary answer.`);
+          think(`✓ Above noise floor (${(noiseFloor * 100).toFixed(2)}%). Using as primary.`);
           emitStatus(chatId, messageId, 'sources_retrieved', `Matched: "${qaData[firstIdx].question.substring(0, 60)}" (${(firstScore * 100).toFixed(0)}%)`, true, { count: 1 });
+
+          // If KB answer contains <tool> — it's a learned behavior (web search, compute, etc.)
+          // The KB itself taught the engine when to use tools. No hardcoded check needed.
+
         } else {
-          think(`✗ Below confidence threshold (${(CONFIDENCE_THRESHOLD * 100).toFixed(0)}%). Need more sources.`);
-          emitStatus(chatId, messageId, 'sources_retrieved', `Best match: ${(firstScore * 100).toFixed(0)}% confidence`, true, { count: 0 });
+          think(`✗ Below noise floor. KB has nothing relevant.`);
+          emitStatus(chatId, messageId, 'sources_retrieved', `No confident match`, true, { count: 0 });
         }
 
-        // Step 2: Use web results if KB confidence is low
-        if (firstScore < WEB_HOP_THRESHOLD && needsWebCandidate) {
+        // Step 2: Use web results if KB didn't produce a strong answer
+        // "Strong" = top match is well above noise. Let the score gap decide, not a constant.
+        const kbWeak = firstScore < noiseFloor * 10; // ~1.8% for 305K pairs — KB has weak/no coverage
+        if (kbWeak && webResults.length > 0) {
           usedWeb = true;
-          if (webResults.length > 0) {
-            think(`Web search returned ${webResults.length} results:`);
-            webResults.slice(0, 3).forEach((r, i) => think(`  ${i + 1}. ${r.text.substring(0, 80)}${r.url ? ' [' + r.url + ']' : ''}`));
-            const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
-            facts.push(...webResults.map(r => r.text.substring(0, 100)));
-            emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
+          think(`KB weak (${(firstScore * 100).toFixed(1)}%). Using ${webResults.length} web results:`);
+          webResults.slice(0, 3).forEach((r, i) => think(`  ${i + 1}. ${r.text.substring(0, 80)}`));
+          const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
+          facts.push(...webResults.map(r => r.text.substring(0, 100)));
+          emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
 
-            if (firstScore < CONFIDENCE_THRESHOLD) {
-              answer = webResults.map(r => {
-                let md = r.text;
-                if (r.url) md += `\n\n[Source](${r.url})`;
-                return md;
-              }).join('\n\n---\n\n').substring(0, 2000);
-              think(`Using web results as primary answer (KB too weak).`);
-            }
-
-            // Re-search KB with web context for better matches
-            context = `${searchQuery} ${webText}`;
-            think(`Re-searching KB with web context for better match...`);
-            emitStatus(chatId, messageId, 'queries_generated', 'Re-searching with web context', false, { queries: [searchQuery.substring(0, 40) + ' + web'] });
-            const { bestIdx: webIdx, bestScore: webScore } = await searchKB(context);
-            think(`Re-search: "${qaData[webIdx].question.substring(0, 60)}" → ${(webScore * 100).toFixed(1)}%`);
-            if (webScore > bestOverallScore && webScore >= CONFIDENCE_THRESHOLD && !visited.has(webIdx)) {
-              answer = qaData[webIdx].answer;
-              bestOverallScore = webScore;
-              visited.add(webIdx);
-              facts.push(qaData[webIdx].question);
-              think(`✓ Better match found via web-augmented search.`);
-              emitStatus(chatId, messageId, 'sources_retrieved', `Found: "${qaData[webIdx].question.substring(0, 60)}" (${(webScore * 100).toFixed(0)}%)`, true, { count: visited.size });
-            }
-          } else {
-            think(`Web search returned no results.`);
-            emitStatus(chatId, messageId, 'web_search', 'No web results found', true);
+          if (!answer) {
+            // No KB answer at all — web is the answer
+            answer = webResults.map(r => {
+              let md = r.text;
+              if (r.url) md += `\n\n[Source](${r.url})`;
+              return md;
+            }).join('\n\n---\n\n').substring(0, 2000);
+            think(`Using web as primary answer.`);
           }
-        } else if (needsWebCandidate) {
-          think(`KB confidence sufficient (${(firstScore * 100).toFixed(0)}%), skipping web search.`);
+
+          // Re-search KB with web context — web might help find a better KB match
+          const context = `${question} ${webText}`;
+          emitStatus(chatId, messageId, 'queries_generated', 'Re-searching with context', false, { queries: [question.substring(0, 40) + ' + web'] });
+          const { bestIdx: webIdx, bestScore: webScore } = await searchKB(context);
+          think(`Re-search: "${qaData[webIdx].question.substring(0, 60)}" → ${(webScore * 100).toFixed(1)}%`);
+          if (webScore > bestOverallScore && webScore > noiseFloor && !visited.has(webIdx)) {
+            answer = qaData[webIdx].answer;
+            bestOverallScore = webScore;
+            visited.add(webIdx);
+            facts.push(qaData[webIdx].question);
+            think(`✓ Better match via web-augmented search.`);
+            emitStatus(chatId, messageId, 'sources_retrieved', `Found: "${qaData[webIdx].question.substring(0, 60)}" (${(webScore * 100).toFixed(0)}%)`, true, { count: visited.size });
+          }
         }
 
-        // Step 3: Multi-hop refinement — gather deeper context
-        // Run if confidence is moderate OR answer is too short (needs enrichment)
-        if (answer && (bestOverallScore < 0.8 || answer.length < SHORT_THRESHOLD)) {
-          think(`Confidence ${(bestOverallScore * 100).toFixed(0)}% < 80%. Running multi-hop refinement...`);
-          for (let hop = 1; hop < MAX_HOPS; hop++) {
-            context = `${searchQuery} ${answer.substring(0, 200)}`;
-            const { bestIdx, bestScore } = await searchKB(context);
+        // Step 3: Multi-hop — keep searching while finding new relevant info
+        // No fixed hop count. Stop when the search stops finding new things.
+        if (answer) {
+          let hopsWithoutNew = 0;
+          for (let hop = 1; hopsWithoutNew < 2; hop++) { // stop after 2 consecutive dry hops
+            const ctx = `${question} ${answer.substring(0, 200)}`;
+            const { bestIdx, bestScore } = await searchKB(ctx);
 
-            if (bestScore >= CONFIDENCE_THRESHOLD && !visited.has(bestIdx)) {
+            if (bestScore > noiseFloor && !visited.has(bestIdx)) {
               visited.add(bestIdx);
-              if (!facts.includes(qaData[bestIdx].question)) {
-                facts.push(qaData[bestIdx].question);
-              }
+              hopsWithoutNew = 0;
+              if (!facts.includes(qaData[bestIdx].question)) facts.push(qaData[bestIdx].question);
               think(`Hop ${hop}: "${qaData[bestIdx].question.substring(0, 60)}" → ${(bestScore * 100).toFixed(1)}%`);
               emitStatus(chatId, messageId, 'sources_retrieved', `Hop ${hop}: "${qaData[bestIdx].question.substring(0, 50)}" (${(bestScore * 100).toFixed(0)}%)`, true, { count: visited.size });
 
               if (bestScore > bestOverallScore) {
                 answer = qaData[bestIdx].answer;
                 bestOverallScore = bestScore;
-                think(`✓ Upgraded answer — now ${(bestOverallScore * 100).toFixed(0)}% confident.`);
+                think(`✓ Better answer found (${(bestOverallScore * 100).toFixed(0)}%).`);
               }
             } else {
-              think(`Hop ${hop}: no new relevant matches. Stopping.`);
-              break;
-            }
-
-            if (bestOverallScore > 0.8) {
-              think(`Confidence ${(bestOverallScore * 100).toFixed(0)}% > 80%. Done.`);
-              break;
+              hopsWithoutNew++;
             }
           }
         }
 
-        // No answer found
-        if (!answer) {
-          think(`No confident match found in KB or web. Declining to answer.`);
-          answer = "I don't have enough confidence to answer that.";
-        }
+        // Step 4: Compose — if answer is shorter than the data's own p25,
+        // it's unusually terse for this KB. Enrich with related entries.
+        if (answer && answer.length < dataP25 && visited.size > 0) {
+          think(`Answer (${answer.length} chars) below KB p25 (${dataP25}). Enriching...`);
 
-        // Step 4: Enrich short answers with related context
-        // Short answers feel robotic. Compose a natural response from primary + supporting facts.
-        if (answer && answer.length < SHORT_THRESHOLD && visited.size > 0 && bestOverallScore >= CONFIDENCE_THRESHOLD) {
-          think(`Answer is short (${answer.length} chars). Enriching with related KB entries...`);
+          // Search with answer as context to find elaborations
+          const searches = await Promise.all([
+            searchKB(`${question} ${answer}`),
+            searchKB(answer)
+          ]);
 
-          // Gather supporting answers from multi-hop (already visited)
-          const supporting = [];
-          // Also do one more broad search for related content
-          const { bestIdx: relIdx, bestScore: relScore } = await searchKB(`${searchQuery} ${answer}`);
-          if (relScore >= CONFIDENCE_THRESHOLD && !visited.has(relIdx)) {
-            supporting.push(qaData[relIdx].answer);
-            visited.add(relIdx);
-            think(`  Found related: "${qaData[relIdx].question.substring(0, 50)}" (${(relScore * 100).toFixed(0)}%)`);
-          }
-
-          // Also search with the answer text itself to find elaborations
-          const { bestIdx: eIdx, bestScore: eScore } = await searchKB(answer);
-          if (eScore >= CONFIDENCE_THRESHOLD && !visited.has(eIdx) && qaData[eIdx].answer !== answer) {
-            supporting.push(qaData[eIdx].answer);
-            visited.add(eIdx);
-            think(`  Found elaboration: "${qaData[eIdx].question.substring(0, 50)}" (${(eScore * 100).toFixed(0)}%)`);
-          }
-
-          if (supporting.length > 0) {
-            // Compose: primary answer + supporting context
-            const composed = [answer];
-            for (const s of supporting) {
-              // Only add if it brings genuinely new info (not a repeat)
-              if (s.length > 30 && !answer.includes(s.substring(0, 30)) && !composed.some(c => c.includes(s.substring(0, 30)))) {
+          const composed = [answer];
+          for (const { bestIdx: idx, bestScore: score } of searches) {
+            if (score > noiseFloor && !visited.has(idx) && qaData[idx].answer !== answer) {
+              const s = qaData[idx].answer;
+              if (s.length > 30 && !composed.some(c => c.includes(s.substring(0, 30)))) {
                 composed.push(s);
+                visited.add(idx);
+                think(`  +related: "${qaData[idx].question.substring(0, 50)}" (${(score * 100).toFixed(0)}%)`);
               }
             }
-            if (composed.length > 1) {
-              answer = composed.join('\n\n');
-              think(`  Enriched answer: ${answer.length} chars from ${composed.length} sources.`);
-            }
           }
+          if (composed.length > 1) {
+            answer = composed.join('\n\n');
+            think(`  Enriched: ${answer.length} chars from ${composed.length} sources.`);
+          }
+        }
+
+        if (!answer) {
+          think(`No relevant matches found.`);
+          answer = "I don't have enough information to answer that question.";
         }
 
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-        think(`\nSources: ${visited.size} KB matches, ${usedWeb ? webResults.length + ' web results' : 'no web search'}. Time: ${elapsed}s.`);
+        think(`\nSources: ${visited.size} KB, ${usedWeb ? webResults.length + ' web' : 'no web'}. Time: ${elapsed}s.`);
 
-        // Prepend thinking block to answer (Open WebUI renders this as collapsible "Thought for Xs")
         const thinkingBlock = `<details type="reasoning" done="true" duration="${elapsed}">\n${thinking.join('\n')}\n</details>\n\n`;
         answer = thinkingBlock + answer;
 
