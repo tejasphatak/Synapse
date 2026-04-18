@@ -136,19 +136,28 @@ self.addEventListener('message', (event) => {
     queryPort = event.ports[0];
     console.log('[sw] SAQT port received');
     queryPort.onmessage = (e) => {
-      const { id, answer } = e.data;
+      const { id, answer, status } = e.data;
+      if (status) {
+        // Status update from main thread — emit as socket event
+        queueSocketEvent('events', {
+          chat_id: status.chatId,
+          message_id: status.messageId,
+          data: { type: 'status', data: status.data }
+        });
+        return;
+      }
       const resolve = pendingQueries.get(id);
       if (resolve) { resolve(answer); pendingQueries.delete(id); }
     };
   }
 });
 
-function saqtQuery(question) {
+function saqtQuery(question, chatId, messageId) {
   if (!queryPort) return Promise.resolve("SAQT engine not ready. Please refresh the page.");
   return new Promise((resolve) => {
     const id = ++queryId;
     pendingQueries.set(id, resolve);
-    queryPort.postMessage({ id, question });
+    queryPort.postMessage({ id, question, chatId, messageId });
     setTimeout(() => { if (pendingQueries.has(id)) { pendingQueries.delete(id); resolve("Query timed out."); } }, 30000);
   });
 }
@@ -215,9 +224,9 @@ async function handleAPI(request) {
     const responseMessageId = body.id;
     const chatId = body.chat_id;
 
-    // Fire SAQT query asynchronously, deliver answer via socket.io events
-    saqtQuery(q).then((answer) => {
-      // Send non-streaming completion via socket event
+    // Fire SAQT query asynchronously, deliver answer + status via socket.io
+    saqtQuery(q, chatId, responseMessageId).then((answer) => {
+      // Send answer via socket event
       queueSocketEvent('events', {
         chat_id: chatId,
         message_id: responseMessageId,

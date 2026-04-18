@@ -290,9 +290,20 @@
       return { bestIdx, bestScore };
     }
 
+    // ─── Status emitter for thinking/hop display ───
+    function emitStatus(chatId, messageId, action, description, done = false, extra = {}) {
+      if (!chatId || !messageId) return;
+      channel.port1.postMessage({
+        status: {
+          chatId, messageId,
+          data: { action, description, done, ...extra }
+        }
+      });
+    }
+
     // Step 5: Handle queries from Service Worker
     channel.port1.onmessage = async (event) => {
-      const { id, question } = event.data;
+      const { id, question, chatId, messageId } = event.data;
       try {
         // Two-pass: extract topic if this is a format/action request
         const topic = extractTopic(question);
@@ -348,6 +359,8 @@
         let bestOverallScore = 0;
         let usedWeb = false;
 
+        emitStatus(chatId, messageId, 'knowledge_search', `Searching knowledge base...`, false, { query: searchQuery });
+
         for (let hop = 0; hop < MAX_HOPS; hop++) {
           const { bestIdx, bestScore } = await searchKB(context);
 
@@ -359,18 +372,20 @@
               answer = qaData[bestIdx].answer;
               visited.add(bestIdx);
               facts.push(qaData[bestIdx].question);
+              emitStatus(chatId, messageId, 'knowledge_search', `Found match (${(bestScore * 100).toFixed(0)}% confidence)`, true, { query: searchQuery });
             }
 
             // Low confidence or moderate confidence — try web search as next hop
             if (bestScore < WEB_HOP_THRESHOLD && !usedWeb) {
               usedWeb = true;
+              emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
               const webResults = await searchWebMulti(searchQuery);
               if (webResults.length > 0) {
                 const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
                 facts.push(...webResults.map(r => r.text.substring(0, 100)));
+                emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
 
                 if (bestScore < CONFIDENCE_THRESHOLD) {
-                  // KB had nothing — use web as primary answer, formatted as markdown
                   answer = webResults.map(r => {
                     let md = r.text;
                     if (r.url) md += `\n\n[Source](${r.url})`;
@@ -379,8 +394,11 @@
                 }
 
                 // Re-search KB with web context for better matches
+                emitStatus(chatId, messageId, 'knowledge_search', 'Re-searching with web context...', false, { query: searchQuery });
                 context = `${searchQuery} ${webText}`;
-                continue; // next hop with enriched context
+                continue;
+              } else {
+                emitStatus(chatId, messageId, 'web_search', 'No web results found', true);
               }
             }
 
@@ -396,19 +414,21 @@
               if (!facts.includes(qaData[bestIdx].question)) {
                 facts.push(qaData[bestIdx].question);
               }
-              // If this is a better match than what we had, use it
               if (bestScore > bestOverallScore) {
                 answer = newAnswer;
                 bestOverallScore = bestScore;
+                emitStatus(chatId, messageId, 'knowledge_search', `Better match found (${(bestScore * 100).toFixed(0)}%)`, true, { query: context.substring(0, 60) });
               }
             }
 
             // Try web on later hops if still below threshold
             if (bestOverallScore < WEB_HOP_THRESHOLD && !usedWeb) {
               usedWeb = true;
+              emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
               const webResults = await searchWebMulti(context);
               if (webResults.length > 0) {
                 const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
+                emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
                 context = `${searchQuery} ${webText}`;
                 continue;
               }
