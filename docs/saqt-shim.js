@@ -152,8 +152,10 @@
     }
 
     // --- AUTH (must return user object for getSessionUser) ---
-    if (urlStr.includes('/auths'))
+    if (urlStr.includes('/auths')) {
+      console.log('[saqt-shim] AUTH:', method, urlStr, '→ returning user');
       return jsonResponse(FAKE_USER);
+    }
 
     // --- CONFIG ---
     if (urlStr.endsWith('/api/config') || urlStr.includes('/api/config?'))
@@ -267,7 +269,7 @@
       return jsonResponse({ data: [] });
 
     // --- Catch-all: return empty success for any API call ---
-    // This prevents the frontend from hanging on unhandled endpoints
+    console.log('[saqt-shim] catch-all:', method, urlStr.replace(location.origin, ''));
     if (method === 'GET') return jsonResponse([]);
     return jsonResponse({});
   };
