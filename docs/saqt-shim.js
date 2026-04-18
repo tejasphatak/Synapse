@@ -663,10 +663,23 @@
 
     setStatus('Ready!', qaData.length.toLocaleString() + ' pairs loaded', 100);
 
-    // Remove overlay
+    // Remove overlay + clean up UI (remove redundant branding)
     setTimeout(() => {
       const el = document.getElementById('saqt-overlay');
       if (el) { el.style.opacity = '0'; el.style.transition = 'opacity 0.5s'; setTimeout(() => el.remove(), 500); }
+
+      // Clean up redundant UI elements
+      setTimeout(() => {
+        // Remove "Set as default" buttons
+        document.querySelectorAll('button').forEach(b => {
+          if (b.textContent.trim() === 'Set as default') b.style.display = 'none';
+        });
+        // Remove footer version "Webmind · v0.8.12"
+        document.querySelectorAll('div').forEach(d => {
+          const t = d.textContent.trim();
+          if (t.match(/^Webmind\s*[·‧]\s*v\d/) && d.children.length === 0) d.style.display = 'none';
+        });
+      }, 500);
     }, 1000);
 
   } catch(e) {
