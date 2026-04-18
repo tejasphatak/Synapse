@@ -592,11 +592,13 @@
 
         think(`Query: "${question}"`);
 
-        // Step 1: Search KB — fire in parallel with web (web results used only if KB is weak)
+        // Step 1: Search KB + web in parallel
+        // The convergence loop handles "thinking" — no upfront query expansion needed.
+        // The embedding model already captures intent. Multi-hop refines it.
         emitStatus(chatId, messageId, 'queries_generated', `Searching "${question.substring(0, 50)}"`, false, { queries: [question.substring(0, 60)] });
 
         const kbPromise = searchKB(question);
-        const webPromise = searchWebMulti(question); // always fire — data decides if we use it
+        const webPromise = searchWebMulti(question);
 
         const [{ bestIdx: firstIdx, bestScore: firstScore }, webResults] = await Promise.all([kbPromise, webPromise]);
 

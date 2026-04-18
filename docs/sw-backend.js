@@ -1,4 +1,4 @@
-/* sw-version: 19 */
+/* sw-version: 20 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
