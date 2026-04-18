@@ -1,87 +1,137 @@
 #!/usr/bin/env python3
 """
-SAQT Server — Minimal
-======================
-Sentence transformer + Q&A pairs + sandbox. Nothing else.
-All intelligence lives in the knowledge base.
+SAQT Server — Minimal. FAISS + weights + confidence.
+Search + <tool> sandbox + feedback.
+All intelligence in the knowledge base.
 """
 
-import torch
-import torch.nn.functional as F
-from sentence_transformers import SentenceTransformer
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+import numpy as np
+import faiss
+import sqlite3
 import json, os, time, re, subprocess
 from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from sentence_transformers import SentenceTransformer
 
-DEVICE = "cpu"
 HOME = os.environ.get("HOME", "/home/tejasphatak")
 PORT = int(os.environ.get("SAQT_PORT", "3000"))
 PUBLIC_DIR = Path(__file__).parent / "public"
-QA_PATH = os.environ.get("SAQT_QA",
-    os.path.join(HOME, "webmind-research/trained_model/qa_pairs.jsonl"))
-EMB_PATH = os.environ.get("SAQT_EMB",
-    os.path.join(HOME, "webmind-research/trained_model/qa_embeddings.pt"))
+DB_PATH = os.environ.get("SAQT_DB",
+    os.path.join(HOME, "webmind-research/trained_model/saqt.db"))
+INDEX_PATH = os.environ.get("SAQT_INDEX",
+    os.path.join(HOME, "webmind-research/trained_model/saqt.faiss"))
+# Fallback to JSONL if no DB
+QA_PATH = os.path.join(HOME, "webmind-research/trained_model/qa_pairs.jsonl")
+EMB_PATH = os.path.join(HOME, "webmind-research/trained_model/qa_embeddings.pt")
+CONFIDENCE_THRESHOLD = 0.35
 
 
 class SAQTEngine:
     def __init__(self):
         print("[saqt] Loading encoder...", flush=True)
-        self.encoder = SentenceTransformer('all-MiniLM-L6-v2', device=DEVICE)
+        self.encoder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
 
-        print("[saqt] Loading knowledge base...", flush=True)
-        self.pairs = []
-        with open(QA_PATH) as f:
-            for line in f:
-                self.pairs.append(json.loads(line))
+        # Try FAISS+SQLite first, fall back to JSONL+torch
+        if os.path.exists(DB_PATH) and os.path.exists(INDEX_PATH):
+            print(f"[saqt] Loading FAISS + SQLite...", flush=True)
+            self.index = faiss.read_index(INDEX_PATH)
+            self.db = sqlite3.connect(DB_PATH, check_same_thread=False)
+            self.mode = "faiss"
+            count = self.db.execute("SELECT COUNT(*) FROM qa").fetchone()[0]
+            print(f"[saqt] {count:,} pairs in FAISS+SQLite", flush=True)
+        else:
+            print(f"[saqt] Loading JSONL+torch fallback...", flush=True)
+            import torch, torch.nn.functional as F
+            self.torch = torch
+            self.F = F
+            self.pairs = []
+            with open(QA_PATH) as f:
+                for line in f: self.pairs.append(json.loads(line))
+            self.embeddings = torch.load(EMB_PATH, map_location='cpu', weights_only=True)
+            self.mode = "torch"
+            print(f"[saqt] {len(self.pairs):,} pairs in torch mode", flush=True)
 
-        self.embeddings = torch.load(EMB_PATH, map_location=DEVICE, weights_only=True)
-        print(f"[saqt] {len(self.pairs):,} pairs, {self.embeddings.shape}", flush=True)
+    def search(self, query, top_k=5):
+        q_emb = self.encoder.encode([query], normalize_embeddings=True).astype(np.float32)
+
+        if self.mode == "faiss":
+            scores, indices = self.index.search(q_emb, top_k * 3)
+            results = []
+            for score, idx in zip(scores[0], indices[0]):
+                if idx < 0: continue
+                row = self.db.execute(
+                    "SELECT id, question, answer, source, weight FROM qa WHERE id=?",
+                    (int(idx) + 1,)).fetchone()
+                if row:
+                    results.append({
+                        "id": row[0], "question": row[1], "answer": row[2],
+                        "source": row[3], "weight": row[4] or 1.0,
+                        "raw_score": float(score),
+                        "score": float(score) * (row[4] or 1.0),
+                    })
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:top_k]
+        else:
+            q_t = self.torch.tensor(q_emb)
+            sims = self.F.cosine_similarity(q_t, self.embeddings)
+            top_vals, top_idxs = sims.topk(top_k)
+            return [{"id": idx.item(), "question": self.pairs[idx.item()].get("question",""),
+                     "answer": self.pairs[idx.item()].get("answer",""),
+                     "source": self.pairs[idx.item()].get("source",""),
+                     "score": val.item(), "weight": 1.0}
+                    for val, idx in zip(top_vals, top_idxs)]
+
+    def boost(self, pair_id):
+        if self.mode == "faiss":
+            self.db.execute("UPDATE qa SET weight = MIN(weight * 1.1, 5.0) WHERE id=?", (pair_id,))
+            self.db.commit()
+
+    def penalize(self, pair_id):
+        if self.mode == "faiss":
+            self.db.execute("UPDATE qa SET weight = MAX(weight * 0.9, 0.1) WHERE id=?", (pair_id,))
+            self.db.commit()
 
     def query(self, question, max_hops=5):
         t0 = time.time()
-        q_emb = self.encoder.encode([question], convert_to_tensor=True,
-                                   show_progress_bar=False)[0]
+        results = self.search(question, top_k=3)
 
-        visited = set()
-        facts, answers, trace = [], [], []
+        if not results or results[0]["score"] < CONFIDENCE_THRESHOLD:
+            return {
+                "question": question,
+                "answer": "I don't have enough confidence to answer that. My best match was too weak.",
+                "confidence": results[0]["score"] if results else 0,
+                "facts": [], "answers": [], "trace": [],
+                "hops": 0, "totalFacts": 0,
+                "timeMs": int((time.time() - t0) * 1000),
+            }
 
-        for hop in range(max_hops):
-            # Search
-            sims = F.cosine_similarity(q_emb.unsqueeze(0), self.embeddings)
-            top_vals, top_idxs = sims.topk(min(3 + len(visited), len(self.pairs)))
+        best = results[0]
+        answer = best["answer"]
+        facts = [r["question"] for r in results if r["question"]]
+        answers = [r["answer"] for r in results if r["answer"]]
 
-            for val, idx in zip(top_vals, top_idxs):
-                i = idx.item()
-                if i in visited:
-                    continue
-                if val.item() < 0.2:
+        # Multi-hop: re-encode with context, search again
+        trace = [{"hop": 0, "score": best["score"], "id": best["id"]}]
+        visited = {best["id"]}
+
+        for hop in range(1, max_hops):
+            ctx = f"{question} {answer[:200]}"
+            new_results = self.search(ctx, top_k=5)
+            found_new = False
+            for r in new_results:
+                if r["id"] not in visited and r["score"] > CONFIDENCE_THRESHOLD:
+                    visited.add(r["id"])
+                    if r["answer"] not in answers:
+                        answers.append(r["answer"])
+                    if r["question"] not in facts:
+                        facts.append(r["question"])
+                    trace.append({"hop": hop, "score": r["score"], "id": r["id"]})
+                    found_new = True
                     break
-                visited.add(i)
-                pair = self.pairs[i]
-                a = pair.get("answer", "")
-                q = pair.get("question", "")
-                if a and a not in answers:
-                    answers.append(a)
-                if q and q not in facts:
-                    facts.append(q)
-                break  # One new fact per hop
-
-            trace.append({"hop": hop, "score": round(top_vals[0].item(), 3),
-                         "facts": len(facts)})
-
-            # Re-encode with context
-            ctx = f"{question} {' '.join(answers[-3:])}"
-            q_emb = self.encoder.encode([ctx], convert_to_tensor=True,
-                                       show_progress_bar=False)[0]
-
-            # Convergence: if top score barely changed, stop
-            if hop > 0 and abs(trace[-1]["score"] - trace[-2]["score"]) < 0.01:
+            if not found_new:
                 break
 
-        # Best answer
-        answer = answers[0] if answers else ""
-
-        # Tool call: <tool> tag → substitute {QUERY} → sandbox
+        # Tool call
         if '<tool>' in answer:
             match = re.search(r'<tool>(.*?)</tool>', answer, re.DOTALL)
             if match:
@@ -90,8 +140,7 @@ class SAQTEngine:
                     result = subprocess.run(
                         ["python3", "-c", code],
                         capture_output=True, text=True, timeout=5,
-                        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
-                        cwd="/tmp")
+                        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}, cwd="/tmp")
                     if result.stdout.strip():
                         answer = result.stdout.strip()
                 except:
@@ -99,13 +148,19 @@ class SAQTEngine:
 
         return {
             "question": question, "answer": answer,
+            "confidence": best["score"],
             "facts": facts[:10], "answers": answers[:5], "trace": trace,
             "hops": len(trace), "totalFacts": len(facts),
             "timeMs": int((time.time() - t0) * 1000),
+            "matchId": best["id"],
         }
 
     def stats(self):
-        return {"ready": True, "chunks": len(self.pairs), "device": DEVICE}
+        if self.mode == "faiss":
+            count = self.db.execute("SELECT COUNT(*) FROM qa").fetchone()[0]
+        else:
+            count = len(self.pairs)
+        return {"ready": True, "chunks": count, "mode": self.mode}
 
 
 # ── HTTP ──────────────────────────────────────────────────
@@ -117,49 +172,53 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*a, directory=str(PUBLIC_DIR), **kw)
 
     def do_OPTIONS(self):
-        self.send_response(204)
-        self._cors()
-        self.end_headers()
+        self.send_response(204); self._cors(); self.end_headers()
 
     def do_GET(self):
         if self.path == '/api/saqt/stats':
             self._json(engine.stats())
         elif self.path in ('/', '/chat.html'):
-            self.path = '/chat.html'
-            super().do_GET()
+            self.path = '/chat.html'; super().do_GET()
         else:
             super().do_GET()
 
     def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
         if self.path == '/api/saqt/query':
-            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
             q = body.get('question', '')
             ctx = body.get('context', '')
-            if not q:
-                self._json({"error": "Missing question"}, 400)
-                return
+            if not q: self._json({"error": "Missing question"}, 400); return
             full = f"{ctx} {q}".strip() if ctx else q
             result = engine.query(full, max_hops=min(body.get('hops', 5), 10))
             result['question'] = q
             self._json(result)
+        elif self.path == '/api/saqt/feedback':
+            pair_id = body.get('id')
+            action = body.get('action')  # "boost" or "penalize"
+            if pair_id and action == 'boost':
+                engine.boost(pair_id)
+                self._json({"ok": True})
+            elif pair_id and action == 'penalize':
+                engine.penalize(pair_id)
+                self._json({"ok": True})
+            else:
+                self._json({"error": "Need id + action"}, 400)
         else:
             self.send_error(404)
 
     def _json(self, data, code=200):
-        self.send_response(code)
-        self._cors()
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
+        self.send_response(code); self._cors()
+        self.send_header('Content-Type', 'application/json'); self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
     def _cors(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        for h, v in [('Access-Control-Allow-Origin', '*'),
+                      ('Access-Control-Allow-Methods', 'GET,POST,OPTIONS'),
+                      ('Access-Control-Allow-Headers', 'Content-Type')]:
+            self.send_header(h, v)
 
     def log_message(self, fmt, *a):
-        if '/api/' in str(a[0]):
-            print(f"[saqt] {a[0]}", flush=True)
+        if '/api/' in str(a[0]): print(f"[saqt] {a[0]}", flush=True)
 
 
 if __name__ == "__main__":

@@ -257,7 +257,8 @@
 <div class="chat-container" id="chat">
   <div class="welcome">
     <h2>Ask anything</h2>
-    <p>Powered by SAQT — distributed knowledge retrieval across 65,000+ facts. No GPU required. Zero hallucinations.</p>
+    <p>Powered by SAQT — 305K+ Q&A pairs, sentence transformer routing, no LLM, no GPU. Every answer comes from a verified source.</p>
+    <p style="font-size:11px;color:#999;margin-top:8px;">Disclaimer: This is a retrieval system, not a generative AI. Answers are pre-stored Q&A pairs matched by semantic similarity. Tool-tagged answers execute code in a sandboxed environment. Not intended for medical, legal, or safety-critical use.</p>
   </div>
 </div>
 
@@ -362,6 +363,30 @@ async function sendQuery() {
       loadingBubble.parentElement.appendChild(m);
     }
 
+    // Thinking trace (collapsible)
+    if (data.trace && data.trace.length > 0) {
+      html += `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:11px;color:var(--text-secondary);user-select:none;">Thinking (${data.hops} hops, ${data.timeMs}ms, confidence: ${(data.confidence||0).toFixed(2)})</summary>`;
+      html += `<div style="font-size:11px;color:var(--text-secondary);padding:6px;background:#f5f5f5;border-radius:6px;margin-top:4px;">`;
+      for (const t of data.trace) {
+        html += `Hop ${t.hop}: score=${t.score?.toFixed(3)||'?'} id=${t.id||'?'}<br>`;
+      }
+      if (data.facts && data.facts.length > 0) {
+        html += `<br>Sources:<br>`;
+        for (const f of data.facts.slice(0, 3)) {
+          html += `• ${escapeHtml(f.substring(0, 100))}<br>`;
+        }
+      }
+      html += `</div></details>`;
+    }
+
+    // Feedback buttons
+    if (data.matchId) {
+      html += `<div style="margin-top:6px;display:flex;gap:8px;">`;
+      html += `<button onclick="sendFeedback(${data.matchId},'boost')" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:white;cursor:pointer;">Good answer</button>`;
+      html += `<button onclick="sendFeedback(${data.matchId},'penalize')" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:white;cursor:pointer;">Bad answer</button>`;
+      html += `</div>`;
+    }
+
     // Save to history for conversation continuity
     history.push({ q, a: data.answer || '' });
 
@@ -372,6 +397,18 @@ async function sendQuery() {
   sendBtn.disabled = false;
   input.focus();
   chat.scrollTop = chat.scrollHeight;
+}
+
+async function sendFeedback(id, action) {
+  try {
+    await fetch('/api/saqt/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action })
+    });
+    event.target.textContent = action === 'boost' ? 'Boosted' : 'Penalized';
+    event.target.disabled = true;
+  } catch(e) {}
 }
 
 function escapeHtml(s) {
