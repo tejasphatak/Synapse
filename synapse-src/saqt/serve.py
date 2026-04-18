@@ -157,7 +157,18 @@ class SAQTEngine:
 
         results = self.search(search_query, top_k=3)
 
-        if not results or results[0]["score"] < CONFIDENCE_THRESHOLD:
+        # Check answer-question alignment — does the answer actually match the question?
+        kb_weak = not results or results[0]["score"] < CONFIDENCE_THRESHOLD
+        if not kb_weak and results:
+            # Encode both question and answer, check alignment
+            q_emb = self.encoder.encode([question], normalize_embeddings=True)
+            a_emb = self.encoder.encode([results[0]["answer"][:200]], normalize_embeddings=True)
+            alignment = float(np.dot(q_emb[0], a_emb[0]))
+            noise_floor = 1 / np.sqrt(len(results))
+            if alignment < noise_floor * 5:
+                kb_weak = True  # KB matched but answer doesn't fit the question
+
+        if kb_weak:
             # KB can't answer — search the web
             web_answer = self.web_search(question)
             if web_answer:
@@ -367,9 +378,11 @@ class SAQTEngine:
         }
 
     def web_search(self, query):
-        """Search the web when KB can't answer. Returns best answer text or None."""
+        """Search the web when KB can't answer.
+        Uses source agreement for validation — multiple sources agreeing = higher trust.
+        Returns (answer, confidence) or None."""
         import urllib.request, urllib.parse
-        results = []
+        sources = {}  # source_name → text
 
         # Source 1: Wikipedia summary
         try:
@@ -380,7 +393,7 @@ class SAQTEngine:
             resp = urllib.request.urlopen(req, timeout=5)
             d = json.loads(resp.read())
             if d.get("extract"):
-                results.append(d["extract"])
+                sources["wikipedia"] = d["extract"]
         except: pass
 
         # Source 2: DuckDuckGo instant answers
@@ -393,11 +406,11 @@ class SAQTEngine:
             d = json.loads(resp.read())
             text = d.get("AbstractText") or d.get("Answer") or ""
             if text:
-                results.append(text)
+                sources["duckduckgo"] = text
         except: pass
 
         # Source 3: Wikipedia search fallback
-        if not results:
+        if "wikipedia" not in sources:
             try:
                 q = urllib.parse.quote(query)
                 req = urllib.request.Request(
@@ -408,14 +421,29 @@ class SAQTEngine:
                 hits = d.get("query", {}).get("search", [])
                 if hits:
                     snippet = " ".join(h["snippet"].replace("<span class=\"searchmatch\">", "").replace("</span>", "") for h in hits)
-                    results.append(snippet)
+                    sources["wikipedia_search"] = snippet
             except: pass
 
-        if results:
-            answer = max(results, key=len)  # pick longest/most detailed
-            print(f"[saqt] Web search: {query[:40]}... → {len(answer)} chars", flush=True)
-            return answer[:800]
-        return None
+        if not sources:
+            return None
+
+        # Source agreement validation:
+        # Multiple sources → higher initial weight (data earned trust)
+        n_sources = len(sources)
+        answer = max(sources.values(), key=len)[:800]  # pick longest/most detailed
+
+        # Check if sources agree (embed both, compare)
+        if n_sources >= 2:
+            texts = list(sources.values())
+            embs = self.encoder.encode(texts[:2], normalize_embeddings=True)
+            agreement = float(np.dot(embs[0], embs[1]))
+            # Sources agree → learn at higher weight (trust earned from data)
+            initial_weight = min(0.5 + agreement, 1.5) if agreement > 0.3 else 0.3
+        else:
+            initial_weight = 0.3  # single source = low trust
+
+        print(f"[saqt] Web: {query[:40]}... → {n_sources} sources, w={initial_weight:.1f}, {len(answer)} chars", flush=True)
+        return answer
 
     def stats(self):
         if self.mode == "faiss":
