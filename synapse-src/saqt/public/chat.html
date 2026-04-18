@@ -331,33 +331,22 @@ async function sendQuery() {
     });
     const data = await res.json();
 
-    // Build answer
+    // Build answer — ONE clean response
     let html = '';
 
-    // Main answer
     if (data.answer) {
-      html += `<div style="line-height:1.7;margin-bottom:6px;">${escapeHtml(data.answer)}</div>`;
+      html += `<div style="line-height:1.7;">${escapeHtml(data.answer)}</div>`;
+    } else {
+      html += `<div style="color:var(--text-secondary);">I don't have enough information to answer that yet.</div>`;
     }
 
-    // Other possible answers
-    if (data.otherAnswers && data.otherAnswers.length > 0) {
-      html += `<div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">Other answers: ${data.otherAnswers.map(escapeHtml).join(' | ')}</div>`;
-    }
-
-    // Confidence indicator
-    if (data.confidence === 'direct') {
-      html += `<div style="font-size:11px;color:var(--primary);margin-bottom:4px;">Direct match found</div>`;
-    }
-
-    // Collapsible sources — always show
+    // Sources hidden by default — click to expand
     if (data.facts && data.facts.length > 0) {
-      html += `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--primary);font-weight:600;user-select:none;">View sources (${data.totalFacts} facts, ${data.hops} hops, ${data.timeMs}ms)</summary>`;
-      for (const fact of data.facts.slice(0, 6)) {
-        html += `<div class="fact-card">${escapeHtml(fact.substring(0, 250))}</div>`;
+      html += `<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:11px;color:var(--text-secondary);user-select:none;">${data.totalFacts} sources · ${data.hops} hops · ${data.timeMs}ms</summary>`;
+      for (const fact of data.facts.slice(0, 4)) {
+        html += `<div class="fact-card">${escapeHtml(fact.substring(0, 200))}</div>`;
       }
       html += `</details>`;
-    } else {
-      html += `<div style="font-size:13px;color:var(--text-secondary);">No matching facts in knowledge base.</div>`;
     }
 
     loadingBubble.innerHTML = html;
