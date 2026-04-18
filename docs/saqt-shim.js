@@ -316,10 +316,13 @@
 
       saqtReady = true;
       setStatus('Ready!', qaData.length.toLocaleString() + ' pairs', 100);
+      // Wait a bit for Open WebUI to finish its own initialization, then remove overlay
       setTimeout(() => {
         const el = document.getElementById('saqt-overlay');
         if (el) { el.style.opacity = '0'; el.style.transition = 'opacity 0.5s'; setTimeout(() => el.remove(), 500); }
-      }, 800);
+        // Force-hide any remaining spinners from Open WebUI
+        document.querySelectorAll('.animate-spin, [class*="spinner"]').forEach(s => s.style.display = 'none');
+      }, 2000);
     } catch(e) {
       setStatus('Error: ' + e.message, '', 0);
       console.error('[saqt]', e);
