@@ -142,25 +142,61 @@ async function loadEncoder() {
 async function loadData() {
   setStatus('Loading knowledge base...', '305K Q&A pairs', 45);
 
-  // Load from same origin or CDN
-  const dataUrl = window.SAQT_DATA_URL || './qa_data.json';
-  const embUrl = window.SAQT_EMB_URL || './qa_embeddings.bin';
+  // Try local files first, then GitHub Release, then demo data
+  const GH_RELEASE = 'https://github.com/tejasphatak/webmind-research/releases/download/v1.0-data';
+  const dataUrls = [
+    window.SAQT_DATA_URL || './qa_data.json',
+    `${GH_RELEASE}/qa_data.json`,
+  ];
+  const embUrls = [
+    window.SAQT_EMB_URL || './qa_embeddings.bin',
+    `${GH_RELEASE}/qa_embeddings.bin`,
+  ];
 
-  try {
-    // Try loading pre-built data
-    const dataResp = await fetch(dataUrl);
-    if (dataResp.ok) {
+  let loaded = false;
+  for (let i = 0; i < dataUrls.length && !loaded; i++) {
+    try {
+      setStatus('Loading knowledge base...', i === 0 ? 'Checking local...' : 'Downloading from GitHub (535MB)...', 45);
+      const dataResp = await fetch(dataUrls[i]);
+      if (!dataResp.ok) continue;
+
       qaData = await dataResp.json();
       setStatus('Loading embeddings...', `${qaData.length} pairs loaded`, 60);
 
-      const embResp = await fetch(embUrl);
-      const embBuf = await embResp.arrayBuffer();
-      qaEmbeddings = new Float32Array(embBuf);
+      const embResp = await fetch(embUrls[i]);
+      if (!embResp.ok) continue;
+
+      // Show download progress for large files
+      const contentLength = embResp.headers.get('Content-Length');
+      if (contentLength && parseInt(contentLength) > 1000000) {
+        const reader = embResp.body.getReader();
+        const total = parseInt(contentLength);
+        let received = 0;
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          const pct = Math.round((received / total) * 100);
+          setStatus('Downloading embeddings...', `${Math.round(received/1024/1024)}MB / ${Math.round(total/1024/1024)}MB`, 60 + pct * 0.35);
+        }
+        const blob = new Blob(chunks);
+        const embBuf = await blob.arrayBuffer();
+        qaEmbeddings = new Float32Array(embBuf);
+      } else {
+        const embBuf = await embResp.arrayBuffer();
+        qaEmbeddings = new Float32Array(embBuf);
+      }
+
       setStatus('Ready!', `${qaData.length} Q&A pairs`, 100);
-    } else {
-      throw new Error('Data not found');
+      loaded = true;
+    } catch (e) {
+      console.log(`[load] Source ${i} failed:`, e.message);
     }
-  } catch (e) {
+  }
+
+  if (!loaded) {
     // Fallback: load minimal demo data inline
     setStatus('Loading demo data...', 'Using built-in examples', 60);
     qaData = getDemoData();
