@@ -702,46 +702,58 @@
           }
         }
 
-        // Step 3: Multi-hop — keep searching while finding new relevant info
-        // No fixed hop count. Stop when the search stops finding new things.
+        // Step 3: Convergence loop — iterate until answer stops changing
+        // Like gradient descent: search → refine → search → measure delta → stop when stable
+        // No fixed hop count. The embedding model measures convergence.
         if (answer) {
-          let hopsWithoutNew = 0;
-          for (let hop = 1; hopsWithoutNew < 2; hop++) { // stop after 2 consecutive dry hops
+          let prevAnswerEmb = null;
+          let hop = 0;
+
+          while (true) {
+            hop++;
+            // Encode current answer to measure convergence
+            const answerOutput = await encoder(answer.substring(0, 200), { pooling: 'mean', normalize: true });
+            const currentEmb = Array.from(answerOutput.data);
+
+            // Measure delta from previous iteration
+            if (prevAnswerEmb) {
+              let similarity = 0;
+              for (let d = 0; d < DIM; d++) similarity += currentEmb[d] * prevAnswerEmb[d];
+              think(`  Hop ${hop}: convergence=${(similarity * 100).toFixed(1)}%`);
+
+              // Converged — answer stopped changing meaningfully
+              if (similarity > 0.95) {
+                think(`✓ Converged at hop ${hop}.`);
+                break;
+              }
+            }
+            prevAnswerEmb = currentEmb;
+
+            // Search with current context
             const ctx = `${question} ${answer.substring(0, 200)}`;
             const { bestIdx, bestScore } = await searchKB(ctx);
 
             if (bestScore > noiseFloor && !visited.has(bestIdx)) {
               visited.add(bestIdx);
-              hopsWithoutNew = 0;
+              const newContent = qaData[bestIdx].answer;
               if (!facts.includes(qaData[bestIdx].question)) facts.push(qaData[bestIdx].question);
-              think(`Hop ${hop}: "${qaData[bestIdx].question.substring(0, 60)}" → ${(bestScore * 100).toFixed(1)}%`);
-              emitStatus(chatId, messageId, 'sources_retrieved', `Hop ${hop}: "${qaData[bestIdx].question.substring(0, 50)}" (${(bestScore * 100).toFixed(0)}%)`, true, { count: visited.size });
 
               if (bestScore > bestOverallScore) {
-                answer = qaData[bestIdx].answer;
+                // Better primary answer found
+                answer = newContent;
                 bestOverallScore = bestScore;
-                think(`✓ Better answer found (${(bestOverallScore * 100).toFixed(0)}%).`);
+                think(`  Hop ${hop}: upgraded → "${qaData[bestIdx].question.substring(0, 50)}" (${(bestScore * 100).toFixed(0)}%)`);
+              } else if (newContent.length > 30 && !answer.includes(newContent.substring(0, 30))) {
+                // Complementary info — compose
+                answer = answer + '\n\n' + newContent;
+                think(`  Hop ${hop}: +context "${qaData[bestIdx].question.substring(0, 50)}" (${(bestScore * 100).toFixed(0)}%)`);
               }
+
+              emitStatus(chatId, messageId, 'sources_retrieved', `Hop ${hop}: "${qaData[bestIdx].question.substring(0, 50)}" (${(bestScore * 100).toFixed(0)}%)`, true, { count: visited.size });
             } else {
-              hopsWithoutNew++;
-            }
-          }
-        }
-
-        // Step 4: Compose — if answer is shorter than the data's own p25,
-        // search again with the original question to find more depth.
-        // The embeddings decide what's related — no word-overlap heuristics.
-        if (answer && answer.length < dataP25 && visited.size > 0) {
-          think(`Answer (${answer.length} chars) below KB p25 (${dataP25}). Enriching...`);
-
-          const { bestIdx: relIdx, bestScore: relScore } = await searchKB(`${question} ${answer}`);
-
-          if (relScore > noiseFloor && !visited.has(relIdx)) {
-            const related = qaData[relIdx].answer;
-            if (related.length > 30 && !answer.includes(related.substring(0, 30))) {
-              answer = answer + '\n\n' + related;
-              visited.add(relIdx);
-              think(`  +context: "${qaData[relIdx].question.substring(0, 50)}" (${(relScore * 100).toFixed(0)}%)`);
+              // No new relevant content — converged by exhaustion
+              think(`  Hop ${hop}: no new content. Converged.`);
+              break;
             }
           }
         }
