@@ -175,11 +175,11 @@
 
     // --- MODELS ---
     if (urlStr.includes('/api/models') || urlStr.includes('/api/v1/models'))
-      return jsonResponse({ data: [{
+      return jsonResponse([{
         id: 'webmind-305k', name: 'Webmind 305K', object: 'model', owned_by: 'webmind',
-        info: { meta: { description: '305K Q&A pairs. No LLM. Runs in your browser.' } },
-        preset: true
-      }]});
+        info: { id: 'webmind-305k', name: 'Webmind 305K', meta: { description: '305K Q&A pairs. No LLM. Runs in your browser.', profile_image_url: '' } },
+        preset: true, actions: [], arena: false
+      }]);
     if (urlStr.includes('/openai/models'))
       return jsonResponse({ data: [{ id: 'webmind-305k', object: 'model', owned_by: 'webmind' }]});
 
@@ -245,7 +245,12 @@
     if (urlStr.includes('/api/v1/notes')) return jsonResponse({ data: [] });
     if (urlStr.includes('/api/usage')) return jsonResponse({});
     if (urlStr.includes('/api/v1/analytics')) return jsonResponse({});
-    if (urlStr.includes('/api/changelog')) return jsonResponse({ dismissed: true, latest: '0.8.12', changelog: [] });
+    if (urlStr.includes('/api/changelog')) return jsonResponse([]);
+    if (urlStr.includes('/api/v1/terminals')) return jsonResponse([]);
+    if (urlStr.includes('/api/v1/skills')) return jsonResponse({ data: [] });
+    if (urlStr.includes('/api/v1/banners')) return jsonResponse([]);
+    if (urlStr.includes('/api/v1/tags')) return jsonResponse([]);
+    if (urlStr.includes('/api/events')) return jsonResponse([]);
     if (urlStr.includes('/api/community')) return jsonResponse([]);
 
     // --- OLLAMA ---
@@ -260,8 +265,9 @@
     if (urlStr.includes('/api/v1/pipelines'))
       return jsonResponse({ data: [] });
 
-    // --- Catch-all: return empty success ---
-    console.log('[saqt-shim] unhandled:', method, urlStr);
+    // --- Catch-all: return empty success for any API call ---
+    // This prevents the frontend from hanging on unhandled endpoints
+    if (method === 'GET') return jsonResponse([]);
     return jsonResponse({});
   };
 
