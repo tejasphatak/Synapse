@@ -204,7 +204,6 @@ async function runBatch(items, label) {
             question: item.question,
             answer: item.gold_answers[0],
             source: 'benchmark-rlhf',
-            weight: 2.0,
           }),
         }).catch(() => {}); // fire-and-forget
       }
