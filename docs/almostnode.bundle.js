@@ -6687,7 +6687,7 @@ minimatch.escape = escape;
 minimatch.unescape = unescape;
 
 // node_modules/just-bash/dist/bundle/browser.js
-import { gunzipSync as d3 } from "node:zlib";
+const d3 = (buf) => buf;
 
 // node_modules/diff/libesm/diff/base.js
 var Diff = class {
@@ -7863,7 +7863,7 @@ function canConvert(input) {
 var turndown_browser_es_default = TurndownService;
 
 // node_modules/just-bash/dist/bundle/browser.js
-import { constants as nc, gunzipSync as b0, gzipSync as x0 } from "node:zlib";
+const nc = {}; const b0 = (buf) => buf; const x0 = (buf) => buf;
 var Q7 = Object.create;
 var Sa = Object.defineProperty;
 var X7 = Object.getOwnPropertyDescriptor;
