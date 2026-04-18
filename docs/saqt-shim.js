@@ -151,41 +151,43 @@
       try { body = JSON.parse(opts.body); } catch(e) {}
     }
 
-    // --- AUTH ---
-    if (urlStr.includes('/api/v1/auths/signin') || urlStr.includes('/api/v1/auths/signup'))
-      return jsonResponse(FAKE_USER);
-    if (urlStr.includes('/api/v1/auths'))
+    // --- AUTH (must return user object for getSessionUser) ---
+    if (urlStr.includes('/auths'))
       return jsonResponse(FAKE_USER);
 
     // --- CONFIG ---
-    if (urlStr.includes('/api/config'))
+    if (urlStr.endsWith('/api/config') || urlStr.includes('/api/config?'))
       return jsonResponse({
-        status: true, name: 'Webmind', version: '1.0.0',
+        status: true, name: 'Webmind', version: '0.8.12',
         default_locale: 'en-US', default_models: 'webmind-305k',
         default_prompt_suggestions: [],
-        features: { auth: false, auth_trusted_header: true,
-          enable_signup: false, enable_login_form: false, enable_web_search: false,
-          enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false,
+        features: { auth: false, auth_trusted_header: false,
+          enable_signup: false, enable_login_form: true,
+          enable_websocket: false, enable_direct_connections: false,
+          enable_web_search: false, enable_image_generation: false,
+          enable_community_sharing: false, enable_admin_export: false,
           enable_admin_chat_access: false },
         onboarding: false,
         permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true },
           chat: { file_upload: false, delete: true, edit: true, temporary: true } },
         oauth: { providers: {} }
       });
+    if (urlStr.includes('/api/version'))
+      return jsonResponse({ version: '0.8.12', deployment_id: null });
 
     // --- MODELS ---
     if (urlStr.includes('/api/models') || urlStr.includes('/api/v1/models'))
-      return jsonResponse([{
+      return jsonResponse({ data: [{
         id: 'webmind-305k', name: 'Webmind 305K', object: 'model', owned_by: 'webmind',
         info: { id: 'webmind-305k', name: 'Webmind 305K', meta: { description: '305K Q&A pairs. No LLM. Runs in your browser.', profile_image_url: '' } },
         preset: true, actions: [], arena: false
-      }]);
+      }]});
     if (urlStr.includes('/openai/models'))
       return jsonResponse({ data: [{ id: 'webmind-305k', object: 'model', owned_by: 'webmind' }]});
 
-    // --- CHAT COMPLETIONS ---
+    // --- CHAT COMPLETIONS (main chat endpoint) ---
     if (urlStr.includes('/chat/completions')) {
-      if (!saqtReady) return jsonResponse({ error: { message: 'SAQT engine still loading...' }}, 503);
+      if (!saqtReady) return jsonResponse({ error: { message: 'SAQT engine still loading. Please wait for the knowledge base to finish downloading.' }}, 503);
       const messages = body.messages || [];
       let q = '';
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -197,13 +199,8 @@
       }
       if (!q) return jsonResponse({ error: { message: 'No user message' }}, 400);
       const result = await query(q);
-      if (body.stream) return streamResponse(result.answer);
-      return jsonResponse({
-        id: 'wmind-' + Date.now(), object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000), model: 'webmind-305k',
-        choices: [{ index: 0, message: { role: 'assistant', content: result.answer }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-      });
+      // Always return SSE stream format (Open WebUI expects it)
+      return streamResponse(result.answer);
     }
 
     // --- TASKS (title gen, tags, follow-ups, emoji) — return empty/defaults ---
@@ -228,8 +225,12 @@
     }
 
     // --- USERS ---
+    if (urlStr.includes('/api/v1/users/settings'))
+      return jsonResponse({ ui: {} });
     if (urlStr.includes('/api/v1/users'))
       return jsonResponse(FAKE_USER);
+    if (urlStr.includes('/api/v1/configs/banners'))
+      return jsonResponse([]);
 
     // --- KNOWLEDGE/MEMORIES/TOOLS/FUNCTIONS/etc — return empty ---
     if (urlStr.includes('/api/v1/knowledge')) return jsonResponse({ data: [] });
