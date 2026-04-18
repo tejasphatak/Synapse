@@ -328,6 +328,29 @@ class SAQTEngine:
             else:
                 answer = ""
 
+        # If answer looks like code, execute it and return output
+        if answer and any(kw in answer for kw in ['print(', 'import ', 'for ', 'def ']):
+            import io, datetime as _dt, math as _math
+            safe_globals = {
+                "__builtins__": {"print": print, "range": range, "len": len,
+                                "str": str, "int": int, "float": float,
+                                "list": list, "dict": dict, "abs": abs,
+                                "round": round, "sum": sum, "min": min, "max": max,
+                                "sorted": sorted, "enumerate": enumerate, "zip": zip,
+                                "True": True, "False": False, "None": None,
+                                "__import__": lambda name: {"datetime": _dt, "math": _math}.get(name)},
+                "math": _math, "datetime": _dt,
+            }
+            output = io.StringIO()
+            safe_globals["__builtins__"]["print"] = lambda *a, **kw: output.write(' '.join(str(x) for x in a) + '\n')
+            try:
+                exec(answer, safe_globals)
+                result = output.getvalue().strip()
+                if result:
+                    answer = result
+            except:
+                pass  # Keep original answer if exec fails
+
         return {
             "question": question,
             "answer": answer,
@@ -478,7 +501,47 @@ class SAQTEngine:
             except:
                 pass
 
-        # Pattern 3: formula with = sign (extract and evaluate right side)
+        # Pattern 3: code block — sandboxed exec with whitelisted modules
+        code_patterns = [
+            re.search(r'```(?:python)?\s*\n?(.*?)```', text, re.DOTALL),
+            re.search(r'(?:print\(|import\s+\w)', text),
+        ]
+        if any(code_patterns):
+            # Extract the code
+            code = text
+            code_block = re.search(r'```(?:python)?\s*\n?(.*?)```', text, re.DOTALL)
+            if code_block:
+                code = code_block.group(1).strip()
+            else:
+                # Try to extract inline code
+                lines = [l.strip() for l in text.split('\n') if l.strip().startswith(('import ', 'print(', 'from ', 'def ', 'for ', 'if ', 'result'))]
+                if lines:
+                    code = '\n'.join(lines)
+                else:
+                    code = None
+
+            if code:
+                import io, datetime
+                safe_globals = {
+                    "__builtins__": {"print": print, "range": range, "len": len,
+                                    "str": str, "int": int, "float": float,
+                                    "list": list, "dict": dict, "abs": abs,
+                                    "round": round, "sum": sum, "min": min, "max": max,
+                                    "sorted": sorted, "enumerate": enumerate, "zip": zip},
+                    "math": math,
+                    "datetime": datetime,
+                }
+                output = io.StringIO()
+                safe_globals["__builtins__"]["print"] = lambda *a, **kw: output.write(' '.join(str(x) for x in a) + '\n')
+                try:
+                    exec(code, safe_globals)
+                    result = output.getvalue().strip()
+                    if result:
+                        return result
+                except Exception as e:
+                    pass  # Error feeds back into loop
+
+        # Pattern 4: formula with = sign (extract and evaluate right side)
         formula_match = re.search(r'=\s*([^.]+?)(?:\.|$)', text)
         if formula_match:
             expr = formula_match.group(1).strip()
