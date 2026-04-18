@@ -216,6 +216,73 @@ class SAQTEngine:
             "matchId": best["id"],
         }
 
+    def learn(self, question, answer, source="web-learned", weight=1.0):
+        """Add a new Q&A pair from web search results or user interaction."""
+        if self.mode != "faiss":
+            return {"error": "learn requires faiss mode"}
+
+        # Check for duplicates — don't learn what we already know
+        existing = self.db.execute(
+            "SELECT id FROM qa WHERE question=?", (question,)).fetchone()
+        if existing:
+            return {"skipped": True, "reason": "duplicate", "id": existing[0]}
+
+        # Insert new pair
+        self.db.execute(
+            "INSERT INTO qa (question, answer, source, weight) VALUES (?, ?, ?, ?)",
+            (question, answer, source, weight))
+        self.db.commit()
+        new_id = self.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # Encode and add to FAISS index
+        emb = self.encoder.encode([question], normalize_embeddings=True).astype(np.float32)
+        self.index.add(emb)
+
+        print(f"[saqt] Learned: {question[:60]}... (id={new_id})", flush=True)
+        return {"ok": True, "id": new_id}
+
+    def sync_browser_data(self):
+        """Export fresh qa_data.json + qa_embeddings.bin for browser consumption."""
+        if self.mode != "faiss":
+            return {"error": "sync requires faiss mode"}
+
+        browser_dir = Path(__file__).parent / "browser"
+        browser_dir.mkdir(exist_ok=True)
+
+        # Export Q&A as JSON
+        rows = self.db.execute("SELECT id, question, answer, source, weight FROM qa ORDER BY id").fetchall()
+        qa_list = [{"question": r[1], "answer": r[2], "source": r[3], "weight": r[4]} for r in rows]
+
+        json_path = browser_dir / "qa_data.json"
+        with open(json_path, 'w') as f:
+            json.dump(qa_list, f)
+
+        # Export embeddings — re-encode all (ensures consistency)
+        print(f"[saqt] Syncing {len(rows)} pairs to browser format...", flush=True)
+        questions = [r[1] for r in rows]
+
+        # Batch encode for speed
+        batch_size = 512
+        all_embs = []
+        for i in range(0, len(questions), batch_size):
+            batch = questions[i:i+batch_size]
+            embs = self.encoder.encode(batch, normalize_embeddings=True, show_progress_bar=False)
+            all_embs.append(embs)
+            if i % 5000 == 0:
+                print(f"[saqt] Encoded {i}/{len(questions)}...", flush=True)
+
+        embeddings = np.vstack(all_embs).astype(np.float32)
+        emb_path = browser_dir / "qa_embeddings.bin"
+        embeddings.tofile(str(emb_path))
+
+        # Also save FAISS index
+        faiss.write_index(self.index, INDEX_PATH)
+
+        size_json = json_path.stat().st_size / 1024 / 1024
+        size_emb = emb_path.stat().st_size / 1024 / 1024
+        print(f"[saqt] Sync complete: {len(rows)} pairs, {size_json:.1f}MB JSON, {size_emb:.1f}MB embeddings", flush=True)
+        return {"ok": True, "pairs": len(rows), "json_mb": round(size_json, 1), "emb_mb": round(size_emb, 1)}
+
     def stats(self):
         if self.mode == "faiss":
             count = self.db.execute("SELECT COUNT(*) FROM qa").fetchone()[0]
@@ -300,6 +367,20 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"ok": True})
             else:
                 self._json({"error": "Need id + action"}, 400)
+        elif self.path == '/api/saqt/learn':
+            q = body.get('question', '').strip()
+            a = body.get('answer', '').strip()
+            source = body.get('source', 'web-learned')
+            weight = min(float(body.get('weight', 1.0)), 5.0)
+            if not q or not a:
+                self._json({"error": "Need question + answer"}, 400)
+            else:
+                result = engine.learn(q, a, source=source, weight=weight)
+                self._json(result)
+        elif self.path == '/api/saqt/sync':
+            # Full rebuild of browser data — expensive, run sparingly
+            result = engine.sync_browser_data()
+            self._json(result)
         else:
             self.send_error(404)
 
