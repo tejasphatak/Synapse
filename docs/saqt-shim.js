@@ -535,87 +535,83 @@
         let bestOverallScore = 0;
         let usedWeb = false;
 
-        emitStatus(chatId, messageId, 'knowledge_search', `Searching knowledge base...`, false, { query: searchQuery });
+        // Step 1: Initial KB search
+        emitStatus(chatId, messageId, 'queries_generated', `Searching "${searchQuery.substring(0, 50)}"`, false, { queries: [searchQuery.substring(0, 60)] });
 
-        for (let hop = 0; hop < MAX_HOPS; hop++) {
-          const { bestIdx, bestScore } = await searchKB(context);
+        const { bestIdx: firstIdx, bestScore: firstScore } = await searchKB(searchQuery);
+        bestOverallScore = firstScore;
 
-          // Hop 0: initial search
-          if (hop === 0) {
-            bestOverallScore = bestScore;
+        if (firstScore >= CONFIDENCE_THRESHOLD) {
+          answer = qaData[firstIdx].answer;
+          visited.add(firstIdx);
+          facts.push(qaData[firstIdx].question);
+          emitStatus(chatId, messageId, 'sources_retrieved', `Matched: "${qaData[firstIdx].question.substring(0, 60)}" (${(firstScore * 100).toFixed(0)}%)`, true, { count: 1 });
+        } else {
+          emitStatus(chatId, messageId, 'sources_retrieved', `Best match: ${(firstScore * 100).toFixed(0)}% confidence`, true, { count: 0 });
+        }
 
-            if (bestScore >= CONFIDENCE_THRESHOLD) {
-              answer = qaData[bestIdx].answer;
-              visited.add(bestIdx);
-              facts.push(qaData[bestIdx].question);
-              emitStatus(chatId, messageId, 'knowledge_search', `Found match (${(bestScore * 100).toFixed(0)}% confidence)`, true, { query: searchQuery });
+        // Step 2: Web search if KB confidence is low
+        if (firstScore < WEB_HOP_THRESHOLD && searchQuery.length >= MIN_WEB_QUERY_LEN) {
+          usedWeb = true;
+          emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
+          const webResults = await searchWebMulti(searchQuery);
+          if (webResults.length > 0) {
+            const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
+            facts.push(...webResults.map(r => r.text.substring(0, 100)));
+            emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
+
+            if (firstScore < CONFIDENCE_THRESHOLD) {
+              answer = webResults.map(r => {
+                let md = r.text;
+                if (r.url) md += `\n\n[Source](${r.url})`;
+                return md;
+              }).join('\n\n---\n\n').substring(0, 2000);
             }
 
-            // Low confidence — try web search as next hop (skip for trivial queries)
-            if (bestScore < WEB_HOP_THRESHOLD && !usedWeb && searchQuery.length >= MIN_WEB_QUERY_LEN) {
-              usedWeb = true;
-              emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
-              const webResults = await searchWebMulti(searchQuery);
-              if (webResults.length > 0) {
-                const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
-                facts.push(...webResults.map(r => r.text.substring(0, 100)));
-                emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
-
-                if (bestScore < CONFIDENCE_THRESHOLD) {
-                  answer = webResults.map(r => {
-                    let md = r.text;
-                    if (r.url) md += `\n\n[Source](${r.url})`;
-                    return md;
-                  }).join('\n\n---\n\n').substring(0, 2000);
-                }
-
-                // Re-search KB with web context for better matches
-                emitStatus(chatId, messageId, 'knowledge_search', 'Re-searching with web context...', false, { query: searchQuery });
-                context = `${searchQuery} ${webText}`;
-                continue;
-              } else {
-                emitStatus(chatId, messageId, 'web_search', 'No web results found', true);
-              }
-            }
-
-            if (bestScore < CONFIDENCE_THRESHOLD && !answer) {
-              answer = "I don't have enough confidence to answer that.";
-              break;
+            // Re-search KB with web context
+            context = `${searchQuery} ${webText}`;
+            emitStatus(chatId, messageId, 'queries_generated', 'Re-searching with web context', false, { queries: [searchQuery.substring(0, 40) + ' + web'] });
+            const { bestIdx: webIdx, bestScore: webScore } = await searchKB(context);
+            if (webScore > bestOverallScore && webScore >= CONFIDENCE_THRESHOLD && !visited.has(webIdx)) {
+              answer = qaData[webIdx].answer;
+              bestOverallScore = webScore;
+              visited.add(webIdx);
+              facts.push(qaData[webIdx].question);
+              emitStatus(chatId, messageId, 'sources_retrieved', `Found: "${qaData[webIdx].question.substring(0, 60)}" (${(webScore * 100).toFixed(0)}%)`, true, { count: visited.size });
             }
           } else {
-            // Subsequent hops: look for new relevant info
+            emitStatus(chatId, messageId, 'web_search', 'No web results found', true);
+          }
+        }
+
+        // Step 3: Multi-hop refinement — gather more context
+        if (answer && bestOverallScore < 0.8) {
+          for (let hop = 1; hop < MAX_HOPS; hop++) {
+            context = `${searchQuery} ${answer.substring(0, 200)}`;
+            const { bestIdx, bestScore } = await searchKB(context);
+
             if (bestScore >= CONFIDENCE_THRESHOLD && !visited.has(bestIdx)) {
               visited.add(bestIdx);
-              const newAnswer = qaData[bestIdx].answer;
               if (!facts.includes(qaData[bestIdx].question)) {
                 facts.push(qaData[bestIdx].question);
               }
+              emitStatus(chatId, messageId, 'sources_retrieved', `Hop ${hop}: "${qaData[bestIdx].question.substring(0, 50)}" (${(bestScore * 100).toFixed(0)}%)`, true, { count: visited.size });
+
               if (bestScore > bestOverallScore) {
-                answer = newAnswer;
+                answer = qaData[bestIdx].answer;
                 bestOverallScore = bestScore;
-                emitStatus(chatId, messageId, 'knowledge_search', `Better match found (${(bestScore * 100).toFixed(0)}%)`, true, { query: context.substring(0, 60) });
               }
+            } else {
+              break; // no new relevant info
             }
 
-            // Try web on later hops if still below threshold
-            if (bestOverallScore < WEB_HOP_THRESHOLD && !usedWeb && searchQuery.length >= MIN_WEB_QUERY_LEN) {
-              usedWeb = true;
-              emitStatus(chatId, messageId, 'web_search', 'Searching the web', false);
-              const webResults = await searchWebMulti(context);
-              if (webResults.length > 0) {
-                const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
-                emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
-                context = `${searchQuery} ${webText}`;
-                continue;
-              }
-            }
-
-            // Enrich context for next hop
-            context = `${searchQuery} ${answer.substring(0, 200)}`;
+            if (bestOverallScore > 0.8) break;
           }
+        }
 
-          // Stop if we have high confidence
-          if (bestOverallScore > 0.8) break;
+        // No answer found
+        if (!answer) {
+          answer = "I don't have enough confidence to answer that.";
         }
 
         // Tool execution on final answer
