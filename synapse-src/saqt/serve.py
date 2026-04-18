@@ -217,29 +217,71 @@ class SAQTEngine:
         }
 
     def learn(self, question, answer, source="web-learned", weight=1.0):
-        """Add a new Q&A pair from web search results or user interaction."""
+        """Add a new Q&A pair. No hardcoded quality gates.
+
+        Strategy: store everything at low weight. The weight system
+        handles quality naturally — useful answers get boosted when
+        retrieved, useless ones stay at low weight and never surface.
+
+        Only gate: semantic dedup (the embedding model decides, not us).
+        If the nearest neighbor is essentially the same question,
+        boost that neighbor instead of creating a duplicate.
+        """
         if self.mode != "faiss":
             return {"error": "learn requires faiss mode"}
 
-        # Check for duplicates — don't learn what we already know
-        existing = self.db.execute(
-            "SELECT id FROM qa WHERE question=?", (question,)).fetchone()
-        if existing:
-            return {"skipped": True, "reason": "duplicate", "id": existing[0]}
+        # Encode the question
+        emb = self.encoder.encode([question], normalize_embeddings=True).astype(np.float32)
 
-        # Insert new pair
+        # Check nearest neighbor — let the embedding model decide if it's a duplicate
+        scores, indices = self.index.search(emb, 1)
+        nn_score = float(scores[0][0]) if indices[0][0] >= 0 else 0
+
+        if indices[0][0] >= 0:
+            existing_row = self.db.execute(
+                "SELECT id, question, weight FROM qa WHERE id=?",
+                (int(indices[0][0]) + 1,)).fetchone()
+
+            if existing_row and nn_score > 0.95:
+                # Near-identical question — boost existing instead of duplicating
+                self.boost(existing_row[0])
+                print(f"[saqt] Boosted #{existing_row[0]} (sim={nn_score:.3f}): \"{existing_row[1][:40]}\"", flush=True)
+                return {"boosted": True, "id": existing_row[0],
+                        "similarity": nn_score, "new_weight": existing_row[2] * 1.1}
+
+        # Ethics gate — check learned content against ethics pairs in KB
+        # The KB itself teaches what's acceptable via high-weight ethics pairs.
+        # Search the question against KB — if top match is an ethics/safety pair
+        # (source='ethics'), the KB is telling us this topic is sensitive.
+        ethics_check = self.search(question, top_k=1)
+        if ethics_check and ethics_check[0].get('source') == 'ethics' and ethics_check[0]['score'] > 0.5:
+            print(f"[saqt] Blocked learn (ethics): \"{question[:40]}\" matched ethics pair #{ethics_check[0]['id']}", flush=True)
+            return {"skipped": True, "reason": "ethics-blocked",
+                    "matched_rule": ethics_check[0]['question'][:80]}
+
+        # PII heuristic — if answer contains patterns that look like personal data,
+        # strip them before storing. Not hardcoded rules — the encoder catches
+        # semantic similarity to PII-related queries via ethics pairs.
+        # We just do a basic sanitization of obvious structured PII.
+        import re as _re
+        sanitized = answer
+        # Phone numbers, SSNs, emails, credit cards — structural patterns, not topic rules
+        sanitized = _re.sub(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', '[REDACTED]', sanitized)
+        sanitized = _re.sub(r'\b\d{3}-\d{2}-\d{4}\b', '[REDACTED]', sanitized)
+        sanitized = _re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '[REDACTED]', sanitized)
+        sanitized = _re.sub(r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b', '[REDACTED]', sanitized)
+
+        # Store with low initial weight — it earns its way up through retrieval
+        initial_weight = min(weight, 0.5) if source == 'web-learned' else weight
         self.db.execute(
             "INSERT INTO qa (question, answer, source, weight) VALUES (?, ?, ?, ?)",
-            (question, answer, source, weight))
+            (question, sanitized, source, initial_weight))
         self.db.commit()
         new_id = self.db.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-        # Encode and add to FAISS index
-        emb = self.encoder.encode([question], normalize_embeddings=True).astype(np.float32)
         self.index.add(emb)
 
-        print(f"[saqt] Learned: {question[:60]}... (id={new_id})", flush=True)
-        return {"ok": True, "id": new_id}
+        print(f"[saqt] Learned #{new_id} (w={initial_weight}): {question[:60]}...", flush=True)
+        return {"ok": True, "id": new_id, "weight": initial_weight}
 
     def sync_browser_data(self):
         """Export fresh qa_data.json + qa_embeddings.bin for browser consumption."""

@@ -612,19 +612,19 @@
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         think(`\nSources: ${visited.size} KB, ${usedWeb ? webResults.length + ' web' : 'no web'}. Time: ${elapsed}s.`);
 
-        // Step 5: Learn — if web search provided the answer, teach it back to the KB
-        // This closes the self-evolution loop: KB miss → web hit → new KB entry
+        // Step 5: Learn — send web-sourced answers to server
+        // No client-side filtering. The server handles dedup (semantic similarity)
+        // and weight management. Everything starts at low weight and earns its way up
+        // through retrieval. The data decides what's valuable, not hardcoded rules.
         const LEARN_API = VM_BASE.replace('/saqt/browser', '') + '/api/saqt/learn';
-        if (usedWeb && answer && answer.length > 50) {
-          // Strip source links for clean KB entry
+        if (usedWeb && answer) {
           const cleanAnswer = answer.replace(/\n\n\[Source\]\([^)]+\)/g, '').replace(/\n\n---\n\n/g, '\n\n').substring(0, 800);
-          think(`Learning: saving web-sourced answer to KB for "${question.substring(0, 40)}..."`);
-          // Fire-and-forget — don't block the response
+          think(`Learning: sending to KB. Server will dedup + set weight.`);
           fetch(LEARN_API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, answer: cleanAnswer, source: 'web-learned', weight: 1.0 })
-          }).catch(() => {}); // silent fail — learning is best-effort
+            body: JSON.stringify({ question, answer: cleanAnswer, source: 'web-learned' })
+          }).catch(() => {});
         }
 
         const thinkingBlock = `<details type="reasoning" done="true" duration="${elapsed}">\n${thinking.join('\n')}\n</details>\n\n`;
