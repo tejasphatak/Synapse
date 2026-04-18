@@ -376,15 +376,31 @@ function runInSandbox(code, question) {
 }
 
 // Multi-hop query with tool execution
-async function query(question) {
+async function query(question, conversationCtx = '') {
   const t0 = performance.now();
   const THRESHOLD = 0.35;
   const MAX_HOPS = 5;
 
-  // First hop
+  // First hop — encode the question alone
   const qEmb = await encode(question);
-  const results = search(qEmb, 3);
-  const best = results[0];
+  let results = search(qEmb, 3);
+  let best = results[0];
+
+  // Follow-up detection: if the question is vague ("tell me more", "what else",
+  // "and?", "continue") AND we have conversation context, re-search with
+  // the previous topic prepended for disambiguation
+  const isFollowUp = best && best.score < 0.5 && conversationCtx.length > 0;
+  if (isFollowUp) {
+    // Use last question + current question for better matching
+    const disambiguated = conversationCtx.substring(0, 150) + ' ' + question;
+    const ctxEmb = await encode(disambiguated);
+    const ctxResults = search(ctxEmb, 5);
+    // Only use context-enriched results if they're better AND different
+    if (ctxResults[0] && ctxResults[0].score > best.score) {
+      results = ctxResults.slice(0, 3);
+      best = results[0];
+    }
+  }
 
   if (!best || best.score < THRESHOLD) {
     // Try auto-learning from Wikipedia
@@ -833,11 +849,12 @@ window.ask = async function() {
 
   const loading = addMessage('bot', '<span style="color:var(--text2)">Thinking...</span>');
 
-  const ctx = history.slice(-4).map(h => `${h.q} ${h.a}`).join(' ');
-  const full = ctx ? `${ctx} ${q}` : q;
+  // Pass last Q&A as context for follow-up disambiguation
+  const lastExchange = history.length > 0 ? history[history.length - 1] : null;
+  const recentCtx = lastExchange ? `${lastExchange.q} ${lastExchange.a.substring(0, 150)}` : '';
 
   try {
-    const result = await query(full);
+    const result = await query(q, recentCtx);
 
     let html = `<div style="line-height:1.7;">${escapeHtml(result.answer)}</div>`;
 
