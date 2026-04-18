@@ -111,8 +111,112 @@ class SAQTEngine:
             if indices:
                 self.profiles[nid] = self.embeddings[indices].mean(dim=0)
 
+    def _try_compute(self, question):
+        """Detect and execute math/conversion queries locally. No LLM needed."""
+        import re, math
+        q = question.strip()
+
+        # Direct arithmetic: "347 × 29", "100 + 50", "sqrt(144)"
+        # Clean up unicode operators
+        expr = q.lower()
+        for old, new in [('×', '*'), ('÷', '/'), ('plus', '+'), ('minus', '-'),
+                         ('times', '*'), ('divided by', '/'), ('what is ', ''),
+                         ('calculate ', ''), ('compute ', ''), ('whats ', ''),
+                         ("what's ", ''), ('= ?', ''), ('=?', ''), ('?', '')]:
+            expr = expr.replace(old, new)
+        expr = expr.strip()
+
+        # Check if it looks like math
+        if re.match(r'^[\d\s\+\-\*\/\.\(\)\^sqrt,pi e]+$', expr):
+            try:
+                expr = expr.replace('^', '**').replace('sqrt', 'math.sqrt')
+                expr = expr.replace('pi', str(math.pi)).replace(' e ', str(math.e))
+                result = eval(expr, {"__builtins__": {}, "math": math})
+                if isinstance(result, float):
+                    result = round(result, 6)
+                return str(result)
+            except:
+                pass
+
+        # Temperature conversion
+        m = re.match(r'(?:convert\s+)?(\d+)\s*(?:°?\s*)?([cfk])\s*(?:to|in)\s*(?:°?\s*)?([cfk])', expr)
+        if m:
+            val, fr, to = float(m.group(1)), m.group(2), m.group(3)
+            try:
+                if fr == 'c' and to == 'f': return f"{val * 9/5 + 32}°F"
+                if fr == 'f' and to == 'c': return f"{(val - 32) * 5/9:.1f}°C"
+                if fr == 'c' and to == 'k': return f"{val + 273.15}K"
+                if fr == 'k' and to == 'c': return f"{val - 273.15}°C"
+            except:
+                pass
+
+        # Symbolic math: integrate, differentiate, solve equations
+        try:
+            import sympy
+            from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application
+
+            sym_patterns = [
+                (r'(?:integrate|integral of)\s+(.+?)(?:\s+dx|\s+dy)?$', 'integrate'),
+                (r'(?:derivative of|differentiate)\s+(.+?)(?:\s+dx)?$', 'diff'),
+                (r'(?:solve|find x)\s+(.+?)(?:\s+for\s+x)?$', 'solve'),
+                (r'(?:factor|factorize|factorise)\s+(.+)$', 'factor'),
+                (r'(?:expand)\s+(.+)$', 'expand'),
+                (r'(?:simplify)\s+(.+)$', 'simplify'),
+            ]
+
+            for pattern, op in sym_patterns:
+                m = re.match(pattern, expr)
+                if m:
+                    sym_expr = m.group(1).strip()
+                    sym_expr = sym_expr.replace('^', '**')
+                    x = sympy.Symbol('x')
+                    y = sympy.Symbol('y')
+                    try:
+                        parsed = parse_expr(sym_expr, transformations=standard_transformations + (implicit_multiplication_application,))
+                        if op == 'integrate':
+                            result = sympy.integrate(parsed, x)
+                            return f"∫({sym_expr})dx = {result} + C"
+                        elif op == 'diff':
+                            result = sympy.diff(parsed, x)
+                            return f"d/dx({sym_expr}) = {result}"
+                        elif op == 'solve':
+                            result = sympy.solve(parsed, x)
+                            return f"x = {result}"
+                        elif op == 'factor':
+                            result = sympy.factor(parsed)
+                            return f"{result}"
+                        elif op == 'expand':
+                            result = sympy.expand(parsed)
+                            return f"{result}"
+                        elif op == 'simplify':
+                            result = sympy.simplify(parsed)
+                            return f"{result}"
+                    except:
+                        pass
+        except ImportError:
+            pass
+
+        return None  # Not a computable query
+
     def query(self, question, max_hops=5):
         t0 = time.time()
+
+        # Try direct computation first (math, conversions)
+        computed = self._try_compute(question)
+        if computed:
+            return {
+                "question": question,
+                "answer": computed,
+                "facts": [f"Computed locally: {computed}"],
+                "answers": [computed],
+                "trace": [{"hop": 0, "neuron": "calculator", "similarity": 1.0,
+                           "factsFound": 1, "thought": "direct computation"}],
+                "hops": 0,
+                "path": ["calculator"],
+                "totalFacts": 1,
+                "timeMs": int((time.time() - t0) * 1000),
+            }
+
         q_emb = self.encoder.encode([question], convert_to_tensor=True,
                                    show_progress_bar=False)[0].to(DEVICE)
 
