@@ -144,6 +144,7 @@
     // Only intercept API calls
     const isApiCall = urlStr.includes('/api/') || urlStr.includes('/openai/') || urlStr.includes('/ollama/');
     if (!isApiCall) return originalFetch.apply(this, arguments);
+    console.log('[saqt-shim] intercepting:', method, urlStr.replace(location.origin, '').substring(0, 80));
 
     // Parse body if POST
     let body = {};
@@ -158,7 +159,7 @@
     }
 
     // --- CONFIG ---
-    if (urlStr.endsWith('/api/config') || urlStr.includes('/api/config?'))
+    if (urlStr.includes('/api/config') && !urlStr.includes('/api/configs'))
       return jsonResponse({
         status: true, name: 'Webmind', version: '0.8.12',
         default_locale: 'en-US', default_models: 'webmind-305k',
