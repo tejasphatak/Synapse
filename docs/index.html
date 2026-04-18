@@ -5,77 +5,108 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- CSP is enforced in-code via safeFetch allowlist + tool pattern blocking.
        For corporate deploys, add a CSP meta tag or HTTP header to restrict origins. -->
-  <title>Webmind — Knowledge Engine</title>
+  <title>Webmind — AI in your browser</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     :root {
-      --bg: #f0faf0; --surface: #fff; --primary: #2d8a4e; --primary-light: #e8f5e9;
-      --primary-dark: #1b5e20; --text: #1a1a1a; --text2: #666; --border: #c8e6c9;
-      --radius: 16px;
+      --bg: #fefefe; --surface: #f8f7f4; --primary: #2d8a4e; --primary-light: #eef6f0;
+      --primary-dark: #1b5e20; --text: #2c2c2c; --text2: #8c8c8c; --border: #e8e6e1;
+      --sidebar-bg: #f3f2ee; --sidebar-w: 260px; --radius: 14px;
     }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
 
     /* Loading screen */
-    #loading { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.5s; }
+    #loading { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.5s; }
     #loading.hidden { opacity: 0; pointer-events: none; }
-    .loader-icon { width: 60px; height: 60px; background: var(--primary); border-radius: 16px; display: flex; align-items: center; justify-content: center; color: white; font-size: 28px; font-weight: 700; margin-bottom: 20px; animation: pulse 2s infinite; }
+    .loader-icon { width: 56px; height: 56px; background: var(--primary); border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white; font-size: 26px; font-weight: 700; margin-bottom: 16px; animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-    .loader-title { font-size: 24px; font-weight: 700; color: var(--primary-dark); margin-bottom: 8px; }
-    .loader-status { font-size: 14px; color: var(--text2); margin-bottom: 20px; }
-    .progress-bar { width: 280px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
-    .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; border-radius: 3px; }
-    .loader-detail { font-size: 11px; color: var(--text2); margin-top: 12px; }
+    .loader-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+    .loader-status { font-size: 13px; color: var(--text2); margin-bottom: 16px; }
+    .progress-bar { width: 260px; height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; border-radius: 2px; }
+    .loader-detail { font-size: 11px; color: var(--text2); margin-top: 10px; }
 
-    /* App */
-    #app { display: none; height: 100vh; flex-direction: column; }
+    /* App layout */
+    #app { display: none; height: 100vh; flex-direction: row; }
     #app.visible { display: flex; }
-    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
-    .logo { display: flex; align-items: center; gap: 10px; }
-    .logo-icon { width: 36px; height: 36px; background: var(--primary); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 18px; }
-    .logo-text { font-size: 20px; font-weight: 700; color: var(--primary-dark); }
-    .logo-sub { font-size: 11px; color: var(--text2); }
-    .stats-badge { background: var(--primary-light); color: var(--primary-dark); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+
+    /* Sidebar */
+    .sidebar { width: var(--sidebar-w); background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100vh; flex-shrink: 0; }
+    .sidebar-header { padding: 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+    .sidebar-header .logo-icon { width: 32px; height: 32px; background: var(--primary); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 15px; flex-shrink: 0; }
+    .sidebar-header .logo-text { font-size: 16px; font-weight: 700; color: var(--text); }
+    .sidebar-new { margin: 12px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; cursor: pointer; font-size: 13px; color: var(--text2); transition: all 0.2s; }
+    .sidebar-new:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+    .session-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
+    .session-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.15s; }
+    .session-item:hover { background: #eee; }
+    .session-item.active { background: var(--primary-light); color: var(--primary-dark); font-weight: 600; }
+    .session-item .session-date { font-size: 10px; color: var(--text2); font-weight: 400; }
+    .sidebar-footer { padding: 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: center; }
+    .sidebar-footer button { background: none; border: none; cursor: pointer; font-size: 16px; color: var(--text2); padding: 4px 8px; border-radius: 4px; }
+    .sidebar-footer button:hover { background: #eee; }
+
+    /* Main content */
+    .main { flex: 1; display: flex; flex-direction: column; height: 100vh; min-width: 0; }
+    header { background: var(--bg); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; }
+    .header-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    .stats-badge { background: var(--primary-light); color: var(--primary-dark); padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; }
 
     .chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; max-width: 800px; width: 100%; margin: 0 auto; }
     .message { display: flex; flex-direction: column; max-width: 85%; animation: fadeIn 0.3s ease; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
     .message.user { align-self: flex-end; }
     .message.bot { align-self: flex-start; }
-    .message-bubble { padding: 12px 16px; border-radius: var(--radius); line-height: 1.5; font-size: 15px; word-wrap: break-word; }
+    .message-bubble { padding: 12px 16px; border-radius: var(--radius); line-height: 1.6; font-size: 15px; word-wrap: break-word; }
     .message.user .message-bubble { background: var(--primary); color: white; border-bottom-right-radius: 4px; }
-    .message.bot .message-bubble { background: var(--primary-light); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .message.bot .message-bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
     .message-meta { font-size: 11px; color: var(--text2); margin-top: 4px; padding: 0 4px; }
 
-    .input-container { background: var(--surface); border-top: 1px solid var(--border); padding: 16px 20px; }
+    .input-container { background: var(--bg); border-top: 1px solid var(--border); padding: 16px 20px; }
     .input-wrapper { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; }
-    .input-wrapper input { flex: 1; padding: 14px 18px; border: 2px solid var(--border); border-radius: 12px; font-size: 15px; outline: none; background: var(--bg); }
-    .input-wrapper input:focus { border-color: var(--primary); }
-    .input-wrapper button { padding: 14px 24px; background: var(--primary); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .input-wrapper input { flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; font-size: 15px; outline: none; background: var(--surface); transition: border-color 0.2s; }
+    .input-wrapper input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(45,138,78,0.1); }
+    .input-wrapper button { padding: 12px 20px; background: var(--primary); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
     .input-wrapper button:hover { background: var(--primary-dark); }
-    .input-wrapper button:disabled { background: #aaa; }
+    .input-wrapper button:disabled { background: #ccc; }
 
-    .welcome { text-align: center; padding: 40px 20px; color: var(--text2); }
-    .welcome h2 { color: var(--primary-dark); font-size: 22px; margin-bottom: 8px; }
-    .disclaimer { font-size: 10px; color: #999; max-width: 500px; margin: 12px auto 0; line-height: 1.4; }
+    .welcome { text-align: center; padding: 60px 20px; color: var(--text2); }
+    .welcome h2 { color: var(--text); font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+    .welcome p { font-size: 14px; max-width: 420px; margin: 0 auto 6px; }
+    .welcome .tagline { font-size: 16px; color: var(--primary); font-weight: 600; margin-bottom: 12px; }
+    .disclaimer { font-size: 10px; color: #aaa; max-width: 500px; margin: 16px auto 0; line-height: 1.4; }
 
-    footer { text-align: center; padding: 6px; font-size: 10px; color: var(--text2); background: var(--surface); border-top: 1px solid var(--border); }
+    footer { text-align: center; padding: 6px; font-size: 10px; color: var(--text2); background: var(--bg); border-top: 1px solid var(--border); }
     footer a { color: var(--primary); text-decoration: none; }
     .delete-data-btn { background: none; border: none; color: #c62828; cursor: pointer; font-size: 10px; font-family: inherit; padding: 0; text-decoration: underline; }
 
-    /* Markdown rendered content */
-    .message-bubble h1,.message-bubble h2,.message-bubble h3,.message-bubble h4 { margin: 8px 0 4px; color: var(--primary-dark); }
+    /* Markdown */
+    .message-bubble h1,.message-bubble h2,.message-bubble h3,.message-bubble h4 { margin: 8px 0 4px; color: var(--text); }
     .message-bubble h1 { font-size: 18px; } .message-bubble h2 { font-size: 16px; } .message-bubble h3 { font-size: 15px; }
     .message-bubble ul,.message-bubble ol { margin: 4px 0 4px 20px; }
     .message-bubble li { margin: 2px 0; }
-    .message-bubble code { background: #e8f5e9; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'SF Mono', Menlo, monospace; }
-    .message-bubble pre { background: #1a1a1a; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; font-size: 13px; }
+    .message-bubble code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'SF Mono', Menlo, monospace; }
+    .message-bubble pre { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; font-size: 13px; }
     .message-bubble pre code { background: none; padding: 0; color: inherit; }
     .message-bubble blockquote { border-left: 3px solid var(--primary); padding-left: 12px; margin: 8px 0; color: var(--text2); }
     .message-bubble p { margin: 4px 0; }
     .message-bubble a { color: var(--primary); }
-    .message-bubble table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
-    .message-bubble th,.message-bubble td { border: 1px solid var(--border); padding: 4px 8px; }
-    .message-bubble th { background: var(--primary-light); }
+    .message-bubble table { border-collapse: collapse; margin: 8px 0; font-size: 13px; width: 100%; }
+    .message-bubble th,.message-bubble td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    .message-bubble th { background: var(--surface); font-weight: 600; }
+
+    /* Mobile: hide sidebar */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .sidebar.open { display: flex; position: fixed; z-index: 50; height: 100vh; box-shadow: 4px 0 20px rgba(0,0,0,0.1); }
+      .mobile-menu { display: block !important; }
+    }
+    .mobile-menu { display: none; }
+
+    /* Settings panel */
+    #settings-panel { display: none; }
+    #settings-panel.open { display: block; }
   </style>
 </head>
 <body>
@@ -91,70 +122,85 @@
 
 <!-- App -->
 <div id="app">
-  <header>
-    <div class="logo">
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
       <div class="logo-icon">W</div>
-      <div><div class="logo-text">Webmind <span style="background:#ff9800;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;vertical-align:middle;font-weight:700;letter-spacing:0.5px;">ALPHA</span></div><div class="logo-sub">LLM in your browser</div></div>
+      <div class="logo-text">Webmind</div>
+      <span style="background:#ff9800;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;">ALPHA</span>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div class="stats-badge" id="stats">Loading...</div>
-      <button onclick="document.getElementById('settings-panel').classList.toggle('open')" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text2);padding:4px;" title="Settings">&#9881;</button>
-    </div>
-  </header>
-
-  <!-- Settings panel (hidden by default) -->
-  <div id="settings-panel" style="display:none;background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;font-size:13px;">
-    <div style="max-width:800px;margin:0 auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <strong style="color:var(--primary-dark);">Settings</strong>
-        <button onclick="this.closest('#settings-panel').classList.remove('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);">&times;</button>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:16px;">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)"> CPU only (slower, max compatibility)
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input type="checkbox" id="autolearn-toggle" onchange="toggleAutoLearn(this.checked)"> Auto-learn from Wikipedia
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input type="checkbox" id="markdown-toggle" onchange="toggleMarkdown(this.checked)"> Markdown rendering
-        </label>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:12px;font-size:11px;color:var(--text2);">
-        <span id="sb-model">Model: --</span>
-        <span id="sb-kb">KB: --</span>
-        <span id="sb-net">Net: --</span>
-        <span id="sb-learned">Learned: 0</span>
-        <span id="sb-peers">Peers: 0</span>
-      </div>
-    </div>
-  </div>
-  <style>
-    #settings-panel.open { display: block !important; }
-  </style>
-
-  <div class="chat-container" id="chat">
-    <div class="welcome">
-      <h2>Ask anything</h2>
-      <p>305K+ Q&A pairs. No server. No LLM. Runs entirely in your browser.</p>
-      <p class="disclaimer">This is a retrieval system. Answers are pre-stored Q&A pairs matched by semantic similarity. Not intended for medical, legal, or safety-critical use. Tool-tagged answers execute code in a sandboxed Web Worker. No data leaves your device. No network scanning. Respects robots.txt, GDPR, CCPA, PCI DSS. Corporate admins: set <code>window.SAQT_ALLOWED_DOMAINS</code> or <code>window.SAQT_KILL</code> to control deployment.</p>
+    <div class="sidebar-new" onclick="newSession()">+ New chat</div>
+    <div class="session-list" id="session-list"></div>
+    <div class="sidebar-footer">
+      <button onclick="document.getElementById('settings-panel').classList.toggle('open')" title="Settings">&#9881;</button>
+      <button onclick="exportKnowledge()" title="Export">&#8681;</button>
+      <button onclick="importKnowledge()" title="Import">&#8679;</button>
+      <button class="delete-data-btn" onclick="deleteLearnedData()" title="Delete learned data" style="font-size:14px;">&#128465;</button>
     </div>
   </div>
 
-  <div class="input-container">
-    <div class="input-wrapper">
-      <input type="text" id="input" placeholder="Ask a question..." autocomplete="off" autofocus>
-      <button id="send" onclick="ask()">Ask</button>
-    </div>
-  </div>
+  <!-- Main -->
+  <div class="main">
+    <header>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <button class="mobile-menu" onclick="document.getElementById('sidebar').classList.toggle('open')" style="background:none;border:none;font-size:20px;cursor:pointer;">&#9776;</button>
+        <span class="header-title" id="session-title">New chat</span>
+      </div>
+      <div class="header-right">
+        <div class="stats-badge" id="stats">Loading...</div>
+        <button onclick="document.getElementById('settings-panel').classList.toggle('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);" title="Settings">&#9881;</button>
+      </div>
+    </header>
 
-  <footer>
-    No server. No GPU. No data sent anywhere. Runs 100% in your browser.
-    &middot; <a href="https://github.com/tejasphatak/webmind-research" target="_blank">GitHub</a>
-    &middot; <a href="#" onclick="exportKnowledge();return false;">Export Knowledge</a>
-    &middot; <a href="#" onclick="importKnowledge();return false;">Import Knowledge</a>
-    &middot; <button class="delete-data-btn" onclick="deleteLearnedData();return false;">Delete learned data</button>
-  </footer>
+    <!-- Settings panel -->
+    <div id="settings-panel" style="background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;font-size:13px;">
+      <div style="max-width:800px;margin:0 auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong>Settings</strong>
+          <button onclick="document.getElementById('settings-panel').classList.remove('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);">&times;</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:16px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)"> CPU only
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="autolearn-toggle" onchange="toggleAutoLearn(this.checked)"> Auto-learn
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" id="markdown-toggle" onchange="toggleMarkdown(this.checked)"> Markdown
+          </label>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:12px;font-size:11px;color:var(--text2);">
+          <span id="sb-model">Model: --</span>
+          <span id="sb-kb">KB: --</span>
+          <span id="sb-net">Net: --</span>
+          <span id="sb-learned">Learned: 0</span>
+          <span id="sb-peers">Peers: 0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-container" id="chat">
+      <div class="welcome">
+        <h2>What do you want to know?</h2>
+        <p class="tagline">305K answers. Zero hallucinations. 100% private.</p>
+        <p>Ask anything — science, math, history, code. I search Wikipedia for things I don't know yet.</p>
+        <p class="disclaimer">Retrieval-based AI. No data leaves your device. Open source.</p>
+      </div>
+    </div>
+
+    <div class="input-container">
+      <div class="input-wrapper">
+        <input type="search" id="input" placeholder="Ask anything..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="webmind-query" aria-label="Ask a question" autofocus>
+        <button id="send" onclick="ask()">Ask</button>
+      </div>
+    </div>
+
+    <footer>
+      <a href="https://github.com/tejasphatak/webmind-research" target="_blank">GitHub</a>
+      &middot; Runs 100% in your browser
+    </footer>
+  </div>
 </div>
 
 <script type="module">
@@ -985,6 +1031,11 @@ window.ask = async function() {
     loading.dataset.question = q;
     loading.dataset.answer = result.answer;
     history.push({ q, a: result.answer });
+    // Auto-title session from first question
+    if (history.length === 1) {
+      document.getElementById('session-title').textContent = q.substring(0, 40);
+    }
+    saveSession();
   } catch (e) {
     loading.innerHTML = `<span style="color:red;">Error: ${escapeHtml(e.message)}</span>`;
   }
@@ -1083,6 +1134,8 @@ async function boot() {
       document.getElementById('stats').textContent = `${qaData.length.toLocaleString()} pairs`;
       ready = true;
       input.focus();
+      currentSessionId = 'sess_' + Date.now();
+      renderSessionList();
       runSelfCheck();
     }, 500);
   } catch (e) {
@@ -1165,6 +1218,76 @@ function initSettings() {
   window._SAQT_NO_AUTOLEARN = !autolearn;
 }
 initSettings();
+
+// ── SESSION MANAGEMENT ──────────────────────────────────
+
+let currentSessionId = null;
+
+function getSessions() {
+  try { return JSON.parse(localStorage.getItem('webmind_sessions') || '[]'); } catch { return []; }
+}
+
+function saveSession() {
+  if (!currentSessionId || history.length === 0) return;
+  const sessions = getSessions();
+  const existing = sessions.find(s => s.id === currentSessionId);
+  const title = history[0]?.q?.substring(0, 40) || 'New chat';
+  if (existing) {
+    existing.title = title;
+    existing.messages = history.slice();
+    existing.updatedAt = Date.now();
+  } else {
+    sessions.unshift({ id: currentSessionId, title, messages: history.slice(), createdAt: Date.now(), updatedAt: Date.now() });
+  }
+  // Keep only last 50 sessions
+  while (sessions.length > 50) sessions.pop();
+  localStorage.setItem('webmind_sessions', JSON.stringify(sessions));
+  renderSessionList();
+}
+
+function loadSession(id) {
+  const sessions = getSessions();
+  const session = sessions.find(s => s.id === id);
+  if (!session) return;
+  currentSessionId = id;
+  history.length = 0;
+  history.push(...session.messages);
+  // Rebuild chat UI
+  const chatEl = document.getElementById('chat');
+  chatEl.innerHTML = '';
+  for (const h of history) {
+    addMessage('user', escapeHtml(h.q));
+    addMessage('bot', renderMarkdown(h.a));
+  }
+  document.getElementById('session-title').textContent = session.title;
+  renderSessionList();
+}
+
+window.newSession = function() {
+  saveSession();
+  currentSessionId = 'sess_' + Date.now();
+  history.length = 0;
+  const chatEl = document.getElementById('chat');
+  chatEl.innerHTML = `<div class="welcome"><h2>What do you want to know?</h2><p class="tagline">305K answers. Zero hallucinations. 100% private.</p><p>Ask anything — science, math, history, code.</p></div>`;
+  document.getElementById('session-title').textContent = 'New chat';
+  document.getElementById('input').focus();
+  renderSessionList();
+};
+
+function renderSessionList() {
+  const list = document.getElementById('session-list');
+  if (!list) return;
+  const sessions = getSessions();
+  list.innerHTML = sessions.map(s => {
+    const active = s.id === currentSessionId ? ' active' : '';
+    const date = new Date(s.updatedAt || s.createdAt).toLocaleDateString();
+    return `<div class="session-item${active}" onclick="loadSession('${s.id}')" title="${escapeHtml(s.title)}">
+      ${escapeHtml(s.title)}<br><span class="session-date">${date}</span>
+    </div>`;
+  }).join('');
+}
+
+window.loadSession = loadSession;
 
 boot();
 </script>
