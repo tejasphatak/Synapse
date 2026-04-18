@@ -21,7 +21,7 @@ function json(data, status = 200) {
 function sse(text) {
   const chunk = JSON.stringify({
     id: 'wmind-' + Date.now(), object: 'chat.completion.chunk',
-    created: Math.floor(Date.now() / 1000), model: 'webmind-305k',
+    created: Math.floor(Date.now() / 1000), model: 'W',
     choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }]
   });
   const done = JSON.stringify({
@@ -77,7 +77,7 @@ async function handleAPI(request) {
 
   // Config
   if (path === '/api/config')
-    return json({ status: true, name: 'Webmind', version: '0.8.12', default_locale: 'en-US', default_models: 'webmind-305k', default_prompt_suggestions: [], features: { auth: false, auth_trusted_header: false, enable_signup: false, enable_login_form: true, enable_websocket: false, enable_direct_connections: false, enable_web_search: false, enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false, enable_admin_chat_access: false }, onboarding: false, permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true }, chat: { file_upload: false, delete: true, edit: true, temporary: true } }, oauth: { providers: {} } });
+    return json({ status: true, name: 'Webmind', version: '0.8.12', default_locale: 'en-US', default_models: 'W', default_prompt_suggestions: [], features: { auth: false, auth_trusted_header: false, enable_signup: false, enable_login_form: true, enable_websocket: false, enable_direct_connections: false, enable_web_search: false, enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false, enable_admin_chat_access: false }, onboarding: false, permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true }, chat: { file_upload: false, delete: true, edit: true, temporary: true } }, oauth: { providers: {} } });
 
   if (path === '/api/version')
     return json({ version: '0.8.12', deployment_id: null });
@@ -88,10 +88,10 @@ async function handleAPI(request) {
 
   // Models
   if (path === '/api/models' || path.startsWith('/api/models'))
-    return json({ data: [{ id: 'webmind-305k', name: 'Webmind 305K', object: 'model', owned_by: 'webmind', info: { id: 'webmind-305k', name: 'Webmind 305K', meta: { description: '305K Q&A pairs. Runs in your browser.', profile_image_url: '' } }, preset: true, actions: [], arena: false }] });
+    return json({ data: [{ id: 'W', name: 'W', object: 'model', owned_by: 'webmind', info: { id: 'W', name: 'W', meta: { description: '305K answers. Zero hallucinations. 100% private.', profile_image_url: '' } }, preset: true, actions: [], arena: false }] });
 
   if (path.startsWith('/openai/models'))
-    return json({ data: [{ id: 'webmind-305k', object: 'model', owned_by: 'webmind' }] });
+    return json({ data: [{ id: 'W', object: 'model', owned_by: 'webmind' }] });
 
   // User settings
   if (path.match(/\/users\/.*\/settings/))
@@ -122,7 +122,7 @@ async function handleAPI(request) {
   if (path.includes('/tasks/emoji')) return json({ choices: [{ message: { content: '"💬"' } }] });
   if (path.includes('/tasks/follow_ups')) return json({ choices: [{ message: { content: '{"follow_ups": []}' } }] });
   if (path.includes('/tasks/auto')) return json({ choices: [{ message: { content: '{"text": ""}' } }] });
-  if (path.includes('/tasks/config')) return json({ TASK_MODEL: 'webmind-305k', TASK_MODEL_EXTERNAL: 'webmind-305k' });
+  if (path.includes('/tasks/config')) return json({ TASK_MODEL: 'W', TASK_MODEL_EXTERNAL: 'W' });
 
   // Empty collections
   if (path.includes('/configs/banners')) return json([]);

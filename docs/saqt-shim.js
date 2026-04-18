@@ -49,17 +49,17 @@
     await navigator.serviceWorker.ready;
     console.log('[webmind] Service Worker active');
 
-    // Step 2: Set up MessageChannel for SAQT queries
-    const channel = new MessageChannel();
-    navigator.serviceWorker.controller?.postMessage({ type: 'saqt-port' }, [channel.port2]);
-
     // If SW isn't controlling yet (first install), reload to get control
     if (!navigator.serviceWorker.controller) {
       setStatus('Activating backend...', 'First install — reloading', 10);
-      // Small delay then reload — SW will control on next load
       setTimeout(() => location.reload(), 500);
       return;
     }
+
+    // Step 2: Set up MessageChannel for SAQT queries
+    const channel = new MessageChannel();
+    navigator.serviceWorker.controller.postMessage({ type: 'saqt-port' }, [channel.port2]);
+    console.log('[webmind] SAQT MessageChannel established');
 
     // Step 3: Load SAQT engine
     setStatus('Loading AI model...', 'Sentence transformer (80MB)', 15);
