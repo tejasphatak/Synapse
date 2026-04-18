@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Webmind — Knowledge Engine</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #f0faf0; --surface: #fff; --primary: #2d8a4e; --primary-light: #e8f5e9;
+      --primary-dark: #1b5e20; --text: #1a1a1a; --text2: #666; --border: #c8e6c9;
+      --radius: 16px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; }
+
+    /* Loading screen */
+    #loading { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.5s; }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .loader-icon { width: 60px; height: 60px; background: var(--primary); border-radius: 16px; display: flex; align-items: center; justify-content: center; color: white; font-size: 28px; font-weight: 700; margin-bottom: 20px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    .loader-title { font-size: 24px; font-weight: 700; color: var(--primary-dark); margin-bottom: 8px; }
+    .loader-status { font-size: 14px; color: var(--text2); margin-bottom: 20px; }
+    .progress-bar { width: 280px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; border-radius: 3px; }
+    .loader-detail { font-size: 11px; color: var(--text2); margin-top: 12px; }
+
+    /* App */
+    #app { display: none; height: 100vh; flex-direction: column; }
+    #app.visible { display: flex; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
+    .logo { display: flex; align-items: center; gap: 10px; }
+    .logo-icon { width: 36px; height: 36px; background: var(--primary); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 18px; }
+    .logo-text { font-size: 20px; font-weight: 700; color: var(--primary-dark); }
+    .logo-sub { font-size: 11px; color: var(--text2); }
+    .stats-badge { background: var(--primary-light); color: var(--primary-dark); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+
+    .chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; max-width: 800px; width: 100%; margin: 0 auto; }
+    .message { display: flex; flex-direction: column; max-width: 85%; animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+    .message.user { align-self: flex-end; }
+    .message.bot { align-self: flex-start; }
+    .message-bubble { padding: 12px 16px; border-radius: var(--radius); line-height: 1.5; font-size: 15px; word-wrap: break-word; }
+    .message.user .message-bubble { background: var(--primary); color: white; border-bottom-right-radius: 4px; }
+    .message.bot .message-bubble { background: var(--primary-light); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .message-meta { font-size: 11px; color: var(--text2); margin-top: 4px; padding: 0 4px; }
+
+    .input-container { background: var(--surface); border-top: 1px solid var(--border); padding: 16px 20px; }
+    .input-wrapper { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; }
+    .input-wrapper input { flex: 1; padding: 14px 18px; border: 2px solid var(--border); border-radius: 12px; font-size: 15px; outline: none; background: var(--bg); }
+    .input-wrapper input:focus { border-color: var(--primary); }
+    .input-wrapper button { padding: 14px 24px; background: var(--primary); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .input-wrapper button:hover { background: var(--primary-dark); }
+    .input-wrapper button:disabled { background: #aaa; }
+
+    .welcome { text-align: center; padding: 40px 20px; color: var(--text2); }
+    .welcome h2 { color: var(--primary-dark); font-size: 22px; margin-bottom: 8px; }
+    .disclaimer { font-size: 10px; color: #999; max-width: 500px; margin: 12px auto 0; line-height: 1.4; }
+
+    footer { text-align: center; padding: 6px; font-size: 10px; color: var(--text2); background: var(--surface); border-top: 1px solid var(--border); }
+    footer a { color: var(--primary); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<!-- Loading Screen -->
+<div id="loading">
+  <div class="loader-icon">W</div>
+  <div class="loader-title">Webmind</div>
+  <div class="loader-status" id="load-status">Initializing...</div>
+  <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+  <div class="loader-detail" id="load-detail">Loading knowledge engine</div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">W</div>
+      <div><div class="logo-text">Webmind</div><div class="logo-sub">Pure Browser Knowledge Engine</div></div>
+    </div>
+    <div class="stats-badge" id="stats">Loading...</div>
+  </header>
+
+  <div class="chat-container" id="chat">
+    <div class="welcome">
+      <h2>Ask anything</h2>
+      <p>305K+ Q&A pairs. No server. No LLM. Runs entirely in your browser.</p>
+      <p class="disclaimer">This is a retrieval system. Answers are pre-stored Q&A pairs matched by semantic similarity. Not intended for medical, legal, or safety-critical use. Tool-tagged answers execute code in a sandboxed Web Worker.</p>
+    </div>
+  </div>
+
+  <div class="input-container">
+    <div class="input-wrapper">
+      <input type="text" id="input" placeholder="Ask a question..." autocomplete="off" autofocus>
+      <button id="send" onclick="ask()">Ask</button>
+    </div>
+  </div>
+
+  <footer>
+    No server. No GPU. No data sent anywhere. Runs 100% in your browser.
+    &middot; <a href="https://github.com/tejasphatak/webmind-research" target="_blank">GitHub</a>
+  </footer>
+</div>
+
+<script type="module">
+// ── SAQT Browser Engine ──────────────────────────────────
+
+let encoder = null;
+let qaData = [];
+let qaEmbeddings = null;
+let ready = false;
+const history = [];
+const DIM = 384;
+
+// Status updates
+const setStatus = (s, detail, pct) => {
+  document.getElementById('load-status').textContent = s;
+  document.getElementById('load-detail').textContent = detail || '';
+  document.getElementById('progress').style.width = pct + '%';
+};
+
+// Load ONNX sentence transformer
+async function loadEncoder() {
+  setStatus('Loading AI model...', 'Sentence transformer (80MB)', 10);
+  // Use transformers.js (Xenova) for browser-native sentence transformer
+  const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  encoder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+    progress_callback: (p) => {
+      if (p.progress) setStatus('Loading AI model...', `${p.file || ''} ${Math.round(p.progress)}%`, 10 + p.progress * 0.3);
+    }
+  });
+  setStatus('Model loaded', '', 40);
+}
+
+// Load Q&A data
+async function loadData() {
+  setStatus('Loading knowledge base...', '305K Q&A pairs', 45);
+
+  // Load from same origin or CDN
+  const dataUrl = window.SAQT_DATA_URL || './qa_data.json';
+  const embUrl = window.SAQT_EMB_URL || './qa_embeddings.bin';
+
+  try {
+    // Try loading pre-built data
+    const dataResp = await fetch(dataUrl);
+    if (dataResp.ok) {
+      qaData = await dataResp.json();
+      setStatus('Loading embeddings...', `${qaData.length} pairs loaded`, 60);
+
+      const embResp = await fetch(embUrl);
+      const embBuf = await embResp.arrayBuffer();
+      qaEmbeddings = new Float32Array(embBuf);
+      setStatus('Ready!', `${qaData.length} Q&A pairs`, 100);
+    } else {
+      throw new Error('Data not found');
+    }
+  } catch (e) {
+    // Fallback: load minimal demo data inline
+    setStatus('Loading demo data...', 'Using built-in examples', 60);
+    qaData = getDemoData();
+    // Encode demo data
+    setStatus('Encoding demo data...', `${qaData.length} pairs`, 70);
+    const embs = [];
+    for (let i = 0; i < qaData.length; i++) {
+      const output = await encoder(qaData[i].question, { pooling: 'mean', normalize: true });
+      embs.push(...output.data);
+      if (i % 10 === 0) setStatus('Encoding...', `${i}/${qaData.length}`, 70 + (i/qaData.length)*25);
+    }
+    qaEmbeddings = new Float32Array(embs);
+    setStatus('Ready!', `${qaData.length} demo pairs`, 100);
+  }
+}
+
+function getDemoData() {
+  return [
+    {question: "What is DNA?", answer: "DNA, short for deoxyribonucleic acid, is the molecule that contains the genetic code of organisms."},
+    {question: "Who is Narendra Modi?", answer: "Narendra Damodardas Modi (born 17 September 1950) is an Indian politician who is the 14th and current Prime Minister of India."},
+    {question: "What causes rain?", answer: "Rain is caused by the water cycle: water evaporates from oceans and lakes, rises as water vapor, cools in the atmosphere, condenses into clouds, and falls back to earth as precipitation."},
+    {question: "How are you?", answer: "I'm doing well, thank you for asking! How can I help you?"},
+    {question: "What is the speed of light?", answer: "The speed of light in vacuum is approximately 299,792 kilometers per second."},
+    {question: "Hello", answer: "Hello! I'm Webmind, a knowledge engine running entirely in your browser. Ask me anything."},
+    {question: "Why is the sky blue?", answer: "The sky appears blue because of Rayleigh scattering. Sunlight contains all colors, but blue light has a shorter wavelength and scatters more when it hits molecules in the atmosphere."},
+    {question: "What is the capital of France?", answer: "Paris is the capital of France."},
+    {question: "What is bigger, the sun or the moon?", answer: "The sun is much bigger. The sun has a diameter of about 1,390,000 km while the moon is only 3,474 km."},
+    {question: "What is photosynthesis?", answer: "Photosynthesis is the process by which green plants use sunlight to convert carbon dioxide and water into glucose and oxygen."},
+    {question: "When did World War 2 end?", answer: "World War II ended in 1945 with the surrender of Germany in May and Japan in September."},
+    {question: "What is an atom?", answer: "An atom is the smallest unit of ordinary matter that forms a chemical element. It consists of protons, neutrons, and electrons."},
+    {question: "Thank you", answer: "You're welcome! Feel free to ask anything else."},
+    {question: "What is gravity?", answer: "Gravity is a fundamental force that attracts objects with mass toward each other. On Earth, it gives weight to objects and causes them to fall."},
+    {question: "Tell me a joke", answer: "Why don't scientists trust atoms? Because they make up everything!"},
+  ];
+}
+
+// Cosine similarity search
+function search(queryEmb, topK = 3) {
+  const n = qaData.length;
+  const scores = [];
+  for (let i = 0; i < n; i++) {
+    let dot = 0;
+    for (let d = 0; d < DIM; d++) {
+      dot += queryEmb[d] * qaEmbeddings[i * DIM + d];
+    }
+    scores.push({ idx: i, score: dot });
+  }
+  scores.sort((a, b) => b.score - a.score);
+  return scores.slice(0, topK);
+}
+
+// Query
+async function query(question) {
+  const t0 = performance.now();
+  const output = await encoder(question, { pooling: 'mean', normalize: true });
+  const qEmb = Array.from(output.data);
+
+  const results = search(qEmb, 3);
+  const best = results[0];
+  const ms = Math.round(performance.now() - t0);
+
+  return {
+    answer: best.score > 0.35 ? qaData[best.idx].answer : "I don't have enough confidence to answer that.",
+    confidence: best.score,
+    hops: 1,
+    timeMs: ms,
+    sources: results.map(r => ({ q: qaData[r.idx].question, score: r.score.toFixed(3) })),
+  };
+}
+
+// ── UI ───────────────────────────────────────────────────
+
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+
+input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+
+function addMessage(role, content, meta) {
+  const w = chat.querySelector('.welcome');
+  if (w) w.remove();
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  bubble.innerHTML = content;
+  div.appendChild(bubble);
+  if (meta) {
+    const m = document.createElement('div');
+    m.className = 'message-meta';
+    m.textContent = meta;
+    div.appendChild(m);
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return bubble;
+}
+
+window.ask = async function() {
+  const q = input.value.trim();
+  if (!q || !ready) return;
+  addMessage('user', escapeHtml(q));
+  input.value = '';
+
+  const loading = addMessage('bot', '<span style="color:var(--text2)">Thinking...</span>');
+
+  const ctx = history.slice(-4).map(h => `${h.q} ${h.a}`).join(' ');
+  const full = ctx ? `${ctx} ${q}` : q;
+  const result = await query(full);
+
+  let html = `<div style="line-height:1.7;">${escapeHtml(result.answer)}</div>`;
+
+  if (result.sources) {
+    html += `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:11px;color:var(--text2);">Thinking (${result.timeMs}ms, confidence: ${result.confidence.toFixed(2)})</summary>`;
+    html += `<div style="font-size:11px;padding:4px;">`;
+    for (const s of result.sources) {
+      html += `• ${escapeHtml(s.q.substring(0,60))} (${s.score})<br>`;
+    }
+    html += `</div></details>`;
+  }
+
+  loading.innerHTML = html;
+  history.push({ q, a: result.answer });
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Boot ─────────────────────────────────────────────────
+
+async function boot() {
+  try {
+    await loadEncoder();
+    await loadData();
+    setTimeout(() => {
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('app').classList.add('visible');
+      document.getElementById('stats').textContent = `${qaData.length} pairs · browser-only`;
+      ready = true;
+      input.focus();
+    }, 500);
+  } catch (e) {
+    setStatus('Error loading', e.message, 0);
+    console.error(e);
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
