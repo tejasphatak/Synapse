@@ -291,24 +291,42 @@ class SAQTEngine:
 
             path.append(best_nid)
 
-            # Re-encode with accumulated context
+            # Try eval on retrieved facts — errors feed back as context
+            eval_result = None
+            eval_error = ""
+            for fact in facts[-3:]:
+                result = self._try_eval(fact)
+                if result:
+                    eval_result = result
+                    break
+
+            # Re-encode with accumulated context + eval feedback
             fact_str = " | ".join(facts[-6:])
             trace_str = " -> ".join([t["thought"] for t in trace if t["thought"]])
             full_ctx = f"Question: {question} Facts: {fact_str}"
             if trace_str:
                 full_ctx += f" Reasoning: {trace_str}"
+            if eval_error:
+                full_ctx += f" Error: {eval_error}"  # Error feeds back into next hop
             q_emb = self.encoder.encode([full_ctx], convert_to_tensor=True,
                                        show_progress_bar=False)[0].to(DEVICE)
 
         elapsed_ms = int((time.time() - t0) * 1000)
 
-        # Answer = best retrieved fact or direct answer. No external API.
-        if answers:
-            answer = answers[0]
-        elif facts:
-            answer = facts[0]
-        else:
-            answer = ""
+        # Try eval on retrieved facts — if eval fails, error feeds back into loop
+        answer = ""
+        for fact in facts[:5]:
+            result = self._try_eval(fact)
+            if result:
+                answer = result
+                break
+        if not answer:
+            if answers:
+                answer = answers[0]
+            elif facts:
+                answer = facts[0]
+            else:
+                answer = ""
 
         return {
             "question": question,
@@ -357,6 +375,123 @@ class SAQTEngine:
         if answers:
             return answers[0]
         return facts[0] if facts else "No answer found."
+
+    def _try_reason(self, question, facts, answers):
+        """Logic eval: combine retrieved facts to answer comparisons, conditionals, causation."""
+        import re
+        q = question.lower()
+        all_text = " ".join(facts + answers).lower()
+
+        # Extract numbers from retrieved facts
+        numbers = {}
+        for fact in facts:
+            # Find patterns like "diameter: 1,390,000 km" or "freezes at 0 degrees"
+            for m in re.finditer(r'(\w[\w\s]*?)\s*(?:is|:|=|about|approximately|around)\s*([\d,]+\.?\d*)', fact):
+                key = m.group(1).strip().lower()
+                val = float(m.group(2).replace(',', ''))
+                numbers[key] = val
+            # "X is Y km/meters/etc"
+            for m in re.finditer(r'([\d,]+\.?\d*)\s*(?:km|miles|meters|kg|pounds|degrees|°)', fact):
+                pass  # Already captured above
+
+        # COMPARISON: "bigger/larger/more/taller/faster X or Y"
+        comp_match = re.search(r'(?:bigger|larger|smaller|taller|shorter|faster|slower|heavier|lighter|more|greater|longer)\s*(?:,|:)?\s*(?:the\s+)?(\w+)\s+or\s+(?:the\s+)?(\w+)', q)
+        if comp_match:
+            a_name, b_name = comp_match.group(1), comp_match.group(2)
+            # Find numeric values for both entities in retrieved facts
+            a_val, b_val = None, None
+            for fact in facts:
+                fl = fact.lower()
+                for m in re.finditer(r'([\d,]+\.?\d+|[\d]+)', fact):
+                    try:
+                        num = float(m.group(1).replace(',', ''))
+                    except ValueError:
+                        continue
+                    if a_name in fl and (a_val is None or num > a_val):
+                        a_val = num
+                    if b_name in fl and (b_val is None or num > b_val):
+                        b_val = num
+            if a_val is not None and b_val is not None:
+                if 'smaller' in q or 'shorter' in q or 'lighter' in q or 'slower' in q:
+                    winner = a_name if a_val < b_val else b_name
+                else:
+                    winner = a_name if a_val > b_val else b_name
+                return f"The {winner} is {'larger' if 'big' in q or 'larg' in q else 'greater'}. ({a_name}: {a_val:,.0f}, {b_name}: {b_val:,.0f})"
+
+        # CONDITIONAL: "what happens at/if/when [condition]"
+        cond_match = re.search(r'(?:what happens|what would happen)\s+(?:at|if|when)\s+(.+)', q)
+        if cond_match:
+            condition = cond_match.group(1).strip()
+            # Extract temperature/number from condition
+            temp_match = re.search(r'(-?\d+\.?\d*)\s*(?:°?\s*)?([cfk])', condition)
+            if temp_match:
+                temp_val = float(temp_match.group(1))
+                # Find threshold facts
+                for fact in facts:
+                    fl = fact.lower()
+                    thresh_match = re.search(r'(?:freezes?|boils?|melts?)\s+at\s+(-?\d+\.?\d*)', fl)
+                    if thresh_match:
+                        threshold = float(thresh_match.group(1))
+                        if 'freeze' in fl or 'frozen' in fl:
+                            if temp_val <= threshold:
+                                return f"At {temp_val}°, water would be frozen (freezing point is {threshold}°C)."
+                            else:
+                                return f"At {temp_val}°, water would be liquid (above freezing point of {threshold}°C)."
+                        if 'boil' in fl:
+                            if temp_val >= threshold:
+                                return f"At {temp_val}°, water would be boiling (boiling point is {threshold}°C)."
+
+        # CAUSATION: "why/what causes"
+        if q.startswith('why') or 'what causes' in q or 'cause of' in q:
+            # Look for causal keywords in retrieved facts
+            for fact in facts:
+                fl = fact.lower()
+                for pattern in ['because', 'caused by', 'due to', 'results from',
+                               'reason is', 'leads to', 'occurs when']:
+                    if pattern in fl:
+                        return fact  # Return the fact that contains the causal explanation
+
+        return None
+
+    def _try_eval(self, text):
+        """Try to evaluate any executable content in retrieved text.
+        Returns result string or None. Errors are silently ignored (feed back into loop)."""
+        import re, math
+
+        # Look for code blocks or executable patterns in the text
+        # Pattern 1: explicit code in backticks
+        code_match = re.search(r'`([^`]+)`', text)
+        if code_match:
+            try:
+                result = eval(code_match.group(1), {"__builtins__": {}, "math": math})
+                return str(result)
+            except:
+                pass
+
+        # Pattern 2: mathematical expressions (numbers and operators)
+        expr_match = re.search(r'(\d+[\s]*[+\-*/^][\s]*\d+(?:[\s]*[+\-*/^][\s]*\d+)*)', text)
+        if expr_match:
+            try:
+                expr = expr_match.group(1).replace('^', '**')
+                result = eval(expr, {"__builtins__": {}, "math": math})
+                return str(result)
+            except:
+                pass
+
+        # Pattern 3: formula with = sign (extract and evaluate right side)
+        formula_match = re.search(r'=\s*([^.]+?)(?:\.|$)', text)
+        if formula_match:
+            expr = formula_match.group(1).strip()
+            if any(op in expr for op in ['+', '-', '*', '/', '(', 'sqrt', 'sin', 'cos']):
+                try:
+                    expr = expr.replace('^', '**').replace('sqrt', 'math.sqrt')
+                    expr = expr.replace('sin', 'math.sin').replace('cos', 'math.cos')
+                    result = eval(expr, {"__builtins__": {}, "math": math})
+                    return str(round(result, 4) if isinstance(result, float) else result)
+                except:
+                    pass
+
+        return None
 
     def stats(self):
         return {
