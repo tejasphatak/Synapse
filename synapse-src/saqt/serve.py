@@ -164,9 +164,9 @@ class SAQTEngine:
             q_emb = self.encoder.encode([question], normalize_embeddings=True)
             a_emb = self.encoder.encode([results[0]["answer"][:200]], normalize_embeddings=True)
             alignment = float(np.dot(q_emb[0], a_emb[0]))
-            noise_floor = 1 / np.sqrt(len(results))
-            if alignment < noise_floor * 5:
-                kb_weak = True  # KB matched but answer doesn't fit the question
+            # Alignment should be positive — negative means answer is about something else
+            if alignment < 0:
+                kb_weak = True
 
         if kb_weak:
             # KB can't answer — search the web
