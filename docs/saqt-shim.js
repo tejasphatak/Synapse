@@ -109,6 +109,11 @@
     permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true } }
   };
 
+  // Pre-set auth token so the frontend doesn't redirect to login
+  if (!localStorage.getItem('token')) {
+    localStorage.setItem('token', 'webmind-local-token');
+  }
+
   // Intercept fetch
   const originalFetch = window.fetch;
   window._originalFetch = originalFetch;
@@ -138,10 +143,11 @@
         status: true, name: 'Webmind', version: '1.0.0',
         default_locale: 'en-US', default_models: 'webmind-305k',
         default_prompt_suggestions: [],
-        features: { enable_signup: false, enable_login_form: false, enable_web_search: false,
+        features: { auth: false, auth_trusted_header: true,
+          enable_signup: false, enable_login_form: false, enable_web_search: false,
           enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false,
           enable_admin_chat_access: false },
-        auth: false, auth_trusted_header: false,
+        onboarding: false,
         permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true },
           chat: { file_upload: false, delete: true, edit: true, temporary: true } },
         oauth: { providers: {} }
