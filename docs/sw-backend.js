@@ -1,4 +1,4 @@
-/* sw-version: 7 */
+/* sw-version: 8 */
 /**
  * Webmind Service Worker Backend
  * Intercepts ALL fetch requests at the network level.
@@ -195,7 +195,7 @@ async function handleAPI(request) {
 
   // Config
   if (path === '/api/config')
-    return json({ status: true, name: 'Webmind', version: '0.8.12', default_locale: 'en-US', default_models: 'W', default_prompt_suggestions: [], features: { auth: false, auth_trusted_header: false, enable_signup: false, enable_login_form: true, enable_websocket: false, enable_direct_connections: false, enable_web_search: false, enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false, enable_admin_chat_access: false }, onboarding: false, permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true }, chat: { file_upload: false, delete: true, edit: true, temporary: true } }, oauth: { providers: {} } });
+    return json({ status: true, name: 'Webmind', version: '0.8.12', default_locale: 'en-US', default_models: 'webmind', default_prompt_suggestions: [], features: { auth: false, auth_trusted_header: false, enable_signup: false, enable_login_form: true, enable_websocket: false, enable_direct_connections: false, enable_web_search: false, enable_image_generation: false, enable_community_sharing: false, enable_admin_export: false, enable_admin_chat_access: false }, onboarding: false, permissions: { workspace: { models: true, knowledge: true, prompts: true, tools: true }, chat: { file_upload: false, delete: true, edit: true, temporary: true } }, oauth: { providers: {} } });
 
   if (path === '/api/version/updates')
     return json({ current: '0.8.12', latest: '0.8.12' });
@@ -208,10 +208,10 @@ async function handleAPI(request) {
 
   // Models
   if (path === '/api/models' || path.startsWith('/api/models'))
-    return json({ data: [{ id: 'W', name: 'W', object: 'model', owned_by: 'webmind', info: { id: 'W', name: 'W', meta: { description: 'Search, learn, answer. Gets smarter with every question.', profile_image_url: '' }, params: {} }, preset: true, actions: [], arena: false, tags: [], urlIdx: 0 }] });
+    return json({ data: [{ id: 'webmind', name: 'Webmind', object: 'model', owned_by: 'webmind', info: { id: 'webmind', name: 'Webmind', meta: { description: 'Search, learn, answer. Gets smarter with every question.', profile_image_url: '' }, params: {} }, preset: true, actions: [], arena: false, tags: [], urlIdx: 0 }] });
 
   if (path.startsWith('/openai/models'))
-    return json({ data: [{ id: 'W', object: 'model', owned_by: 'webmind' }] });
+    return json({ data: [{ id: 'webmind', object: 'model', owned_by: 'webmind' }] });
 
   // User profile image — redirect to static asset
   if (path.includes('/profile/image')) {
@@ -283,7 +283,7 @@ async function handleAPI(request) {
   if (path.includes('/tasks/emoji')) return json({ choices: [{ message: { content: '"💬"' } }] });
   if (path.includes('/tasks/follow_ups')) return json({ choices: [{ message: { content: '{"follow_ups": []}' } }] });
   if (path.includes('/tasks/auto')) return json({ choices: [{ message: { content: '{"text": ""}' } }] });
-  if (path.includes('/tasks/config')) return json({ TASK_MODEL: 'W', TASK_MODEL_EXTERNAL: 'W' });
+  if (path.includes('/tasks/config')) return json({ TASK_MODEL: 'webmind', TASK_MODEL_EXTERNAL: 'webmind' });
 
   // Empty collections
   if (path.includes('/configs/banners')) return json([]);
@@ -292,11 +292,11 @@ async function handleAPI(request) {
   if (path.includes('/chats/list')) return json([]);
   if (path.includes('/chats/search')) return json([]);
   // Individual chat by ID
-  if (path.match(/\/chats\/[^/]+$/) && method === 'GET') return json({ id: path.split('/').pop(), title: 'Chat', models: ['W'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: {}, updated_at: new Date().toISOString() });
+  if (path.match(/\/chats\/[^/]+$/) && method === 'GET') return json({ id: path.split('/').pop(), title: 'Chat', models: ['webmind'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: {}, updated_at: new Date().toISOString() });
   // Chat list
   if (path.includes('/chats') && method === 'GET') return json([]);
-  if (path.match(/\/chats\/new/) && method === 'POST') return json({ id: 'local-' + Date.now(), title: 'Chat', models: ['W'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: body, updated_at: new Date().toISOString() });
-  if (path.includes('/chats') && method === 'POST') return json({ id: path.split('/').pop() || ('local-' + Date.now()), title: 'Chat', models: ['W'], tags: [], history: body?.chat?.history || { messages: {}, currentId: null }, messages: body?.chat?.messages || [], chat: body?.chat || body, updated_at: new Date().toISOString() });
+  if (path.match(/\/chats\/new/) && method === 'POST') return json({ id: 'local-' + Date.now(), title: 'Chat', models: ['webmind'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: body, updated_at: new Date().toISOString() });
+  if (path.includes('/chats') && method === 'POST') return json({ id: path.split('/').pop() || ('local-' + Date.now()), title: 'Chat', models: ['webmind'], tags: [], history: body?.chat?.history || { messages: {}, currentId: null }, messages: body?.chat?.messages || [], chat: body?.chat || body, updated_at: new Date().toISOString() });
   if (path.includes('/chats') && method === 'DELETE') return json({ success: true });
   if (path.includes('/knowledge')) return json({ data: [] });
   if (path.includes('/memories')) return json({ data: [] });
