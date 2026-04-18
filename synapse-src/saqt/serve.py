@@ -114,7 +114,45 @@ class SAQTEngine:
 
         # Two-pass: extract topic if format/action request
         topic = self.extract_topic(question)
-        search_query = topic if topic else question
+        search_query = question
+
+        if topic:
+            topic_results = self.search(topic, top_k=1)
+            full_results = self.search(question, top_k=1)
+            topic_score = topic_results[0]["score"] if topic_results else 0
+            full_score = full_results[0]["score"] if full_results else 0
+
+            AMBIGUITY_THRESHOLD = 0.5
+            topic_strong = topic_score >= AMBIGUITY_THRESHOLD
+            full_strong = full_score >= AMBIGUITY_THRESHOLD
+
+            # Check if matches are about different topics
+            match_similarity = 1.0
+            if topic_results[0]["id"] != full_results[0]["id"]:
+                t_emb = self.encoder.encode([topic_results[0]["question"]], normalize_embeddings=True)
+                f_emb = self.encoder.encode([full_results[0]["question"]], normalize_embeddings=True)
+                match_similarity = float(np.dot(t_emb[0], f_emb[0]))
+
+            # Both strong + matches about different topics (low similarity) → ambiguous
+            if (topic_strong and full_strong and match_similarity < 0.5):
+                return {
+                    "question": question,
+                    "answer": (
+                        f"I found strong matches for different interpretations of your question:\n\n"
+                        f"1. **{topic}** — \"{topic_results[0]['question'][:80]}\"\n"
+                        f"2. **{question}** — \"{full_results[0]['question'][:80]}\"\n\n"
+                        f"Could you clarify what you're looking for?"
+                    ),
+                    "confidence": max(topic_score, full_score),
+                    "ambiguous": True,
+                    "facts": [], "answers": [], "trace": [],
+                    "hops": 0, "totalFacts": 0,
+                    "timeMs": int((time.time() - t0) * 1000),
+                }
+
+            # One strong → use it
+            if topic_strong:
+                search_query = topic
 
         results = self.search(search_query, top_k=3)
 

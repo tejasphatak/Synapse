@@ -152,12 +152,44 @@
         let usedTopic = false;
 
         if (topic) {
-          // Pass 1 confirmed this is a format request — use topic for search
-          searchQuery = topic;
-          usedTopic = true;
+          // Search both interpretations to detect ambiguity
+          const topicResult = await searchKB(topic);
+          const fullResult = await searchKB(question);
+
+          const AMBIGUITY_THRESHOLD = 0.5;
+          const topicStrong = topicResult.bestScore >= AMBIGUITY_THRESHOLD;
+          const fullStrong = fullResult.bestScore >= AMBIGUITY_THRESHOLD;
+
+          // Check if matches are about DIFFERENT topics by comparing their embeddings
+          let matchSimilarity = 0;
+          if (topicResult.bestIdx !== fullResult.bestIdx) {
+            const offA = topicResult.bestIdx * DIM, offB = fullResult.bestIdx * DIM;
+            for (let d = 0; d < DIM; d++) matchSimilarity += qaEmbeddings[offA + d] * qaEmbeddings[offB + d];
+          } else {
+            matchSimilarity = 1.0; // same pair = not ambiguous
+          }
+
+          // Both strong + matches about different topics (low similarity) → genuinely ambiguous
+          if (topicStrong && fullStrong && matchSimilarity < 0.5) {
+            const topicQ = qaData[topicResult.bestIdx].question;
+            const fullQ = qaData[fullResult.bestIdx].question;
+            const clarification = `I found strong matches for different interpretations of your question:\n\n` +
+              `1. **${topic}** — "${topicQ.substring(0, 80)}"\n` +
+              `2. **${question}** — "${fullQ.substring(0, 80)}"\n\n` +
+              `Could you clarify what you're looking for?`;
+            channel.port1.postMessage({ id, answer: clarification });
+            return;
+          }
+
+          // Only one interpretation is strong — use it
+          if (topicStrong) {
+            searchQuery = topic;
+            usedTopic = true;
+          }
+          // else: topic weak, use full query as-is
         }
 
-        // Search with topic (if extracted) or full query
+        // Search with best interpretation
         const { bestIdx, bestScore } = await searchKB(searchQuery);
 
         let answer;
