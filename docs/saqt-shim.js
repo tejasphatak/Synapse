@@ -2,7 +2,7 @@
  * SAQT Browser Engine + Service Worker Backend
  *
  * 1. Registers sw-backend.js as a Service Worker (intercepts all /api/* calls)
- * 2. Loads sentence transformer + 305K Q&A pairs
+ * 2. Loads sentence transformer + Q&A knowledge base
  * 3. Communicates with SW via MessageChannel for query handling
  *
  * Zero dependencies. Pure browser APIs.

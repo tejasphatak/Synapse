@@ -1,7 +1,7 @@
 {
   "name": "Webmind",
   "short_name": "Webmind",
-  "description": "305K answers. Zero hallucinations. 100% private. Runs entirely on your device.",
+  "description": "Knowledge engine. Retrieval-based, self-evolving, runs in your browser.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#fefefe",
