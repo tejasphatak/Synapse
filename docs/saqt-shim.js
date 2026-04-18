@@ -628,39 +628,77 @@
           emitStatus(chatId, messageId, 'sources_retrieved', `No confident match`, true, { count: 0 });
         }
 
-        // Step 2: Use web results if KB didn't produce a strong answer
-        // "Strong" = top match is well above noise. Let the score gap decide, not a constant.
-        const kbWeak = firstScore < noiseFloor * 10; // ~1.8% for 305K pairs — KB has weak/no coverage
-        if (kbWeak && webResults.length > 0) {
+        // Step 2: Iterative web search — crawl until we have a solid answer
+        // If KB is weak, search the web. If web results are thin, refine and search again.
+        // Like a human: try → not enough → rephrase → try again → got it.
+        const kbWeak = firstScore < noiseFloor * 10;
+        if (kbWeak) {
           usedWeb = true;
-          think(`KB weak (${(firstScore * 100).toFixed(1)}%). Using ${webResults.length} web results:`);
-          webResults.slice(0, 3).forEach((r, i) => think(`  ${i + 1}. ${r.text.substring(0, 80)}`));
-          const webText = webResults.map(r => r.text).join(' ').substring(0, 500);
-          facts.push(...webResults.map(r => r.text.substring(0, 100)));
-          emitStatus(chatId, messageId, 'web_search', `Searched ${webResults.length} sites`, true, { urls: webResults.filter(r => r.url).map(r => r.url) });
+          let allWebResults = [...webResults];
+          const searchedQueries = new Set([question]);
 
-          if (!answer) {
-            // No KB answer at all — web is the answer
-            answer = webResults.map(r => {
-              let md = r.text;
-              if (r.url) md += `\n\n[Source](${r.url})`;
-              return md;
-            }).join('\n\n---\n\n').substring(0, 2000);
-            think(`Using web as primary answer.`);
+          // Iterative search — keep refining until we have substantial content
+          const minContentLen = dataMedian; // use the KB's own median as "enough"
+          let totalWebText = allWebResults.map(r => r.text).join(' ');
+          let searchRound = 1;
+
+          while (totalWebText.length < minContentLen && searchRound <= 3) {
+            // Generate refined queries from what we have so far
+            let refinedQuery = question;
+            if (searchRound === 2 && totalWebText.length > 0) {
+              // Extract key terms from first results to refine
+              const words = totalWebText.split(/\s+/).filter(w => w.length > 4);
+              const topWords = [...new Set(words)].slice(0, 5).join(' ');
+              refinedQuery = `${question} ${topWords}`;
+            } else if (searchRound === 3) {
+              // Try a more specific phrasing
+              refinedQuery = `what is ${question}`;
+            }
+
+            if (!searchedQueries.has(refinedQuery)) {
+              searchedQueries.add(refinedQuery);
+              emitStatus(chatId, messageId, 'web_search', `Searching (round ${searchRound})...`, false);
+              think(`Web search round ${searchRound}: "${refinedQuery.substring(0, 60)}"`);
+              const moreResults = await searchWebMulti(refinedQuery);
+              for (const r of moreResults) {
+                if (!allWebResults.some(e => e.text.substring(0, 50) === r.text.substring(0, 50))) {
+                  allWebResults.push(r);
+                }
+              }
+              totalWebText = allWebResults.map(r => r.text).join(' ');
+            }
+            searchRound++;
           }
 
-          // Re-search KB with web context — web might help find a better KB match
-          const context = `${question} ${webText}`;
-          emitStatus(chatId, messageId, 'queries_generated', 'Re-searching with context', false, { queries: [question.substring(0, 40) + ' + web'] });
-          const { bestIdx: webIdx, bestScore: webScore } = await searchKB(context);
-          think(`Re-search: "${qaData[webIdx].question.substring(0, 60)}" → ${(webScore * 100).toFixed(1)}%`);
-          if (webScore > bestOverallScore && webScore > noiseFloor && !visited.has(webIdx)) {
-            answer = qaData[webIdx].answer;
-            bestOverallScore = webScore;
-            visited.add(webIdx);
-            facts.push(qaData[webIdx].question);
-            think(`✓ Better match via web-augmented search.`);
-            emitStatus(chatId, messageId, 'sources_retrieved', `Found: "${qaData[webIdx].question.substring(0, 60)}" (${(webScore * 100).toFixed(0)}%)`, true, { count: visited.size });
+          if (allWebResults.length > 0) {
+            think(`Web: ${allWebResults.length} results across ${searchedQueries.size} queries`);
+            allWebResults.slice(0, 3).forEach((r, i) => think(`  ${i + 1}. ${r.text.substring(0, 80)}`));
+            facts.push(...allWebResults.map(r => r.text.substring(0, 100)));
+            emitStatus(chatId, messageId, 'web_search', `Searched ${allWebResults.length} results`, true, { urls: allWebResults.filter(r => r.url).map(r => r.url) });
+
+            if (!answer) {
+              answer = allWebResults.map(r => {
+                let md = r.text;
+                if (r.url) md += `\n\n[Source](${r.url})`;
+                return md;
+              }).join('\n\n---\n\n').substring(0, 3000);
+              think(`Using web as primary answer.`);
+            }
+
+            // Re-search KB with web context
+            const webText = allWebResults.map(r => r.text).join(' ').substring(0, 500);
+            const context = `${question} ${webText}`;
+            emitStatus(chatId, messageId, 'queries_generated', 'Re-searching with context', false, { queries: [question.substring(0, 40) + ' + web'] });
+            const { bestIdx: webIdx, bestScore: webScore } = await searchKB(context);
+            think(`Re-search: "${qaData[webIdx].question.substring(0, 60)}" → ${(webScore * 100).toFixed(1)}%`);
+            if (webScore > bestOverallScore && webScore > noiseFloor && !visited.has(webIdx)) {
+              answer = qaData[webIdx].answer;
+              bestOverallScore = webScore;
+              visited.add(webIdx);
+              facts.push(qaData[webIdx].question);
+              think(`✓ Better match via web-augmented search.`);
+              emitStatus(chatId, messageId, 'sources_retrieved', `Found: "${qaData[webIdx].question.substring(0, 60)}" (${(webScore * 100).toFixed(0)}%)`, true, { count: visited.size });
+            }
           }
         }
 
