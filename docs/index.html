@@ -480,11 +480,27 @@
           }
           loaded = true;
           break;
-        } catch(e) { console.log('[saqt] source failed:', e.message); }
+        } catch(e) { console.log('[saqt] source ' + base + ' failed:', e.message); }
       }
 
       if (!loaded) {
-        setStatus('Failed to load knowledge base', 'Check connection and refresh', 0);
+        setStatus('Could not load knowledge base', 'Trying to load from server... Please wait or refresh.', 0);
+        // Last resort: try fetching directly without originalFetch wrapper
+        try {
+          const dr = await fetch('https://chat.webmind.sh/saqt/browser/qa_data.json');
+          if (dr.ok) {
+            qaData = await dr.json();
+            const er = await fetch('https://chat.webmind.sh/saqt/browser/qa_embeddings.bin');
+            if (er.ok) {
+              qaEmbeddings = new Float32Array(await er.arrayBuffer());
+              loaded = true;
+            }
+          }
+        } catch(e) { console.log('[saqt] last resort failed:', e.message); }
+      }
+
+      if (!loaded) {
+        setStatus('Failed to load knowledge base', 'Please check your internet connection and refresh the page.', 0);
         return;
       }
 
