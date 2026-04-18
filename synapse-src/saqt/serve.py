@@ -25,6 +25,10 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 HOME = os.environ.get("HOME", "/home/tejasphatak")
 PORT = int(os.environ.get("SAQT_PORT", "3000"))
 PUBLIC_DIR = Path(__file__).parent / "public"
+QA_PATH = os.environ.get("SAQT_QA",
+    os.path.join(HOME, "webmind-research/trained_model/qa_pairs.jsonl"))
+QA_EMBS_PATH = os.environ.get("SAQT_QA_EMBS",
+    os.path.join(HOME, "webmind-research/trained_model/qa_embeddings.pt"))
 CHUNKS_PATH = os.environ.get("SAQT_CHUNKS",
     os.path.join(HOME, "webmind-research/trained_model/chunks.jsonl"))
 KERNEL_PATH = os.environ.get("SAQT_KERNEL",
@@ -42,49 +46,40 @@ class SAQTEngine:
         print("[saqt] Loading sentence transformer...", flush=True)
         self.encoder = SentenceTransformer('all-MiniLM-L6-v2', device=DEVICE)
 
-        print("[saqt] Loading tokenizer...", flush=True)
-        self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        # Load kernel
+        # Load Q&A pairs (preferred) or fall back to chunks
+        self.qa_mode = False
         self.kernel = None
-        if os.path.exists(KERNEL_PATH):
-            print(f"[saqt] Loading trained kernel from {KERNEL_PATH}...", flush=True)
-            config = GPT2Config(vocab_size=50257, n_positions=256,
-                               n_embd=256, n_layer=2, n_head=4, n_inner=1024)
-            self.kernel = GPT2LMHeadModel(config).to(DEVICE)
-            state = torch.load(KERNEL_PATH, map_location=DEVICE, weights_only=True)
-            if any(k.startswith("model.") for k in state):
-                state = {k.replace("model.", "", 1): v for k, v in state.items()}
-            self.kernel.load_state_dict(state)
-            self.kernel.eval()
-            print("[saqt] Kernel loaded", flush=True)
 
-        # Load chunks
-        print(f"[saqt] Loading chunks from {CHUNKS_PATH}...", flush=True)
-        self.chunks = []
-        with open(CHUNKS_PATH) as f:
-            for line in f:
-                self.chunks.append(json.loads(line))
-        print(f"[saqt] {len(self.chunks):,} chunks loaded", flush=True)
+        if os.path.exists(QA_PATH) and os.path.exists(QA_EMBS_PATH):
+            print(f"[saqt] Loading Q&A pairs from {QA_PATH}...", flush=True)
+            self.chunks = []
+            with open(QA_PATH) as f:
+                for line in f:
+                    self.chunks.append(json.loads(line))
+            print(f"[saqt] {len(self.chunks):,} Q&A pairs loaded", flush=True)
 
-        # Load or encode embeddings
-        emb_path = os.path.join(HOME, "webmind-research/trained_model/embeddings.pt")
-        if os.path.exists(emb_path):
-            print(f"[saqt] Loading pre-encoded embeddings from {emb_path}...", flush=True)
-            self.embeddings = torch.load(emb_path, map_location=DEVICE, weights_only=True)
-            # Check size match
-            if self.embeddings.size(0) != len(self.chunks):
-                print(f"[saqt] Embedding count mismatch ({self.embeddings.size(0)} vs {len(self.chunks)}), re-encoding...", flush=True)
-                self._encode_chunks()
+            print(f"[saqt] Loading Q&A embeddings...", flush=True)
+            self.embeddings = torch.load(QA_EMBS_PATH, map_location=DEVICE, weights_only=True)
+            print(f"[saqt] {self.embeddings.size(0)} embeddings loaded", flush=True)
+            self.qa_mode = True
+        elif os.path.exists(CHUNKS_PATH):
+            print(f"[saqt] Loading chunks from {CHUNKS_PATH}...", flush=True)
+            self.chunks = []
+            with open(CHUNKS_PATH) as f:
+                for line in f:
+                    self.chunks.append(json.loads(line))
+            emb_path = os.path.join(HOME, "webmind-research/trained_model/embeddings.pt")
+            if os.path.exists(emb_path):
+                self.embeddings = torch.load(emb_path, map_location=DEVICE, weights_only=True)
             else:
-                print(f"[saqt] Loaded {self.embeddings.size(0)} embeddings", flush=True)
+                self._encode_chunks()
         else:
-            self._encode_chunks()
+            raise FileNotFoundError("No Q&A pairs or chunks found")
 
         # Distribute to neurons
         self._build_neurons()
-        print(f"[saqt] Ready. {len(self.chunks):,} chunks, {N_NEURONS} neurons", flush=True)
+        print(f"[saqt] Ready. {len(self.chunks):,} {'Q&A pairs' if self.qa_mode else 'chunks'}, "
+              f"{N_NEURONS} neurons", flush=True)
 
     def _encode_chunks(self):
         print("[saqt] Encoding chunks (this takes a few minutes on CPU)...", flush=True)
@@ -152,12 +147,20 @@ class SAQTEngine:
             for j, idx in enumerate(top_idxs):
                 if top_vals[j] > 0.2:
                     chunk = self.chunks[n_indices[idx.item()]]
-                    text = chunk["text"]
-                    if text not in facts:
-                        facts.append(text)
-                        hop_facts.append(text[:100])
-                    if chunk.get("answer") and chunk["answer"] not in answers:
-                        answers.append(chunk["answer"])
+                    if self.qa_mode:
+                        # Q&A mode: the answer IS the response
+                        q_text = chunk.get("question", "")
+                        a_text = chunk.get("answer", "")
+                        if a_text and a_text not in answers:
+                            answers.append(a_text)
+                        if q_text and q_text not in facts:
+                            facts.append(q_text)
+                    else:
+                        text = chunk["text"]
+                        if text not in facts:
+                            facts.append(text)
+                        if chunk.get("answer") and chunk["answer"] not in answers:
+                            answers.append(chunk["answer"])
 
             # Reasoning kernel (optional — skip if it crashes on CPU)
             thought = ""
