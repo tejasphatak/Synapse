@@ -99,12 +99,13 @@
     <div class="stats-badge" id="stats">Loading...</div>
   </header>
 
-  <div id="status-bar" style="background:var(--primary-light);border-bottom:1px solid var(--border);padding:4px 20px;font-size:11px;color:var(--text2);display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+  <div id="status-bar" style="background:var(--primary-light);border-bottom:1px solid var(--border);padding:4px 20px;font-size:11px;color:var(--text2);display:flex;gap:16px;justify-content:center;flex-wrap:wrap;align-items:center;">
     <span id="sb-model">Model: --</span>
     <span id="sb-kb">KB: --</span>
     <span id="sb-net">Net: checking...</span>
     <span id="sb-learned">Learned: 0</span>
     <span id="sb-peers">Peers: 0</span>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)" style="cursor:pointer;"> CPU only</label>
   </div>
 
   <div class="chat-container" id="chat">
@@ -151,14 +152,32 @@ const setStatus = (s, detail, pct) => {
 // Load ONNX sentence transformer
 async function loadEncoder() {
   setStatus('Loading AI model...', 'Sentence transformer (80MB)', 10);
-  // Use transformers.js (Xenova) for browser-native sentence transformer
-  const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-  encoder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-    progress_callback: (p) => {
-      if (p.progress) setStatus('Loading AI model...', `${p.file || ''} ${Math.round(p.progress)}%`, 10 + p.progress * 0.3);
-    }
-  });
-  setStatus('Model loaded', '', 40);
+  const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+
+  // Check CPU-only preference (saved in localStorage)
+  const cpuOnly = localStorage.getItem('webmind_cpu') === '1';
+  if (document.getElementById('cpu-toggle')) document.getElementById('cpu-toggle').checked = cpuOnly;
+
+  if (cpuOnly) {
+    // Force pure WASM, no threads, no SIMD — maximum compatibility
+    env.backends.onnx.wasm.proxy = false;
+    env.backends.onnx.wasm.numThreads = 1;
+  }
+  // Disable WebGPU to avoid issues on unsupported devices
+  if (env.backends.onnx.webgpu) env.backends.onnx.webgpu.enabled = false;
+
+  try {
+    encoder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+      progress_callback: (p) => {
+        if (p.progress) setStatus('Loading AI model...', `${p.file || ''} ${Math.round(p.progress)}%`, 10 + p.progress * 0.3);
+      }
+    });
+    setStatus('Model loaded', 'WASM backend', 40);
+  } catch (e) {
+    setStatus('Model load failed', e.message, 0);
+    console.error('[model] Failed:', e);
+    throw e;
+  }
 }
 
 // Load Q&A data
@@ -1092,6 +1111,12 @@ async function runSelfCheck() {
   // Re-check every 60s
   setTimeout(runSelfCheck, 60000);
 }
+
+// CPU toggle — saves preference and reloads
+window.toggleCPU = function(checked) {
+  localStorage.setItem('webmind_cpu', checked ? '1' : '0');
+  location.reload();
+};
 
 boot();
 </script>
