@@ -92,7 +92,7 @@ async function handleAPI(request) {
 
   // Models
   if (path === '/api/models' || path.startsWith('/api/models'))
-    return json({ data: [{ id: 'W', name: 'W', object: 'model', owned_by: 'webmind', info: { id: 'W', name: 'W', meta: { description: '305K answers. Zero hallucinations. 100% private.', profile_image_url: '' } }, preset: true, actions: [], arena: false }] });
+    return json({ data: [{ id: 'W', name: 'W', object: 'model', owned_by: 'webmind', info: { id: 'W', name: 'W', meta: { description: '305K answers. Zero hallucinations. 100% private.', profile_image_url: '' }, params: {} }, preset: true, actions: [], arena: false, tags: [], urlIdx: 0 }] });
 
   if (path.startsWith('/openai/models'))
     return json({ data: [{ id: 'W', object: 'model', owned_by: 'webmind' }] });
@@ -131,8 +131,12 @@ async function handleAPI(request) {
   // Empty collections
   if (path.includes('/configs/banners')) return json([]);
   if (path.includes('/tools')) return json([]);
+  if (path.includes('/chats/tags')) return json([]);
+  if (path.includes('/chats/list')) return json({ data: [] });
+  if (path.includes('/chats/search')) return json({ data: [] });
   if (path.includes('/chats') && method === 'GET') return json({ data: [] });
-  if (path.includes('/chats') && method === 'POST') return json({ id: 'local-' + Date.now(), chat: body });
+  if (path.includes('/chats') && method === 'POST') return json({ id: 'local-' + Date.now(), title: 'Chat', models: ['W'], tags: [], history: { messages: {}, currentId: null }, messages: [], chat: body });
+  if (path.includes('/chats') && method === 'DELETE') return json({ success: true });
   if (path.includes('/knowledge')) return json({ data: [] });
   if (path.includes('/memories')) return json({ data: [] });
   if (path.includes('/functions')) return json({ data: [] });
