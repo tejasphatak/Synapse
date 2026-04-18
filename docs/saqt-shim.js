@@ -102,9 +102,108 @@
 
     const DIM = 384;
 
+    // ─── Google CSE search (CX from Programmable Search Engine) ───
+    const GOOGLE_CSE_CX = 'c4ba99d848f5d433b';
+    let googleCSEReady = false;
+    let googleCSEPendingResolve = null;
+
+    // Load Google CSE JS
+    window.__gcse = {
+      parsetags: 'explicit',
+      callback: () => { googleCSEReady = true; }
+    };
+    const cseScript = document.createElement('script');
+    cseScript.async = true;
+    cseScript.src = `https://cse.google.com/cse.js?cx=${GOOGLE_CSE_CX}`;
+    document.head.appendChild(cseScript);
+
+    // Hidden container for CSE results
+    const cseDiv = document.createElement('div');
+    cseDiv.id = 'webmind-cse-results';
+    cseDiv.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;';
+    document.body?.appendChild(cseDiv) || document.documentElement.appendChild(cseDiv);
+
+    async function searchGoogle(query) {
+      if (!googleCSEReady) {
+        // Wait up to 5s for CSE to load
+        await new Promise(r => {
+          const check = setInterval(() => {
+            if (googleCSEReady || typeof google !== 'undefined' && google.search?.cse) {
+              googleCSEReady = true;
+              clearInterval(check);
+              r();
+            }
+          }, 200);
+          setTimeout(() => { clearInterval(check); r(); }, 5000);
+        });
+      }
+
+      if (!googleCSEReady || typeof google === 'undefined') return [];
+
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve([]), 8000);
+
+        try {
+          // Set up callback to capture results
+          window.__webmindCSECallback = (results) => {
+            clearTimeout(timeout);
+            resolve(results);
+          };
+
+          // Render CSE element if not already
+          if (!cseDiv.querySelector('.gsc-control')) {
+            google.search.cse.element.render({
+              div: 'webmind-cse-results',
+              tag: 'searchresults-only',
+              attributes: { enableHistory: false }
+            });
+          }
+
+          // Execute search
+          const element = google.search.cse.element.getElement('webmind-cse-results');
+          if (element) {
+            // Override the result rendering to capture data
+            const origCallback = element.resultSetCallback;
+            element.resultSetCallback = function(gname, q, promos, results) {
+              const parsed = [];
+              if (results) {
+                for (const r of results) {
+                  parsed.push({
+                    source: 'Google',
+                    title: r.titleNoFormatting || r.title?.replace(/<[^>]+>/g, '') || '',
+                    text: r.contentNoFormatting || r.content?.replace(/<[^>]+>/g, '') || '',
+                    url: r.unescapedUrl || r.url || ''
+                  });
+                }
+              }
+              window.__webmindCSECallback?.(parsed);
+              if (origCallback) origCallback.call(this, gname, q, promos, results);
+            };
+            element.execute(query);
+          } else {
+            clearTimeout(timeout);
+            resolve([]);
+          }
+        } catch(e) {
+          clearTimeout(timeout);
+          resolve([]);
+        }
+      });
+    }
+
     // ─── Multi-source web search (shared by tool code + low-confidence fallback) ───
     async function searchWebMulti(query) {
       const results = [];
+
+      // Source 0: Google CSE (best quality, try first)
+      try {
+        const googleResults = await searchGoogle(query);
+        for (const r of googleResults.slice(0, 5)) {
+          if (r.text || r.title) {
+            results.push({ source: 'Google', text: `**${r.title}**\n${r.text}`, url: r.url });
+          }
+        }
+      } catch(e) {}
 
       // Source 1: Wikipedia direct
       try {
