@@ -73,31 +73,91 @@
       }
     });
 
-    // Step 4: Load knowledge base
+    // Step 4: Load knowledge base (with IndexedDB cache + version check)
     setStatus('Loading knowledge base...', '', 40);
     const VM_BASE = 'https://chat.webmind.sh/saqt/browser';
-    const dataResp = await fetch(VM_BASE + '/qa_data.json');
-    const qaData = await dataResp.json();
-    setStatus('Loading embeddings...', qaData.length.toLocaleString() + ' pairs', 55);
 
-    const embResp = await fetch(VM_BASE + '/qa_embeddings.bin');
-    const cl = embResp.headers.get('Content-Length');
-    let qaEmbeddings;
-    if (cl && parseInt(cl) > 1000000) {
-      const reader = embResp.body.getReader();
-      const total = parseInt(cl);
-      let received = 0;
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        setStatus('Downloading embeddings...', Math.round(received/1024/1024) + 'MB / ' + Math.round(total/1024/1024) + 'MB', 55 + (received/total)*30);
-      }
-      qaEmbeddings = new Float32Array(await new Blob(chunks).arrayBuffer());
+    // IndexedDB helpers for caching large data
+    function openCache() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('webmind-saqt-cache', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('data');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    function idbGet(db, key) {
+      return new Promise((resolve) => {
+        const tx = db.transaction('data', 'readonly');
+        const req = tx.objectStore('data').get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      });
+    }
+    function idbPut(db, key, val) {
+      return new Promise((resolve) => {
+        const tx = db.transaction('data', 'readwrite');
+        tx.objectStore('data').put(val, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    }
+
+    let qaData, qaEmbeddings;
+    const cacheDB = await openCache().catch(() => null);
+
+    // Check remote version via HEAD request (Content-Length as fingerprint)
+    let remoteDataSize = null;
+    try {
+      const headResp = await fetch(VM_BASE + '/qa_data.json', { method: 'HEAD' });
+      remoteDataSize = headResp.headers.get('Content-Length');
+    } catch(e) {}
+
+    const cachedVersion = cacheDB ? await idbGet(cacheDB, 'version') : null;
+    const cacheHit = cachedVersion && remoteDataSize && cachedVersion === remoteDataSize;
+
+    if (cacheHit && cacheDB) {
+      // Use cached data
+      setStatus('Loading from cache...', '', 45);
+      qaData = await idbGet(cacheDB, 'qaData');
+      const embBuf = await idbGet(cacheDB, 'qaEmbeddings');
+      qaEmbeddings = new Float32Array(embBuf);
+      setStatus('Loaded from cache', qaData.length.toLocaleString() + ' pairs', 85);
+      console.log('[webmind] Cache hit — ' + qaData.length.toLocaleString() + ' pairs');
     } else {
-      qaEmbeddings = new Float32Array(await embResp.arrayBuffer());
+      // Download fresh
+      setStatus('Downloading knowledge base...', '', 40);
+      const dataResp = await fetch(VM_BASE + '/qa_data.json');
+      qaData = await dataResp.json();
+      setStatus('Loading embeddings...', qaData.length.toLocaleString() + ' pairs', 55);
+
+      const embResp = await fetch(VM_BASE + '/qa_embeddings.bin');
+      const cl = embResp.headers.get('Content-Length');
+      if (cl && parseInt(cl) > 1000000) {
+        const reader = embResp.body.getReader();
+        const total = parseInt(cl);
+        let received = 0;
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          setStatus('Downloading embeddings...', Math.round(received/1024/1024) + 'MB / ' + Math.round(total/1024/1024) + 'MB', 55 + (received/total)*30);
+        }
+        qaEmbeddings = new Float32Array(await new Blob(chunks).arrayBuffer());
+      } else {
+        qaEmbeddings = new Float32Array(await embResp.arrayBuffer());
+      }
+
+      // Cache for next time
+      if (cacheDB) {
+        setStatus('Caching for next visit...', '', 86);
+        await idbPut(cacheDB, 'qaData', qaData);
+        await idbPut(cacheDB, 'qaEmbeddings', qaEmbeddings.buffer);
+        if (remoteDataSize) await idbPut(cacheDB, 'version', remoteDataSize);
+        console.log('[webmind] Cached ' + qaData.length.toLocaleString() + ' pairs to IndexedDB');
+      }
     }
 
     const DIM = 384;
