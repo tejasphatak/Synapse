@@ -11,6 +11,7 @@ import sqlite3
 import json, os, time, re, subprocess
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from sentence_transformers import SentenceTransformer
 
 HOME = os.environ.get("HOME", "/home/tejasphatak")
@@ -157,9 +158,22 @@ class SAQTEngine:
         results = self.search(search_query, top_k=3)
 
         if not results or results[0]["score"] < CONFIDENCE_THRESHOLD:
+            # KB can't answer — search the web
+            web_answer = self.web_search(question)
+            if web_answer:
+                # Learn the web result back into KB
+                self.learn(question, web_answer, source="web-search")
+                return {
+                    "question": question, "answer": web_answer,
+                    "confidence": results[0]["score"] if results else 0,
+                    "facts": [], "answers": [web_answer], "trace": [],
+                    "hops": 0, "totalFacts": 0,
+                    "timeMs": int((time.time() - t0) * 1000),
+                    "source": "web",
+                }
             return {
                 "question": question,
-                "answer": "I don't have enough confidence to answer that. My best match was too weak.",
+                "answer": "I don't have enough confidence to answer that.",
                 "confidence": results[0]["score"] if results else 0,
                 "facts": [], "answers": [], "trace": [],
                 "hops": 0, "totalFacts": 0,
@@ -352,6 +366,57 @@ class SAQTEngine:
             "embeddings_b64": __import__('base64').b64encode(embeddings).decode() if embeddings else None
         }
 
+    def web_search(self, query):
+        """Search the web when KB can't answer. Returns best answer text or None."""
+        import urllib.request, urllib.parse
+        results = []
+
+        # Source 1: Wikipedia summary
+        try:
+            q = urllib.parse.quote(query)
+            req = urllib.request.Request(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{q}",
+                headers={"User-Agent": "Webmind/1.0"})
+            resp = urllib.request.urlopen(req, timeout=5)
+            d = json.loads(resp.read())
+            if d.get("extract"):
+                results.append(d["extract"])
+        except: pass
+
+        # Source 2: DuckDuckGo instant answers
+        try:
+            q = urllib.parse.quote(query)
+            req = urllib.request.Request(
+                f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1",
+                headers={"User-Agent": "Webmind/1.0"})
+            resp = urllib.request.urlopen(req, timeout=5)
+            d = json.loads(resp.read())
+            text = d.get("AbstractText") or d.get("Answer") or ""
+            if text:
+                results.append(text)
+        except: pass
+
+        # Source 3: Wikipedia search fallback
+        if not results:
+            try:
+                q = urllib.parse.quote(query)
+                req = urllib.request.Request(
+                    f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q}&format=json&origin=*&srlimit=3",
+                    headers={"User-Agent": "Webmind/1.0"})
+                resp = urllib.request.urlopen(req, timeout=5)
+                d = json.loads(resp.read())
+                hits = d.get("query", {}).get("search", [])
+                if hits:
+                    snippet = " ".join(h["snippet"].replace("<span class=\"searchmatch\">", "").replace("</span>", "") for h in hits)
+                    results.append(snippet)
+            except: pass
+
+        if results:
+            answer = max(results, key=len)  # pick longest/most detailed
+            print(f"[saqt] Web search: {query[:40]}... → {len(answer)} chars", flush=True)
+            return answer[:800]
+        return None
+
     def stats(self):
         if self.mode == "faiss":
             count = self.db.execute("SELECT COUNT(*) FROM qa").fetchone()[0]
@@ -460,9 +525,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def _json(self, data, code=200):
-        self.send_response(code); self._cors()
-        self.send_header('Content-Type', 'application/json'); self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        try:
+            self.send_response(code); self._cors()
+            self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+        except BrokenPipeError:
+            pass  # Client disconnected; don't crash the server
 
     def _cors(self):
         for h, v in [('Access-Control-Allow-Origin', '*'),
@@ -477,4 +545,6 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     engine = SAQTEngine()
     print(f"[saqt] http://0.0.0.0:{PORT}", flush=True)
-    HTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+    ThreadedHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
