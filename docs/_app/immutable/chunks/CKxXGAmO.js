@@ -1,0 +1,2 @@
+import{Z as d,ap as g,aq as i,z as m,ar as b,as as l,l as u,x as v,ag as h}from"./Coqcv2G2.js";function x(n=!1){const s=d,e=s.l.u;if(!e)return;let r=()=>v(s.s);if(n){let a=0,t={};const _=h(()=>{let c=!1;const f=s.s;for(const o in f)f[o]!==t[o]&&(t[o]=f[o],c=!0);return c&&a++,a});r=()=>u(_)}e.b.length&&g(()=>{p(s,r),l(e.b)}),i(()=>{const a=m(()=>e.m.map(b));return()=>{for(const t of a)typeof t=="function"&&t()}}),e.a.length&&i(()=>{p(s,r),l(e.a)})}function p(n,s){if(n.l.s)for(const e of n.l.s)u(e);s()}export{x as i};
+//# sourceMappingURL=CKxXGAmO.js.map

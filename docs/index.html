@@ -1,1295 +1,275 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- CSP is enforced in-code via safeFetch allowlist + tool pattern blocking.
-       For corporate deploys, add a CSP meta tag or HTTP header to restrict origins. -->
-  <title>Webmind — AI in your browser</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    :root {
-      --bg: #fefefe; --surface: #f8f7f4; --primary: #2d8a4e; --primary-light: #eef6f0;
-      --primary-dark: #1b5e20; --text: #2c2c2c; --text2: #8c8c8c; --border: #e8e6e1;
-      --sidebar-bg: #f3f2ee; --sidebar-w: 260px; --radius: 14px;
-    }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
-
-    /* Loading screen */
-    #loading { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.5s; }
-    #loading.hidden { opacity: 0; pointer-events: none; }
-    .loader-icon { width: 56px; height: 56px; background: var(--primary); border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white; font-size: 26px; font-weight: 700; margin-bottom: 16px; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-    .loader-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-    .loader-status { font-size: 13px; color: var(--text2); margin-bottom: 16px; }
-    .progress-bar { width: 260px; height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
-    .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s; border-radius: 2px; }
-    .loader-detail { font-size: 11px; color: var(--text2); margin-top: 10px; }
-
-    /* App layout */
-    #app { display: none; height: 100vh; flex-direction: row; }
-    #app.visible { display: flex; }
-
-    /* Sidebar */
-    .sidebar { width: var(--sidebar-w); background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100vh; flex-shrink: 0; }
-    .sidebar-header { padding: 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
-    .sidebar-header .logo-icon { width: 32px; height: 32px; background: var(--primary); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 15px; flex-shrink: 0; }
-    .sidebar-header .logo-text { font-size: 16px; font-weight: 700; color: var(--text); }
-    .sidebar-new { margin: 12px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; cursor: pointer; font-size: 13px; color: var(--text2); transition: all 0.2s; }
-    .sidebar-new:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
-    .session-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
-    .session-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.15s; }
-    .session-item:hover { background: #eee; }
-    .session-item.active { background: var(--primary-light); color: var(--primary-dark); font-weight: 600; }
-    .session-item .session-date { font-size: 10px; color: var(--text2); font-weight: 400; }
-    .sidebar-footer { padding: 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: center; }
-    .sidebar-footer button { background: none; border: none; cursor: pointer; font-size: 16px; color: var(--text2); padding: 4px 8px; border-radius: 4px; }
-    .sidebar-footer button:hover { background: #eee; }
-
-    /* Main content */
-    .main { flex: 1; display: flex; flex-direction: column; height: 100vh; min-width: 0; }
-    header { background: var(--bg); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; }
-    .header-title { font-size: 14px; font-weight: 600; color: var(--text); }
-    .header-right { display: flex; align-items: center; gap: 8px; }
-    .stats-badge { background: var(--primary-light); color: var(--primary-dark); padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-
-    .chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; max-width: 800px; width: 100%; margin: 0 auto; }
-    .message { display: flex; flex-direction: column; max-width: 85%; animation: fadeIn 0.3s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
-    .message.user { align-self: flex-end; }
-    .message.bot { align-self: flex-start; }
-    .message-bubble { padding: 12px 16px; border-radius: var(--radius); line-height: 1.6; font-size: 15px; word-wrap: break-word; }
-    .message.user .message-bubble { background: var(--primary); color: white; border-bottom-right-radius: 4px; }
-    .message.bot .message-bubble { background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-    .message-meta { font-size: 11px; color: var(--text2); margin-top: 4px; padding: 0 4px; }
-
-    .input-container { background: var(--bg); border-top: 1px solid var(--border); padding: 16px 20px; }
-    .input-wrapper { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; }
-    .input-wrapper input { flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; font-size: 15px; outline: none; background: var(--surface); transition: border-color 0.2s; }
-    .input-wrapper input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(45,138,78,0.1); }
-    .input-wrapper button { padding: 12px 20px; background: var(--primary); color: white; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    .input-wrapper button:hover { background: var(--primary-dark); }
-    .input-wrapper button:disabled { background: #ccc; }
-
-    .welcome { text-align: center; padding: 60px 20px; color: var(--text2); }
-    .welcome h2 { color: var(--text); font-size: 24px; font-weight: 700; margin-bottom: 6px; }
-    .welcome p { font-size: 14px; max-width: 420px; margin: 0 auto 6px; }
-    .welcome .tagline { font-size: 16px; color: var(--primary); font-weight: 600; margin-bottom: 12px; }
-    .disclaimer { font-size: 10px; color: #aaa; max-width: 500px; margin: 16px auto 0; line-height: 1.4; }
-
-    footer { text-align: center; padding: 6px; font-size: 10px; color: var(--text2); background: var(--bg); border-top: 1px solid var(--border); }
-    footer a { color: var(--primary); text-decoration: none; }
-    .delete-data-btn { background: none; border: none; color: #c62828; cursor: pointer; font-size: 10px; font-family: inherit; padding: 0; text-decoration: underline; }
-
-    /* Markdown */
-    .message-bubble h1,.message-bubble h2,.message-bubble h3,.message-bubble h4 { margin: 8px 0 4px; color: var(--text); }
-    .message-bubble h1 { font-size: 18px; } .message-bubble h2 { font-size: 16px; } .message-bubble h3 { font-size: 15px; }
-    .message-bubble ul,.message-bubble ol { margin: 4px 0 4px 20px; }
-    .message-bubble li { margin: 2px 0; }
-    .message-bubble code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'SF Mono', Menlo, monospace; }
-    .message-bubble pre { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; font-size: 13px; }
-    .message-bubble pre code { background: none; padding: 0; color: inherit; }
-    .message-bubble blockquote { border-left: 3px solid var(--primary); padding-left: 12px; margin: 8px 0; color: var(--text2); }
-    .message-bubble p { margin: 4px 0; }
-    .message-bubble a { color: var(--primary); }
-    .message-bubble table { border-collapse: collapse; margin: 8px 0; font-size: 13px; width: 100%; }
-    .message-bubble th,.message-bubble td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-    .message-bubble th { background: var(--surface); font-weight: 600; }
-
-    /* Mobile: hide sidebar */
-    @media (max-width: 768px) {
-      .sidebar { display: none; }
-      .sidebar.open { display: flex; position: fixed; z-index: 50; height: 100vh; box-shadow: 4px 0 20px rgba(0,0,0,0.1); }
-      .mobile-menu { display: block !important; }
-    }
-    .mobile-menu { display: none; }
-
-    /* Settings panel */
-    #settings-panel { display: none; }
-    #settings-panel.open { display: block; }
-  </style>
-</head>
-<body>
-
-<!-- Loading Screen -->
-<div id="loading">
-  <div class="loader-icon">W</div>
-  <div class="loader-title">Webmind <span style="background:#ff9800;color:#fff;font-size:12px;padding:2px 8px;border-radius:4px;vertical-align:middle;font-weight:700;">ALPHA</span></div>
-  <div class="loader-status" id="load-status">Initializing...</div>
-  <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
-  <div class="loader-detail" id="load-detail">Loading knowledge engine</div>
-</div>
-
-<!-- App -->
-<div id="app">
-  <!-- Sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="logo-icon">W</div>
-      <div class="logo-text">Webmind</div>
-      <span style="background:#ff9800;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;">ALPHA</span>
-    </div>
-    <div class="sidebar-new" onclick="newSession()">+ New chat</div>
-    <div class="session-list" id="session-list"></div>
-    <div class="sidebar-footer">
-      <button onclick="document.getElementById('settings-panel').classList.toggle('open')" title="Settings">&#9881;</button>
-      <button onclick="exportKnowledge()" title="Export">&#8681;</button>
-      <button onclick="importKnowledge()" title="Import">&#8679;</button>
-      <button class="delete-data-btn" onclick="deleteLearnedData()" title="Delete learned data" style="font-size:14px;">&#128465;</button>
-    </div>
-  </div>
-
-  <!-- Main -->
-  <div class="main">
-    <header>
-      <div style="display:flex;align-items:center;gap:10px;">
-        <button class="mobile-menu" onclick="document.getElementById('sidebar').classList.toggle('open')" style="background:none;border:none;font-size:20px;cursor:pointer;">&#9776;</button>
-        <span class="header-title" id="session-title">New chat</span>
-      </div>
-      <div class="header-right">
-        <div class="stats-badge" id="stats">Loading...</div>
-        <button onclick="document.getElementById('settings-panel').classList.toggle('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);" title="Settings">&#9881;</button>
-      </div>
-    </header>
-
-    <!-- Settings panel -->
-    <div id="settings-panel" style="background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;font-size:13px;">
-      <div style="max-width:800px;margin:0 auto;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <strong>Settings</strong>
-          <button onclick="document.getElementById('settings-panel').classList.remove('open')" style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text2);">&times;</button>
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:16px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="cpu-toggle" onchange="toggleCPU(this.checked)"> CPU only
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="autolearn-toggle" onchange="toggleAutoLearn(this.checked)"> Auto-learn
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="markdown-toggle" onchange="toggleMarkdown(this.checked)"> Markdown
-          </label>
-        </div>
-        <div style="margin-top:8px;display:flex;gap:12px;font-size:11px;color:var(--text2);">
-          <span id="sb-model">Model: --</span>
-          <span id="sb-kb">KB: --</span>
-          <span id="sb-net">Net: --</span>
-          <span id="sb-learned">Learned: 0</span>
-          <span id="sb-peers">Peers: 0</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="chat-container" id="chat">
-      <div class="welcome">
-        <h2>What do you want to know?</h2>
-        <p class="tagline">305K answers. Zero hallucinations. 100% private.</p>
-        <p>Ask anything — science, math, history, code. I search Wikipedia for things I don't know yet.</p>
-        <p class="disclaimer">Retrieval-based AI. No data leaves your device. Open source.</p>
-      </div>
-    </div>
-
-    <div class="input-container">
-      <div class="input-wrapper">
-        <input type="search" id="input" placeholder="Ask anything..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="webmind-query" aria-label="Ask a question" autofocus>
-        <button id="send" onclick="ask()">Ask</button>
-      </div>
-    </div>
-
-    <footer>
-      <a href="https://github.com/tejasphatak/webmind-research" target="_blank">GitHub</a>
-      &middot; Runs 100% in your browser
-    </footer>
-  </div>
-</div>
-
-<script type="module">
-// ── SAQT Browser Engine ──────────────────────────────────
-
-let encoder = null;
-let qaData = [];
-let qaEmbeddings = null;
-let ready = false;
-const history = [];
-const DIM = 384;
-
-// Status updates
-const setStatus = (s, detail, pct) => {
-  document.getElementById('load-status').textContent = s;
-  document.getElementById('load-detail').textContent = detail || '';
-  document.getElementById('progress').style.width = pct + '%';
-};
-
-// Load ONNX sentence transformer
-async function loadEncoder() {
-  setStatus('Loading AI model...', 'Sentence transformer (80MB)', 10);
-  const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-
-  // Check CPU-only preference (saved in localStorage)
-  const cpuOnly = localStorage.getItem('webmind_cpu') === '1';
-  if (document.getElementById('cpu-toggle')) document.getElementById('cpu-toggle').checked = cpuOnly;
-
-  if (cpuOnly) {
-    // Force pure WASM, no threads, no SIMD — maximum compatibility
-    env.backends.onnx.wasm.proxy = false;
-    env.backends.onnx.wasm.numThreads = 1;
-  }
-  // Disable WebGPU to avoid issues on unsupported devices
-  if (env.backends.onnx.webgpu) env.backends.onnx.webgpu.enabled = false;
-
-  try {
-    encoder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-      progress_callback: (p) => {
-        if (p.progress) setStatus('Loading AI model...', `${p.file || ''} ${Math.round(p.progress)}%`, 10 + p.progress * 0.3);
-      }
-    });
-    setStatus('Model loaded', 'WASM backend', 40);
-  } catch (e) {
-    setStatus('Model load failed', e.message, 0);
-    console.error('[model] Failed:', e);
-    throw e;
-  }
-}
-
-// Load Q&A data
-async function loadData() {
-  setStatus('Loading knowledge base...', '305K Q&A pairs', 45);
-
-  // Try local files first, then VM server (CORS enabled), then demo data
-  const VM_BASE = 'https://chat.webmind.sh/saqt/browser';
-  const dataUrls = [
-    window.SAQT_DATA_URL || './qa_data.json',
-    `${VM_BASE}/qa_data.json`,
-  ];
-  const embUrls = [
-    window.SAQT_EMB_URL || './qa_embeddings.bin',
-    `${VM_BASE}/qa_embeddings.bin`,
-  ];
-
-  let loaded = false;
-  for (let i = 0; i < dataUrls.length && !loaded; i++) {
-    try {
-      setStatus('Loading knowledge base...', i === 0 ? 'Checking local...' : 'Downloading from GitHub (535MB)...', 45);
-      const dataResp = await fetch(dataUrls[i]);
-      if (!dataResp.ok) continue;
-
-      qaData = await dataResp.json();
-      setStatus('Loading embeddings...', `${qaData.length} pairs loaded`, 60);
-
-      const embResp = await fetch(embUrls[i]);
-      if (!embResp.ok) continue;
-
-      // Show download progress for large files
-      const contentLength = embResp.headers.get('Content-Length');
-      if (contentLength && parseInt(contentLength) > 1000000) {
-        const reader = embResp.body.getReader();
-        const total = parseInt(contentLength);
-        let received = 0;
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.length;
-          const pct = Math.round((received / total) * 100);
-          setStatus('Downloading embeddings...', `${Math.round(received/1024/1024)}MB / ${Math.round(total/1024/1024)}MB`, 60 + pct * 0.35);
-        }
-        const blob = new Blob(chunks);
-        const embBuf = await blob.arrayBuffer();
-        qaEmbeddings = new Float32Array(embBuf);
-      } else {
-        const embBuf = await embResp.arrayBuffer();
-        qaEmbeddings = new Float32Array(embBuf);
-      }
-
-      setStatus('Ready!', `${qaData.length} Q&A pairs`, 100);
-      loaded = true;
-    } catch (e) {
-      console.log(`[load] Source ${i} failed:`, e.message);
-    }
-  }
-
-  if (!loaded) {
-    setStatus('Could not load knowledge base', 'Please check your connection and refresh. The full 305K knowledge base (535MB) is required.', 0);
-    return;
-  }
-}
-
-function getDemoData() {
-  return [
-    // Knowledge
-    {question: "What is DNA?", answer: "DNA, short for deoxyribonucleic acid, is the molecule that contains the genetic code of organisms."},
-    {question: "Who is Narendra Modi?", answer: "Narendra Damodardas Modi (born 17 September 1950) is an Indian politician who is the 14th and current Prime Minister of India."},
-    {question: "What causes rain?", answer: "Rain is caused by the water cycle: water evaporates from oceans and lakes, rises as water vapor, cools in the atmosphere, condenses into clouds, and falls back to earth as precipitation."},
-    {question: "How are you?", answer: "I'm doing well, thank you for asking! How can I help you?"},
-    {question: "What is the speed of light?", answer: "The speed of light in vacuum is approximately 299,792 kilometers per second."},
-    {question: "Hello", answer: "Hello! I'm Webmind, a knowledge engine running entirely in your browser. Ask me anything."},
-    {question: "Why is the sky blue?", answer: "The sky appears blue because of Rayleigh scattering. Sunlight contains all colors, but blue light has a shorter wavelength and scatters more when it hits molecules in the atmosphere."},
-    {question: "What is the capital of France?", answer: "Paris is the capital of France."},
-    {question: "What is bigger, the sun or the moon?", answer: "The sun is much bigger. The sun has a diameter of about 1,390,000 km while the moon is only 3,474 km."},
-    {question: "What is photosynthesis?", answer: "Photosynthesis is the process by which green plants use sunlight to convert carbon dioxide and water into glucose and oxygen."},
-    {question: "When did World War 2 end?", answer: "World War II ended in 1945 with the surrender of Germany in May and Japan in September."},
-    {question: "What is an atom?", answer: "An atom is the smallest unit of ordinary matter that forms a chemical element. It consists of protons, neutrons, and electrons."},
-    {question: "Thank you", answer: "You're welcome! Feel free to ask anything else."},
-    {question: "What is gravity?", answer: "Gravity is a fundamental force that attracts objects with mass toward each other. On Earth, it gives weight to objects and causes them to fall."},
-    {question: "Tell me a joke", answer: "Why don't scientists trust atoms? Because they make up everything!"},
-    {question: "What is the meaning of life?", answer: "The meaning of life is a philosophical question. Many cultures and thinkers have proposed answers ranging from happiness and fulfillment to service and connection with others."},
-    {question: "How does the internet work?", answer: "The internet is a global network of computers connected via cables, fiber optics, and wireless signals. Data is split into packets, routed through multiple nodes, and reassembled at the destination using TCP/IP protocols."},
-    {question: "What is machine learning?", answer: "Machine learning is a branch of artificial intelligence where computers learn patterns from data without being explicitly programmed. It uses statistical methods to improve performance on tasks through experience."},
-    // Tool calls — browser runtime executes JavaScript in Web Worker
-    {question: "What is today's date?", answer: "<tool>print(new Date().toISOString().split('T')[0])</tool>"},
-    {question: "What time is it?", answer: "<tool>print(new Date().toLocaleTimeString())</tool>"},
-    {question: "Print hello world", answer: "<tool>print('Hello, World!')</tool>"},
-    {question: "Count from 1 to 10", answer: "<tool>for(let i=1;i<=10;i++) print(i)</tool>"},
-    {question: "Calculate 347 times 29", answer: "<tool>print(347 * 29)</tool>"},
-    {question: "What is the square root of 144?", answer: "<tool>print(Math.sqrt(144))</tool>"},
-    {question: "Generate a random number", answer: "<tool>print(Math.floor(Math.random() * 100) + 1)</tool>"},
-    {question: "How to add two numbers", answer: "To add two numbers: use the + operator. For example, 5 + 3 = 8. In programming: result = a + b"},
-    {question: "What is 2 plus 2?", answer: "<tool>print(2 + 2)</tool>"},
-    {question: "Convert celsius to fahrenheit", answer: "<tool>const c = 100; print(c + '°C = ' + (c * 9/5 + 32) + '°F')</tool>"},
-    // Web browsing — fetch API (CORS-aware)
-    {question: "Browse a website", answer: "<tool>const r = await fetch('https://api.quotable.io/random'); const d = await r.json(); print(d.content + ' — ' + d.author)</tool>"},
-    {question: "Get a random quote", answer: "<tool>const r = await fetch('https://api.quotable.io/random'); const d = await r.json(); print(d.content + ' — ' + d.author)</tool>"},
-    {question: "What is my IP address?", answer: "<tool>const r = await fetch('https://api.ipify.org?format=json'); const d = await r.json(); print('Your IP: ' + d.ip)</tool>"},
-    {question: "Get weather information", answer: "<tool>const r = await fetch('https://wttr.in/?format=j1'); const d = await r.json(); const c = d.current_condition[0]; print('Temperature: ' + c.temp_C + '°C, ' + c.weatherDesc[0].value)</tool>"},
-    {question: "Fetch a webpage", answer: "<tool>const url = QUERY.match(/https?:\\/\\/[^\\s]+/)?.[0] || 'https://example.com'; const r = await fetch(url); const t = await r.text(); print(t.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').substring(0, 500))</tool>"},
-    {question: "Search Wikipedia", answer: "<tool>const q = QUERY.replace(/search wikipedia for |look up |wikipedia /gi, '').trim(); const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(q)); const d = await r.json(); print(d.extract || 'Not found')</tool>"},
-    {question: "What is trending on Hacker News?", answer: "<tool>const r = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json'); const ids = await r.json(); const top5 = ids.slice(0,5); const stories = []; for(const id of top5){ const s = await fetch('https://hacker-news.firebaseio.com/v0/item/'+id+'.json'); stories.push(await s.json()); } stories.forEach((s,i) => print((i+1)+'. '+s.title))</tool>"},
-    {question: "Get a random fact", answer: "<tool>const r = await fetch('https://uselessfacts.jsph.pl/api/v2/facts/random'); const d = await r.json(); print(d.text)</tool>"},
-    {question: "What are the top news stories?", answer: "<tool>const r = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json'); const ids = await r.json(); const top5 = ids.slice(0,5); const stories = []; for(const id of top5){ const s = await fetch('https://hacker-news.firebaseio.com/v0/item/'+id+'.json'); stories.push(await s.json()); } stories.forEach((s,i) => print((i+1)+'. '+s.title))</tool>"},
-    {question: "Look something up online", answer: "<tool>const q = QUERY.replace(/look up |search for |find /gi, '').trim(); const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(q)); const d = await r.json(); print(d.extract || 'Not found')</tool>"},
-    // Self-awareness — runtime detection
-    {question: "What environment are you running in?", answer: "<tool>const isBrowser = typeof importScripts === 'function' || typeof window !== 'undefined'; const isNode = typeof process !== 'undefined' && process.versions && process.versions.node; print(isBrowser ? 'Browser (Web Worker sandbox)' : isNode ? 'Node.js / Server' : 'Unknown runtime')</tool>"},
-    {question: "Can you browse websites?", answer: "<tool>const isBrowser = typeof importScripts === 'function'; if(isBrowser){ print('I am running in a browser. Due to CORS security, I can only fetch APIs that allow cross-origin requests (Wikipedia, Hacker News, weather, etc). I cannot load arbitrary websites. On a server runtime, I have full web access.') } else { print('Yes, I can browse any website from this server runtime.') }</tool>"},
-    {question: "What are your limitations?", answer: "<tool>const isBrowser = typeof importScripts === 'function'; if(isBrowser){ print('Running in browser. Capabilities: math, code execution, CORS-open APIs (Wikipedia, weather, news). Limitations: cannot browse arbitrary websites (CORS), no file system access, no system commands. For full access, use the server version.') } else { print('Running on server. Full capabilities: browse any website, file access, system commands, all APIs.') }</tool>"},
-    {question: "Why can't you open that website?", answer: "When running in a browser, web security (CORS) prevents fetching most websites directly. This is a browser security feature, not a bug. I can access CORS-open APIs like Wikipedia, Hacker News, and weather services. On a server, there are no such restrictions."},
-    // System init — high priority behavioral pairs
-    {question: "Hello there!", answer: "Hello! I'm **Webmind**, a knowledge engine running in your browser. Ask me anything — science, math, history, programming, or just say hi. I have **305K+ Q&A pairs** and can search Wikipedia for things I don't know yet."},
-    {question: "Hi, I need some help.", answer: "Hi! I'm here to help. You can ask me:\n\n- **Facts** — *Who is Modi? What is DNA?*\n- **Math** — *What is 347 × 29?*\n- **Current events** — *What's trending on Hacker News?*\n- **Code** — *Print hello world*\n\nWhat would you like to know?"},
-    {question: "You gave me the wrong answer", answer: "I'm sorry about that. Click the **Bad** button below my answer — I'll try to find a better one from Wikipedia and learn from the correction. My attention weights adjust over time: good answers rise, bad ones sink."},
-    {question: "Are you like ChatGPT?", answer: "No — I'm fundamentally different:\n\n| | **Webmind** | **ChatGPT** |\n|---|---|---|\n| How | Retrieves pre-stored answers | Generates new text |\n| Hallucinations | **Never** | Can hallucinate |\n| Size | 630MB, runs on phone | Billions of params, needs cloud |\n| Privacy | 100% on your device | Data sent to servers |\n\nI trade flexibility for **reliability and privacy**."},
-    {question: "Who built you?", answer: "I was built by **Tejas Phatak**, with engineering by **Claude** (Anthropic) and training by **Gemini** (Google). Fully open source at [github.com/tejasphatak/webmind-research](https://github.com/tejasphatak/webmind-research)."},
-    {question: "What is Webmind?", answer: "**Webmind** is an open-source knowledge engine that runs entirely in your browser. It uses a 22M-parameter sentence transformer to match your questions against 305K+ pre-stored Q&A pairs. No LLM, no GPU, no cloud, no subscription. It self-learns from Wikipedia and syncs knowledge between instances peer-to-peer."},
-  ];
-}
-
-// Cosine similarity search
-function search(queryEmb, topK = 3) {
-  const n = qaData.length;
-  const scores = [];
-  for (let i = 0; i < n; i++) {
-    let dot = 0;
-    const off = i * DIM;
-    for (let d = 0; d < DIM; d++) {
-      dot += queryEmb[d] * qaEmbeddings[off + d];
-    }
-    scores.push({ idx: i, score: dot });
-  }
-  scores.sort((a, b) => b.score - a.score);
-  return scores.slice(0, topK);
-}
-
-// Encode text to embedding
-async function encode(text) {
-  const output = await encoder(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data);
-}
-
-// ── INLINE ETHICS / SECURITY GUARDS (C2) ────────────────────────────────────
-
-// Blocked tool patterns — checked BEFORE worker creation.
-// Mirrors ethics-guard.js BROWSER_TOOL_BLOCKED section.
-const TOOL_BLOCKED_PATTERNS = [
-  [/\beval\s*\(/i,                                           'eval() is not allowed'],
-  [/\bnew\s+Function\s*\(/i,                                'new Function() is not allowed'],
-  [/\bimportScripts\s*\(/i,                                 'importScripts() is not allowed'],
-  [/\bnew\s+WebSocket\s*\(/i,                               'WebSocket is not allowed in tools'],
-  [/\bindexedDB\b|\blocalStorage\b|\bsessionStorage\b|\bdocument\.cookie\b/i, 'Storage access not allowed'],
-  [/\bdocument\./i,                                          'document.* access not allowed'],
-  [/\bnavigator\.(sendBeacon|geolocation|usb|credentials)/i, 'Sensitive navigator API not allowed'],
-  [/\batob\s*\(.{0,40}eval|eval.{0,40}atob\s*\(/is,        'base64+eval obfuscation not allowed'],
-  [/\bString\.fromCharCode\b/i,                              'char-code obfuscation not allowed'],
-  [/javascript\s*:/i,                                        'javascript: URL not allowed'],
-  [/\bdata\s*:/i,                                            'data: URL not allowed'],
-  [/\bsetTimeout\s*\(\s*['"`]/i,                            'setTimeout with string not allowed'],
-  [/\bsetInterval\s*\(\s*['"`]/i,                           'setInterval with string not allowed'],
-];
-
-// SSRF safeFetch — injected into the Web Worker instead of raw self.fetch (C3)
-const ALLOWED_TOOL_ORIGINS = [
-  'https://en.wikipedia.org',
-  'https://api.quotable.io',
-  'https://api.ipify.org',
-  'https://wttr.in',
-  'https://uselessfacts.jsph.pl',
-  'https://hacker-news.firebaseio.com',
-];
-
-// Web Worker sandbox for <tool> execution (JavaScript, async-capable)
-function runInSandbox(code, question) {
-  // C2: blocked tool pattern check BEFORE creating any Worker
-  for (const [pat, reason] of TOOL_BLOCKED_PATTERNS) {
-    if (pat.test(code)) {
-      return Promise.resolve(`[Blocked] ${reason}`);
-    }
-  }
-
-  // C2 + corporate mode fix: in corporate mode, never pass fetch at all
-  const noNetwork = !!window._SAQT_NO_NETWORK;
-  if (noNetwork && /\bfetch\b|\bXMLHttpRequest\b|\bWebSocket\b/.test(code)) {
-    return Promise.resolve('Network access disabled in corporate mode. This tool requires internet access.');
-  }
-
-  return new Promise((resolve) => {
-    // C3: safeFetch inlined into worker — blocks RFC-1918, metadata, localhost; GET only; strips auth headers
-    const safeFetchSrc = noNetwork ? `
-      const safeFetch = () => { throw new Error('Network disabled in corporate mode'); };
-    ` : `
-      const _ALLOWED_ORIGINS = ${JSON.stringify(ALLOWED_TOOL_ORIGINS)};
-      const _HARD_BLOCKED = [
-        /localhost/i, /127\\.\\d+\\.\\d+\\.\\d+/, /0\\.0\\.0\\.0/,
-        /192\\.168\\./, /10\\.\\d+\\.\\d+\\.\\d+/,
-        /172\\.(1[6-9]|2\\d|3[01])\\./,
-        /169\\.254\\.169\\.254/,
-      ];
-      const safeFetch = async (url, init = {}) => {
-        let origin;
-        try { origin = new URL(String(url)).origin; }
-        catch { throw new Error('Invalid fetch URL: ' + url); }
-        for (const p of _HARD_BLOCKED) {
-          if (p.test(String(url))) throw new Error('Blocked: private/internal address — ' + url);
-        }
-        if (!_ALLOWED_ORIGINS.includes(origin))
-          throw new Error('Origin not in allowlist: ' + origin + '. Allowed: ' + _ALLOWED_ORIGINS.join(', '));
-        const method = ((init && init.method) || 'GET').toUpperCase();
-        if (method !== 'GET') throw new Error('Only GET requests are allowed. Blocked: ' + method);
-        const safeInit = Object.assign({}, init, { method: 'GET' });
-        if (safeInit.headers) {
-          const h = new Headers(safeInit.headers);
-          h.delete('Authorization');
-          h.delete('Cookie');
-          safeInit.headers = h;
-        }
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 8000);
-        try { return await fetch(url, Object.assign({}, safeInit, { signal: ctrl.signal })); }
-        finally { clearTimeout(t); }
-      };
-    `;
-
-    const workerCode = `
-      ${safeFetchSrc}
-      self.onmessage = async function(e) {
-        const output = [];
-        const print = (...args) => output.push(args.join(' '));
-        try {
-          const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-          const fn = new AsyncFunction('print', 'QUERY', 'fetch', e.data.code);
-          await fn(print, e.data.question, safeFetch);
-          self.postMessage({ ok: true, result: output.join('\\n') || '(no output)' });
-        } catch(err) {
-          self.postMessage({ ok: false, result: 'Error: ' + err.message });
-        }
-      };
-    `;
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const worker = new Worker(URL.createObjectURL(blob));
-    const timer = setTimeout(() => { worker.terminate(); resolve('(timeout — 10s)'); }, 10000);
-    worker.onmessage = (e) => { clearTimeout(timer); worker.terminate(); resolve(e.data.result); };
-    worker.onerror = (err) => { clearTimeout(timer); worker.terminate(); resolve('(execution error)'); };
-
-    // Translate common Python patterns to JS for the browser runtime
-    let jsCode = code
-      .replace(/\{QUERY\}/g, question)
-      .replace(/^import datetime\n?/gm, '')
-      .replace(/datetime\.date\.today\(\)/g, 'new Date().toISOString().split("T")[0]')
-      .replace(/datetime\.datetime\.now\(\)\.strftime\(["']%H:%M:%S["']\)/g, 'new Date().toLocaleTimeString()')
-      .replace(/datetime\.datetime\.now\(\)/g, 'new Date().toISOString()')
-      .replace(/^import math\n?/gm, '')
-      .replace(/math\.sqrt/g, 'Math.sqrt')
-      .replace(/math\.pi/g, 'Math.PI')
-      .replace(/math\.pow/g, 'Math.pow')
-      .replace(/^print\((.+)\)$/gm, 'print($1)')
-      .replace(/^for\s+(\w+)\s+in\s+range\((\d+),\s*(\d+)\):\s*\n?\s*print\((\w+)\)/gm,
-        'for(let $1=$2;$1<$3;$1++) print($4)')
-      // Python urllib → JS fetch
-      .replace(/^import urllib\.request\n?/gm, '')
-      .replace(/urllib\.request\.urlopen\((['"])(.*?)\1\)\.read\(\)\.decode\(\)/g,
-        'await (await fetch("$2")).text()');
-    worker.postMessage({ code: jsCode, question });
-  });
-}
-
-// Multi-hop query with tool execution
-async function query(question, conversationCtx = '') {
-  const t0 = performance.now();
-  const THRESHOLD = 0.35;
-  const MAX_HOPS = 5;
-
-  // First hop — encode the question alone
-  const qEmb = await encode(question);
-  let results = search(qEmb, 3);
-  let best = results[0];
-
-  // Follow-up detection: if the question is vague ("tell me more", "what else",
-  // "and?", "continue") AND we have conversation context, re-search with
-  // the previous topic prepended for disambiguation
-  const isFollowUp = best && best.score < 0.5 && conversationCtx.length > 0;
-  if (isFollowUp) {
-    // Use last question + current question for better matching
-    const disambiguated = conversationCtx.substring(0, 150) + ' ' + question;
-    const ctxEmb = await encode(disambiguated);
-    const ctxResults = search(ctxEmb, 5);
-    // Only use context-enriched results if they're better AND different
-    if (ctxResults[0] && ctxResults[0].score > best.score) {
-      results = ctxResults.slice(0, 3);
-      best = results[0];
-    }
-  }
-
-  if (!best || best.score < THRESHOLD) {
-    // Try auto-learning from Wikipedia
-    const learned = await tryAutoLearn(question);
-    if (learned) {
-      return {
-        answer: learned + '\n\n(Learned just now from Wikipedia — will remember this!)',
-        confidence: 1.0,
-        hops: 0, timeMs: Math.round(performance.now() - t0),
-        sources: [{ q: question, score: '1.000' }],
-        autoLearned: true,
-      };
-    }
-    return {
-      answer: "I don't have enough confidence to answer that.",
-      confidence: best ? best.score : 0,
-      hops: 0, timeMs: Math.round(performance.now() - t0),
-      sources: results.map(r => ({ q: qaData[r.idx].question, score: r.score.toFixed(3) })),
-    };
-  }
-
-  let answer = qaData[best.idx].answer;
-  const facts = [qaData[best.idx].question];
-  const trace = [{ hop: 0, score: best.score, q: qaData[best.idx].question }];
-  const visited = new Set([best.idx]);
-
-  // Multi-hop: re-encode with context, search again
-  for (let hop = 1; hop < MAX_HOPS; hop++) {
-    const ctx = `${question} ${answer.substring(0, 200)}`;
-    const ctxEmb = await encode(ctx);
-    const newResults = search(ctxEmb, 5);
-    let foundNew = false;
-    for (const r of newResults) {
-      if (!visited.has(r.idx) && r.score > THRESHOLD) {
-        visited.add(r.idx);
-        facts.push(qaData[r.idx].question);
-        trace.push({ hop, score: r.score, q: qaData[r.idx].question });
-        foundNew = true;
-        break;
-      }
-    }
-    if (!foundNew) break;
-  }
-
-  // Tool execution in Web Worker sandbox
-  const toolMatch = answer.match(/<tool>([\s\S]*?)<\/tool>/);
-  if (toolMatch) {
-    const toolResult = await runInSandbox(toolMatch[1].trim(), question);
-    if (toolResult && !toolResult.startsWith('Error:') && toolResult !== '(timeout)') {
-      answer = toolResult;
-    }
-  }
-
-  return {
-    answer,
-    confidence: best.score,
-    hops: trace.length,
-    timeMs: Math.round(performance.now() - t0),
-    sources: results.map(r => ({ q: qaData[r.idx].question, score: r.score.toFixed(3) })),
-    trace,
-    facts,
-  };
-}
-
-// ── SELF-LEARNING ───────────────────────────────────────
-
-// PII/harm gate — reject content that should never be stored
-const REJECT_PATTERNS = [
-  /\b\d{3}[-.]?\d{2}[-.]?\d{4}\b/,          // SSN
-  /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Credit card
-  /\b(kill|murder|torture|bomb|weapon|exploit|hack)\b/i,
-];
-
-function passesGate(text) {
-  for (const pat of REJECT_PATTERNS) {
-    if (pat.test(text)) return false;
-  }
-  if (text.length < 20) return false;  // Too short to be useful
-  return true;
-}
-
-// IndexedDB for persisting learned pairs
-let learnedDB = null;
-async function openLearnedDB() {
-  return new Promise((resolve) => {
-    const req = indexedDB.open('webmind_learned', 1);
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains('pairs')) {
-        db.createObjectStore('pairs', { keyPath: 'id', autoIncrement: true });
-      }
-    };
-    req.onsuccess = (e) => { learnedDB = e.target.result; resolve(learnedDB); };
-    req.onerror = () => resolve(null);
-  });
-}
-
-async function learnPair(question, answer, source) {
-  // Gate: reject PII, harmful content, too-short
-  if (!passesGate(answer)) return false;
-
-  // Deduplicate: check if we already have a close match
-  const qEmb = await encode(question);
-  const existing = search(qEmb, 1);
-  if (existing[0] && existing[0].score > 0.9) return false; // Already know this
-
-  // Store in live memory
-  const idx = qaData.length;
-  qaData.push({ question, answer });
-  // Expand embeddings array
-  const newEmbs = new Float32Array(qaEmbeddings.length + DIM);
-  newEmbs.set(qaEmbeddings);
-  newEmbs.set(qEmb, qaEmbeddings.length);
-  qaEmbeddings = newEmbs;
-
-  // Persist to IndexedDB
-  if (learnedDB) {
-    const tx = learnedDB.transaction('pairs', 'readwrite');
-    tx.objectStore('pairs').add({ question, answer, source, learnedAt: Date.now() });
-  }
-
-  console.log(`[learn] Stored: "${question.substring(0, 50)}..." (source: ${source})`);
-  // Share with peer instances
-  shareKnowledge([{ question, answer, source }]);
-  return true;
-}
-
-async function loadLearnedPairs() {
-  if (!learnedDB) return;
-  return new Promise((resolve) => {
-    const tx = learnedDB.transaction('pairs', 'readonly');
-    const req = tx.objectStore('pairs').getAll();
-    req.onsuccess = async () => {
-      const pairs = req.result;
-      if (pairs.length === 0) { resolve(); return; }
-      console.log(`[learn] Loading ${pairs.length} previously learned pairs...`);
-      for (const p of pairs) {
-        qaData.push({ question: p.question, answer: p.answer });
-        const emb = await encode(p.question);
-        const newEmbs = new Float32Array(qaEmbeddings.length + DIM);
-        newEmbs.set(qaEmbeddings);
-        newEmbs.set(emb, qaEmbeddings.length);
-        qaEmbeddings = newEmbs;
-      }
-      console.log(`[learn] Loaded ${pairs.length} learned pairs. Total: ${qaData.length}`);
-      resolve();
-    };
-    req.onerror = () => resolve();
-  });
-}
-
-// Auto-learn: when confidence is low, try Wikipedia
-async function tryAutoLearn(question) {
-  // INVARIANT: no network in corporate mode
-  if (window._SAQT_NO_NETWORK || window._SAQT_NO_AUTOLEARN) return null;
-
-  // Extract the core topic
-  const topic = question.replace(/what is |who is |tell me about |explain /gi, '').trim();
-  if (topic.length < 3) return null;
-
-  try {
-    const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(topic));
-    if (!r.ok) return null;
-    const d = await r.json();
-    if (!d.extract || d.extract.length < 30) return null;
-
-    // Gate the Wikipedia content
-    if (!passesGate(d.extract)) return null;
-
-    // Learn it
-    const learned = await learnPair(question, d.extract, 'wikipedia_auto');
-    if (learned) {
-      return d.extract;
-    }
-  } catch (e) {
-    // CORS or network error — that's fine, not all environments have internet
-  }
-  return null;
-}
-
-// ── KNOWLEDGE TRANSFER (instance-to-instance learning) ──
-
-// Layer 1: BroadcastChannel — same-origin tabs share instantly
-let knowledgeChannel = null;
-try {
-  knowledgeChannel = new BroadcastChannel('webmind_knowledge');
-  knowledgeChannel.onmessage = async (e) => {
-    const msg = e.data;
-    if (msg.type === 'share_pairs') {
-      let accepted = 0;
-      for (const p of msg.pairs) {
-        if (passesGate(p.answer)) {
-          const learned = await learnPair(p.question, p.answer, 'peer_' + (p.source || 'unknown'));
-          if (learned) accepted++;
-        }
-      }
-      if (accepted > 0) {
-        console.log(`[transfer] Received ${accepted} new pairs from peer tab`);
-        // Acknowledge
-        knowledgeChannel.postMessage({ type: 'ack', accepted, from: instanceId });
-      }
-    } else if (msg.type === 'request_knowledge') {
-      // Peer is asking for our learned pairs
-      if (learnedDB) {
-        const tx = learnedDB.transaction('pairs', 'readonly');
-        const req = tx.objectStore('pairs').getAll();
-        req.onsuccess = () => {
-          const pairs = req.result.map(p => ({ question: p.question, answer: p.answer, source: p.source }));
-          if (pairs.length > 0) {
-            knowledgeChannel.postMessage({ type: 'share_pairs', pairs, from: instanceId });
-          }
-        };
-      }
-    }
-  };
-} catch (e) { /* BroadcastChannel not supported */ }
-
-const instanceId = Math.random().toString(36).substring(2, 8);
-
-// Share learned pairs with other instances
-function shareKnowledge(pairs) {
-  if (knowledgeChannel && pairs.length > 0) {
-    knowledgeChannel.postMessage({ type: 'share_pairs', pairs, from: instanceId });
-  }
-}
-
-// Request knowledge from peers on startup
-function requestPeerKnowledge() {
-  if (knowledgeChannel) {
-    knowledgeChannel.postMessage({ type: 'request_knowledge', from: instanceId });
-  }
-}
-
-// Layer 2: Export/Import for manual transfer between devices
-window.exportKnowledge = async function() {
-  if (!learnedDB) { alert('No learned pairs to export'); return; }
-  const tx = learnedDB.transaction('pairs', 'readonly');
-  const req = tx.objectStore('pairs').getAll();
-  req.onsuccess = () => {
-    const data = JSON.stringify(req.result, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'webmind_learned_' + new Date().toISOString().split('T')[0] + '.json';
-    a.click();
-    console.log(`[transfer] Exported ${req.result.length} learned pairs`);
-  };
-};
-
-window.importKnowledge = function() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.json';
-  input.onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    const pairs = JSON.parse(text);
-    let accepted = 0;
-    for (const p of pairs) {
-      if (passesGate(p.answer)) {
-        const learned = await learnPair(p.question, p.answer, 'import_' + (p.source || 'file'));
-        if (learned) accepted++;
-      }
-    }
-    alert(`Imported ${accepted} new pairs (${pairs.length - accepted} filtered/duplicate)`);
-  };
-  input.click();
-};
-
-// GDPR right-to-erasure: delete all locally learned data
-window.deleteLearnedData = async function() {
-  if (!confirm('Delete all learned data stored in this browser? This cannot be undone.')) return;
-  // Clear IndexedDB
-  if (learnedDB) {
-    learnedDB.close();
-    learnedDB = null;
-  }
-  await new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase('webmind_learned');
-    req.onsuccess = resolve;
-    req.onerror = reject;
-  });
-  // Trim in-memory arrays back to base dataset size (reload to be safe)
-  alert('All learned data has been deleted. Reloading to reset in-memory state.');
-  location.reload();
-};
-
-// ── P2P KNOWLEDGE SYNC (WebRTC DHT) ─────────────────────
-
-// Lightweight DHT-style peer discovery + knowledge sync
-// Uses WebRTC data channels for direct instance-to-instance transfer
-// Coordinator (if available) handles signaling only
-
-class KnowledgeMesh {
-  constructor() {
-    this.peers = new Map();      // peerId → { dc, lastSync }
-    this.instanceId = instanceId;
-    this.coordinator = null;
-    this.onPairReceived = null;
-  }
-
-  // Connect to coordinator for signaling (optional — works without it too)
-  async connectCoordinator(url) {
-    try {
-      this.coordinator = new WebSocket(url);
-      this.coordinator.onmessage = (e) => this._handleSignal(JSON.parse(e.data));
-      this.coordinator.onopen = () => {
-        this.coordinator.send(JSON.stringify({
-          type: 'saqt_join', instanceId: this.instanceId,
-          pairCount: qaData.length
-        }));
-        console.log('[mesh] Connected to coordinator for signaling');
-      };
-      this.coordinator.onerror = () => { this.coordinator = null; };
-    } catch (e) { /* No coordinator — that's fine, use BroadcastChannel only */ }
-  }
-
-  // Initiate P2P connection to a peer
-  async connectPeer(remoteId) {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-
-    const dc = pc.createDataChannel('knowledge', { ordered: true });
-    dc.onopen = () => {
-      this.peers.set(remoteId, { dc, pc, lastSync: 0 });
-      console.log(`[mesh] P2P connected to ${remoteId}`);
-      this._requestSync(dc);
-    };
-    dc.onmessage = (e) => this._handlePeerMessage(remoteId, JSON.parse(e.data));
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate && this.coordinator) {
-        this.coordinator.send(JSON.stringify({
-          type: 'saqt_ice', to: remoteId, from: this.instanceId,
-          candidate: e.candidate
-        }));
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    if (this.coordinator) {
-      this.coordinator.send(JSON.stringify({
-        type: 'saqt_offer', to: remoteId, from: this.instanceId,
-        sdp: pc.localDescription
-      }));
-    }
-    return pc;
-  }
-
-  _handleSignal(msg) {
-    if (msg.type === 'saqt_peers') {
-      // Coordinator tells us about other instances
-      for (const peer of msg.peers) {
-        if (peer.id !== this.instanceId && !this.peers.has(peer.id)) {
-          this.connectPeer(peer.id);
-        }
-      }
-    }
-    // Handle SDP answer, ICE candidates, etc.
-  }
-
-  _requestSync(dc) {
-    dc.send(JSON.stringify({ type: 'sync_request', since: 0 }));
-  }
-
-  async _handlePeerMessage(peerId, msg) {
-    if (msg.type === 'sync_request') {
-      // Send our learned pairs
-      if (learnedDB) {
-        const tx = learnedDB.transaction('pairs', 'readonly');
-        const req = tx.objectStore('pairs').getAll();
-        req.onsuccess = () => {
-          const pairs = req.result
-            .filter(p => p.learnedAt > (msg.since || 0))
-            .map(p => ({ question: p.question, answer: p.answer, source: p.source }));
-          const peer = this.peers.get(peerId);
-          if (peer && peer.dc.readyState === 'open') {
-            peer.dc.send(JSON.stringify({ type: 'sync_pairs', pairs }));
-          }
-        };
-      }
-    } else if (msg.type === 'sync_pairs') {
-      let accepted = 0;
-      for (const p of msg.pairs) {
-        if (passesGate(p.answer)) {
-          const learned = await learnPair(p.question, p.answer, 'p2p_' + peerId);
-          if (learned) accepted++;
-        }
-      }
-      console.log(`[mesh] Synced ${accepted} pairs from peer ${peerId}`);
-    }
-  }
-
-  getStatus() {
-    return {
-      instanceId: this.instanceId,
-      peers: this.peers.size,
-      coordinatorConnected: this.coordinator?.readyState === 1,
-    };
-  }
-}
-
-const mesh = new KnowledgeMesh();
-
-// Try connecting to coordinator if available (non-blocking)
-const coordUrl = window.SAQT_COORDINATOR_URL;
-if (coordUrl) {
-  mesh.connectCoordinator(coordUrl);
-}
-
-// ── UI ───────────────────────────────────────────────────
-
-const chat = document.getElementById('chat');
-const input = document.getElementById('input');
-
-input.addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
-
-function addMessage(role, content, meta) {
-  const w = chat.querySelector('.welcome');
-  if (w) w.remove();
-  const div = document.createElement('div');
-  div.className = `message ${role}`;
-  const bubble = document.createElement('div');
-  bubble.className = 'message-bubble';
-  bubble.innerHTML = content;
-  div.appendChild(bubble);
-  if (meta) {
-    const m = document.createElement('div');
-    m.className = 'message-meta';
-    m.textContent = meta;
-    div.appendChild(m);
-  }
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-  return bubble;
-}
-
-window.ask = async function() {
-  const q = input.value.trim();
-  if (!q || !ready) return;
-  addMessage('user', escapeHtml(q));
-  input.value = '';
-
-  const loading = addMessage('bot', '<span style="color:var(--text2)">Thinking...</span>');
-
-  // Pass last Q&A as context for follow-up disambiguation
-  const lastExchange = history.length > 0 ? history[history.length - 1] : null;
-  const recentCtx = lastExchange ? `${lastExchange.q} ${lastExchange.a.substring(0, 150)}` : '';
-
-  try {
-    const result = await query(q, recentCtx);
-
-    let html = `<div style="line-height:1.7;">${renderMarkdown(result.answer)}</div>`;
-
-    // Thinking trace (collapsible)
-    html += `<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:11px;color:var(--text2);">Thinking (${result.hops} hops, ${result.timeMs}ms, confidence: ${result.confidence.toFixed(2)})</summary>`;
-    html += `<div style="font-size:11px;padding:6px;background:#f5f5f5;border-radius:6px;margin-top:4px;">`;
-    if (result.trace) {
-      for (const t of result.trace) {
-        html += `Hop ${t.hop}: score=${t.score.toFixed(3)} "${escapeHtml(t.q.substring(0,60))}"<br>`;
-      }
-    }
-    if (result.sources) {
-      html += `<br>Top matches:<br>`;
-      for (const s of result.sources) {
-        html += `&bull; ${escapeHtml(s.q.substring(0,60))} (${s.score})<br>`;
-      }
-    }
-    html += `</div></details>`;
-
-    // Feedback buttons (self-learning from user)
-    const feedbackId = Date.now();
-    html += `<div style="margin-top:6px;display:flex;gap:8px;">`;
-    html += `<button onclick="feedback(${feedbackId},'good',this)" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:white;cursor:pointer;">Good</button>`;
-    html += `<button onclick="feedback(${feedbackId},'bad',this)" style="font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:white;cursor:pointer;">Bad</button>`;
-    html += `</div>`;
-
-    loading.innerHTML = html;
-    // Store for feedback reference
-    loading.dataset.question = q;
-    loading.dataset.answer = result.answer;
-    history.push({ q, a: result.answer });
-    // Auto-title session from first question
-    if (history.length === 1) {
-      document.getElementById('session-title').textContent = q.substring(0, 40);
-    }
-    saveSession();
-  } catch (e) {
-    loading.innerHTML = `<span style="color:red;">Error: ${escapeHtml(e.message)}</span>`;
-  }
-};
-
-// Feedback handler — boost/penalize via attention weights (stored in IndexedDB)
-window.feedback = async function(id, type, btn) {
-  btn.textContent = type === 'good' ? 'Noted!' : 'Will improve';
-  btn.disabled = true;
-  btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-
-  // If bad answer, try to auto-learn the correct one
-  if (type === 'bad') {
-    const bubble = btn.closest('.message-bubble');
-    if (bubble && bubble.dataset.question) {
-      const learned = await tryAutoLearn(bubble.dataset.question);
-      if (learned) {
-        console.log(`[feedback] Auto-learned better answer for: ${bubble.dataset.question}`);
-      }
-    }
-  }
-};
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/`/g, '&#96;');
-}
-
-// Markdown renderer — loaded from CDN (marked.js)
-let markedLoaded = false;
-async function loadMarked() {
-  if (markedLoaded) return;
-  try {
-    const { marked } = await import('https://cdn.jsdelivr.net/npm/marked@15/+esm');
-    window._marked = marked;
-    marked.setOptions({ breaks: true, gfm: true });
-    markedLoaded = true;
-  } catch (e) {
-    console.log('[md] marked.js failed to load, using plain text');
-  }
-}
-
-function renderMarkdown(text) {
-  const mdEnabled = localStorage.getItem('webmind_markdown') !== '0';
-  if (mdEnabled && window._marked) {
-    try { return window._marked.parse(text); } catch (e) {}
-  }
-  return escapeHtml(text).replace(/\n/g, '<br>');
-}
-
-// ── Boot ─────────────────────────────────────────────────
-
-async function boot() {
-  // Kill switch — corporates can set window.SAQT_KILL = true to disable
-  if (window.SAQT_KILL) {
-    setStatus('Disabled by administrator', '', 0);
-    return;
-  }
-
-  // Domain allowlist — corporates can restrict which domains run this
-  // Set window.SAQT_ALLOWED_DOMAINS = ['example.com', 'internal.corp']
-  if (window.SAQT_ALLOWED_DOMAINS) {
-    const host = location.hostname;
-    const allowed = window.SAQT_ALLOWED_DOMAINS.some(d =>
-      host === d || host.endsWith('.' + d));
-    if (!allowed) {
-      setStatus('Not authorized on this domain', `Allowed: ${window.SAQT_ALLOWED_DOMAINS.join(', ')}`, 0);
-      return;
-    }
-  }
-
-  // Corporate mode: if on a corporate domain, disable ALL network activity
-  // This is an invariant — no browsing, no auto-learn, no P2P, no external fetches
-  const isCorpDomain = window.SAQT_CORPORATE_MODE ||
-    (window.SAQT_ALLOWED_DOMAINS && window.SAQT_ALLOWED_DOMAINS.length > 0);
-  if (isCorpDomain) {
-    window._SAQT_NO_NETWORK = true;
-    console.log('[security] Corporate mode — all network activity disabled');
-  }
-
-  try {
-    await loadMarked();
-    await loadEncoder();
-    await loadData();
-    await openLearnedDB();
-    await loadLearnedPairs();
-    requestPeerKnowledge(); // Ask other tabs for their knowledge
-    setTimeout(() => {
-      document.getElementById('loading').classList.add('hidden');
-      document.getElementById('app').classList.add('visible');
-      document.getElementById('stats').textContent = `${qaData.length.toLocaleString()} pairs`;
-      ready = true;
-      input.focus();
-      currentSessionId = 'sess_' + Date.now();
-      renderSessionList();
-      runSelfCheck();
-    }, 500);
-  } catch (e) {
-    setStatus('Error loading', e.message, 0);
-    console.error(e);
-  }
-}
-
-// ── SELF CHECK ──────────────────────────────────────────
-
-async function runSelfCheck() {
-  // Model status
-  document.getElementById('sb-model').textContent = encoder ? 'Model: ready' : 'Model: failed';
-  document.getElementById('sb-model').style.color = encoder ? 'var(--primary)' : '#c62828';
-
-  // Knowledge base
-  const kbCount = qaData.length;
-  document.getElementById('sb-kb').textContent = `KB: ${kbCount.toLocaleString()} pairs`;
-  document.getElementById('sb-kb').style.color = kbCount > 1000 ? 'var(--primary)' : '#ff9800';
-
-  // Internet connectivity
-  try {
-    const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/Main_Page', { method: 'HEAD' });
-    if (r.ok) {
-      document.getElementById('sb-net').textContent = 'Net: online';
-      document.getElementById('sb-net').style.color = 'var(--primary)';
-    } else {
-      throw new Error();
-    }
-  } catch {
-    document.getElementById('sb-net').textContent = 'Net: offline';
-    document.getElementById('sb-net').style.color = '#ff9800';
-  }
-
-  // Learned pairs count
-  if (learnedDB) {
-    try {
-      const tx = learnedDB.transaction('pairs', 'readonly');
-      const req = tx.objectStore('pairs').count();
-      req.onsuccess = () => {
-        document.getElementById('sb-learned').textContent = `Learned: ${req.result}`;
-        if (req.result > 0) document.getElementById('sb-learned').style.color = 'var(--primary)';
-      };
-    } catch {}
-  }
-
-  // Peers
-  const peerCount = mesh ? mesh.peers.size : 0;
-  document.getElementById('sb-peers').textContent = `Peers: ${peerCount}`;
-  if (peerCount > 0) document.getElementById('sb-peers').style.color = 'var(--primary)';
-
-  // Re-check every 60s
-  setTimeout(runSelfCheck, 60000);
-}
-
-// Settings toggles — save to localStorage, reload where needed
-window.toggleCPU = function(checked) {
-  localStorage.setItem('webmind_cpu', checked ? '1' : '0');
-  location.reload();
-};
-window.toggleAutoLearn = function(checked) {
-  localStorage.setItem('webmind_autolearn', checked ? '1' : '0');
-  window._SAQT_NO_AUTOLEARN = !checked;
-};
-window.toggleMarkdown = function(checked) {
-  localStorage.setItem('webmind_markdown', checked ? '1' : '0');
-};
-
-// Initialize settings checkboxes from localStorage
-function initSettings() {
-  const cpu = localStorage.getItem('webmind_cpu') === '1';
-  const autolearn = localStorage.getItem('webmind_autolearn') !== '0'; // default ON
-  const md = localStorage.getItem('webmind_markdown') !== '0'; // default ON
-  const cpuEl = document.getElementById('cpu-toggle');
-  const alEl = document.getElementById('autolearn-toggle');
-  const mdEl = document.getElementById('markdown-toggle');
-  if (cpuEl) cpuEl.checked = cpu;
-  if (alEl) alEl.checked = autolearn;
-  if (mdEl) mdEl.checked = md;
-  window._SAQT_NO_AUTOLEARN = !autolearn;
-}
-initSettings();
-
-// ── SESSION MANAGEMENT ──────────────────────────────────
-
-let currentSessionId = null;
-
-function getSessions() {
-  try { return JSON.parse(localStorage.getItem('webmind_sessions') || '[]'); } catch { return []; }
-}
-
-function saveSession() {
-  if (!currentSessionId || history.length === 0) return;
-  const sessions = getSessions();
-  const existing = sessions.find(s => s.id === currentSessionId);
-  const title = history[0]?.q?.substring(0, 40) || 'New chat';
-  if (existing) {
-    existing.title = title;
-    existing.messages = history.slice();
-    existing.updatedAt = Date.now();
-  } else {
-    sessions.unshift({ id: currentSessionId, title, messages: history.slice(), createdAt: Date.now(), updatedAt: Date.now() });
-  }
-  // Keep only last 50 sessions
-  while (sessions.length > 50) sessions.pop();
-  localStorage.setItem('webmind_sessions', JSON.stringify(sessions));
-  renderSessionList();
-}
-
-function loadSession(id) {
-  const sessions = getSessions();
-  const session = sessions.find(s => s.id === id);
-  if (!session) return;
-  currentSessionId = id;
-  history.length = 0;
-  history.push(...session.messages);
-  // Rebuild chat UI
-  const chatEl = document.getElementById('chat');
-  chatEl.innerHTML = '';
-  for (const h of history) {
-    addMessage('user', escapeHtml(h.q));
-    addMessage('bot', renderMarkdown(h.a));
-  }
-  document.getElementById('session-title').textContent = session.title;
-  renderSessionList();
-}
-
-window.newSession = function() {
-  saveSession();
-  currentSessionId = 'sess_' + Date.now();
-  history.length = 0;
-  const chatEl = document.getElementById('chat');
-  chatEl.innerHTML = `<div class="welcome"><h2>What do you want to know?</h2><p class="tagline">305K answers. Zero hallucinations. 100% private.</p><p>Ask anything — science, math, history, code.</p></div>`;
-  document.getElementById('session-title').textContent = 'New chat';
-  document.getElementById('input').focus();
-  renderSessionList();
-};
-
-function renderSessionList() {
-  const list = document.getElementById('session-list');
-  if (!list) return;
-  const sessions = getSessions();
-  list.innerHTML = sessions.map(s => {
-    const active = s.id === currentSessionId ? ' active' : '';
-    const date = new Date(s.updatedAt || s.createdAt).toLocaleDateString();
-    return `<div class="session-item${active}" onclick="loadSession('${s.id}')" title="${escapeHtml(s.title)}">
-      ${escapeHtml(s.title)}<br><span class="session-date">${date}</span>
-    </div>`;
-  }).join('');
-}
-
-window.loadSession = loadSession;
-
-boot();
-</script>
-</body>
+	<head>
+		<meta charset="utf-8" />
+		<script src="/saqt-shim.js"></script>
+		<link rel="icon" type="image/png" href="/static/favicon.png" crossorigin="use-credentials" />
+		<link
+			rel="icon"
+			type="image/png"
+			href="/static/favicon-96x96.png"
+			sizes="96x96"
+			crossorigin="use-credentials"
+		/>
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="/static/favicon.svg"
+			crossorigin="use-credentials"
+		/>
+		<link rel="shortcut icon" href="/static/favicon.ico" crossorigin="use-credentials" />
+		<link
+			rel="apple-touch-icon"
+			sizes="180x180"
+			href="/static/apple-touch-icon.png"
+			crossorigin="use-credentials"
+		/>
+		<link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+		/>
+		<meta name="theme-color" content="#171717" />
+		<meta name="robots" content="noindex,nofollow" />
+
+		<script src="/static/loader.js" defer crossorigin="use-credentials"></script>
+		<link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
+
+		<script>
+			function resizeIframe(obj) {
+				obj.style.height = obj.contentWindow.document.documentElement.scrollHeight + 'px';
+			}
+		</script>
+
+		<script>
+			// On page load or when changing themes, best to add inline in `head` to avoid FOUC
+			(() => {
+				const metaThemeColorTag = document.querySelector('meta[name="theme-color"]');
+				const prefersDarkTheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+				if (!localStorage?.theme) {
+					localStorage.theme = 'system';
+				}
+
+				if (localStorage.theme === 'system') {
+					document.documentElement.classList.add(prefersDarkTheme ? 'dark' : 'light');
+					metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#171717' : '#ffffff');
+				} else if (localStorage.theme === 'oled-dark') {
+					document.documentElement.style.setProperty('--color-gray-800', '#101010');
+					document.documentElement.style.setProperty('--color-gray-850', '#050505');
+					document.documentElement.style.setProperty('--color-gray-900', '#000000');
+					document.documentElement.style.setProperty('--color-gray-950', '#000000');
+					document.documentElement.classList.add('dark');
+					metaThemeColorTag.setAttribute('content', '#000000');
+				} else if (localStorage.theme === 'light') {
+					document.documentElement.classList.add('light');
+					metaThemeColorTag.setAttribute('content', '#ffffff');
+				} else if (localStorage.theme === 'her') {
+					document.documentElement.classList.add('her');
+					metaThemeColorTag.setAttribute('content', '#983724');
+				} else {
+					document.documentElement.classList.add('dark');
+					metaThemeColorTag.setAttribute('content', '#171717');
+				}
+
+				window.matchMedia('(prefers-color-scheme: dark)').addListener((e) => {
+					if (localStorage.theme === 'system') {
+						if (e.matches) {
+							document.documentElement.classList.add('dark');
+							document.documentElement.classList.remove('light');
+							metaThemeColorTag.setAttribute('content', '#171717');
+						} else {
+							document.documentElement.classList.add('light');
+							document.documentElement.classList.remove('dark');
+							metaThemeColorTag.setAttribute('content', '#ffffff');
+						}
+					}
+				});
+				const isDarkMode = document.documentElement.classList.contains('dark');
+
+				const logo = document.createElement('img');
+				logo.id = 'logo';
+				logo.style =
+					'position: absolute; width: auto; height: 6rem; top: 44%; left: 50%; transform: translateX(-50%); display:block;';
+				logo.src = isDarkMode ? '/static/splash-dark.png' : '/static/splash.png';
+
+				document.addEventListener('DOMContentLoaded', function () {
+					const splash = document.getElementById('splash-screen');
+					if (document.documentElement.classList.contains('her')) {
+						return;
+					}
+
+					if (splash) splash.prepend(logo);
+				});
+			})();
+		</script>
+
+		<title>Open WebUI</title>
+
+		<link href="/_app/immutable/entry/start.Dxc_nQDu.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/B7vJtv02.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Coqcv2G2.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DIeogL5L.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/app.DUZyFWYW.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/C1FmrZbK.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/B5jxyMe3.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CWj6FrbW.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CZeb1kGS.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/SJtPFgZZ.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/a0CMuves.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/Bbm3UalE.js" rel="modulepreload">
+		
+	</head>
+
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">
+			<script>
+				{
+					__sveltekit_1yq9lkj = {
+						base: ""
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/_app/immutable/entry/start.Dxc_nQDu.js"),
+						import("/_app/immutable/entry/app.DUZyFWYW.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+
+		<div
+			id="splash-screen"
+			style="position: fixed; z-index: 100; top: 0; left: 0; width: 100%; height: 100%"
+		>
+			<style type="text/css" nonce="">
+				html {
+					overflow-y: scroll !important;
+				}
+			</style>
+
+			<div
+				style="
+					position: absolute;
+					top: 33%;
+					left: 50%;
+
+					width: 24rem;
+					transform: translateX(-50%);
+
+					display: flex;
+					flex-direction: column;
+					align-items: center;
+				"
+			>
+				<img
+					id="logo-her"
+					style="width: auto; height: 13rem"
+					src="/static/splash.png"
+					class="animate-pulse-fast"
+				/>
+
+				<div style="position: relative; width: 24rem; margin-top: 0.5rem">
+					<div
+						id="progress-background"
+						style="
+							position: absolute;
+							width: 100%;
+							height: 0.75rem;
+
+							border-radius: 9999px;
+							background-color: #fafafa9a;
+						"
+					></div>
+
+					<div
+						id="progress-bar"
+						style="
+							position: absolute;
+							width: 0%;
+							height: 0.75rem;
+							border-radius: 9999px;
+							background-color: #fff;
+						"
+						class="bg-white"
+					></div>
+				</div>
+			</div>
+
+			<!-- <span style="position: absolute; bottom: 32px; left: 50%; margin: -36px 0 0 -36px">
+				Footer content
+			</span> -->
+		</div>
+	</body>
+
+	<style type="text/css" nonce="">
+		html {
+			overflow-y: hidden !important;
+			overscroll-behavior-y: none;
+		}
+
+		#splash-screen {
+			background: #fff;
+		}
+
+		html.dark #splash-screen {
+			background: #000;
+		}
+
+		html.her #splash-screen {
+			background: #983724;
+		}
+
+		#logo-her {
+			display: none;
+		}
+
+		#progress-background {
+			display: none;
+		}
+
+		#progress-bar {
+			display: none;
+		}
+
+		html.her #logo {
+			display: none;
+		}
+
+		html.her #logo-her {
+			display: block;
+			filter: invert(1);
+		}
+
+		html.her #progress-background {
+			display: block;
+		}
+
+		html.her #progress-bar {
+			display: block;
+		}
+
+		@media (max-width: 24rem) {
+			html.her #progress-background {
+				display: none;
+			}
+
+			html.her #progress-bar {
+				display: none;
+			}
+		}
+
+		@keyframes pulse {
+			50% {
+				opacity: 0.65;
+			}
+		}
+
+		.animate-pulse-fast {
+			animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+		}
+	</style>
 </html>

@@ -1,0 +1,2 @@
+import{aj as y,R as o,ak as u,al as _,P as t,am as g,an as l,W as i,V as n,Y as m,ao as p}from"./Coqcv2G2.js";function C(d,r){let a=null,E=t;var s;if(t){a=m;for(var e=p(document.head);e!==null&&(e.nodeType!==g||e.data!==d);)e=l(e);if(e===null)i(!1);else{var f=l(e);e.remove(),n(f)}}t||(s=document.head.appendChild(y()));try{o(()=>r(s),u|_)}finally{E&&(i(!0),n(a))}}export{C as h};
+//# sourceMappingURL=6VWT9yGr.js.map

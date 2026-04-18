@@ -1,0 +1,2 @@
+import{Z as O,O as S,_ as T,z as x,a0 as E,a1 as Y,a2 as k}from"./Coqcv2G2.js";function n(r,s){return r===s||(r==null?void 0:r[k])===s}function B(r={},s,i,z){var p=O.r,h=E;return S(()=>{var f,t;return T(()=>{f=t,t=[],x(()=>{r!==i(...t)&&(s(r,...t),f&&n(i(...f),r)&&s(null,...f))})}),()=>{let a=h;for(;a!==p&&a.parent!==null&&a.parent.f&Y;)a=a.parent;const w=()=>{t&&n(i(...t),r)&&s(null,...t)},c=a.teardown;a.teardown=()=>{w(),c==null||c()}}}),r}export{B as b};
+//# sourceMappingURL=a0CMuves.js.map

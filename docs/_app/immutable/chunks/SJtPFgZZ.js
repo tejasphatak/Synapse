@@ -1,0 +1,2 @@
+import{P as o,Q as v,R as y,S as T,T as f,U as l,V as m,W as i,X as p,Y as R}from"./Coqcv2G2.js";import{B as A}from"./CZeb1kGS.js";function N(d,_,e){var s;o&&(s=R,v());var r=new A(d);y(()=>{var a=_()??null;if(o){var h=f(s),c=h===p,u=a!==null;if(c!==u){var t=l();m(t),r.anchor=t,i(!1),r.ensure(a,a&&(n=>e(n,a))),i(!0);return}}r.ensure(a,a&&(n=>e(n,a)))},T)}export{N as c};
+//# sourceMappingURL=SJtPFgZZ.js.map

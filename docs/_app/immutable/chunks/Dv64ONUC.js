@@ -1,0 +1,2 @@
+const _="Webmind",t="",s=`${t}/api/v1`,e=`${t}/ollama`,a=`${t}/openai`,A=`${t}/api/v1/audio`,o=`${t}/api/v1/images`,i=`${t}/api/v1/retrieval`,E="0.8.12",I="dev-build",n={file_context:!0,vision:!0,file_upload:!0,web_search:!0,image_generation:!0,code_interpreter:!0,citations:!0,status_updates:!0,usage:void 0,builtin_tools:!0},c=1e3;export{A,n as D,o as I,e as O,c as P,i as R,E as W,t as a,s as b,a as c,_ as d,I as e};
+//# sourceMappingURL=Dv64ONUC.js.map
