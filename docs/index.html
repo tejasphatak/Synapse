@@ -212,19 +212,8 @@ async function loadData() {
   }
 
   if (!loaded) {
-    // Fallback: load minimal demo data inline
-    setStatus('Loading demo data...', 'Using built-in examples', 60);
-    qaData = getDemoData();
-    // Encode demo data
-    setStatus('Encoding demo data...', `${qaData.length} pairs`, 70);
-    const embs = [];
-    for (let i = 0; i < qaData.length; i++) {
-      const output = await encoder(qaData[i].question, { pooling: 'mean', normalize: true });
-      embs.push(...output.data);
-      if (i % 10 === 0) setStatus('Encoding...', `${i}/${qaData.length}`, 70 + (i/qaData.length)*25);
-    }
-    qaEmbeddings = new Float32Array(embs);
-    setStatus('Ready!', `${qaData.length} demo pairs`, 100);
+    setStatus('Could not load knowledge base', 'Please check your connection and refresh. The full 305K knowledge base (535MB) is required.', 0);
+    return;
   }
 }
 
