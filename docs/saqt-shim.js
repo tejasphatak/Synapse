@@ -691,26 +691,19 @@
         }
 
         // Step 4: Compose — if answer is shorter than the data's own p25,
-        // search for more context using ONLY the original question.
-        // Don't search by raw answer — that finds topically unrelated matches
-        // (e.g. "Madonna" the singer → "Madonna" the Virgin Mary).
+        // search again with the original question to find more depth.
+        // The embeddings decide what's related — no word-overlap heuristics.
         if (answer && answer.length < dataP25 && visited.size > 0) {
           think(`Answer (${answer.length} chars) below KB p25 (${dataP25}). Enriching...`);
 
-          // Search with question + answer context to find elaborations on the SAME topic
           const { bestIdx: relIdx, bestScore: relScore } = await searchKB(`${question} ${answer}`);
 
           if (relScore > noiseFloor && !visited.has(relIdx)) {
             const related = qaData[relIdx].answer;
-            // Only add if it's actually about the same topic (shares words with question)
-            const questionWords = new Set(question.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-            const relatedWords = new Set(qaData[relIdx].question.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-            const overlap = [...questionWords].filter(w => relatedWords.has(w)).length;
-
-            if (overlap > 0 && related.length > 30 && !answer.includes(related.substring(0, 30))) {
+            if (related.length > 30 && !answer.includes(related.substring(0, 30))) {
               answer = answer + '\n\n' + related;
               visited.add(relIdx);
-              think(`  +related (${overlap} shared words): "${qaData[relIdx].question.substring(0, 50)}" (${(relScore * 100).toFixed(0)}%)`);
+              think(`  +context: "${qaData[relIdx].question.substring(0, 50)}" (${(relScore * 100).toFixed(0)}%)`);
             }
           }
         }
