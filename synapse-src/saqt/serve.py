@@ -379,40 +379,39 @@ class SAQTEngine:
 
     def web_search(self, query):
         """Search the web when KB can't answer.
-        Uses source agreement for validation — multiple sources agreeing = higher trust.
-        Returns (answer, confidence) or None."""
+        All sources fire in parallel. Source agreement = validation.
+        Returns answer text or None."""
         import urllib.request, urllib.parse
-        sources = {}  # source_name → text
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Source 1: Wikipedia summary
-        try:
-            q = urllib.parse.quote(query)
-            req = urllib.request.Request(
-                f"https://en.wikipedia.org/api/rest_v1/page/summary/{q}",
-                headers={"User-Agent": "Webmind/1.0"})
-            resp = urllib.request.urlopen(req, timeout=5)
-            d = json.loads(resp.read())
-            if d.get("extract"):
-                sources["wikipedia"] = d["extract"]
-        except: pass
+        q = urllib.parse.quote(query)
+        sources = {}
 
-        # Source 2: DuckDuckGo instant answers
-        try:
-            q = urllib.parse.quote(query)
-            req = urllib.request.Request(
-                f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1",
-                headers={"User-Agent": "Webmind/1.0"})
-            resp = urllib.request.urlopen(req, timeout=5)
-            d = json.loads(resp.read())
-            text = d.get("AbstractText") or d.get("Answer") or ""
-            if text:
-                sources["duckduckgo"] = text
-        except: pass
-
-        # Source 3: Wikipedia search fallback
-        if "wikipedia" not in sources:
+        def fetch_wikipedia():
             try:
-                q = urllib.parse.quote(query)
+                req = urllib.request.Request(
+                    f"https://en.wikipedia.org/api/rest_v1/page/summary/{q}",
+                    headers={"User-Agent": "Webmind/1.0"})
+                resp = urllib.request.urlopen(req, timeout=5)
+                d = json.loads(resp.read())
+                if d.get("extract"): return ("wikipedia", d["extract"])
+            except: pass
+            return None
+
+        def fetch_ddg():
+            try:
+                req = urllib.request.Request(
+                    f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1",
+                    headers={"User-Agent": "Webmind/1.0"})
+                resp = urllib.request.urlopen(req, timeout=5)
+                d = json.loads(resp.read())
+                text = d.get("AbstractText") or d.get("Answer") or ""
+                if text: return ("duckduckgo", text)
+            except: pass
+            return None
+
+        def fetch_wiki_search():
+            try:
                 req = urllib.request.Request(
                     f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q}&format=json&origin=*&srlimit=3",
                     headers={"User-Agent": "Webmind/1.0"})
@@ -421,8 +420,17 @@ class SAQTEngine:
                 hits = d.get("query", {}).get("search", [])
                 if hits:
                     snippet = " ".join(h["snippet"].replace("<span class=\"searchmatch\">", "").replace("</span>", "") for h in hits)
-                    sources["wikipedia_search"] = snippet
+                    return ("wikipedia_search", snippet)
             except: pass
+            return None
+
+        # Fire all sources in parallel
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(f) for f in [fetch_wikipedia, fetch_ddg, fetch_wiki_search]]
+            for f in as_completed(futures, timeout=8):
+                result = f.result()
+                if result:
+                    sources[result[0]] = result[1]
 
         if not sources:
             return None
