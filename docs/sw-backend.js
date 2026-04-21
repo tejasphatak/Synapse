@@ -246,22 +246,8 @@ async function handleAPI(request) {
     const responseMessageId = body.id;
     const chatId = body.chat_id;
 
-    // Fire query via Guru API (falls back to local SAQT if Guru unreachable)
-    const guruQuery = async (query) => {
-      try {
-        const r = await fetch('http://34.172.170.131:8000/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'guru', messages: [{ role: 'user', content: query }], max_tokens: 50 })
-        });
-        const d = await r.json();
-        return d.choices?.[0]?.message?.content || null;
-      } catch (e) { return null; }
-    };
-    guruQuery(q).then(guruAnswer => {
-      if (guruAnswer) return guruAnswer;
-      return saqtQuery(q, chatId, responseMessageId);
-    }).then((answer) => {
+    // Fire SAQT query asynchronously, deliver answer + status via socket.io
+    saqtQuery(q, chatId, responseMessageId).then((answer) => {
       // Send answer via socket event
       queueSocketEvent('events', {
         chat_id: chatId,
