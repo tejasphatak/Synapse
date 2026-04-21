@@ -246,8 +246,22 @@ async function handleAPI(request) {
     const responseMessageId = body.id;
     const chatId = body.chat_id;
 
-    // Fire SAQT query asynchronously, deliver answer + status via socket.io
-    saqtQuery(q, chatId, responseMessageId).then((answer) => {
+    // Fire query via Guru API (HTTPS, falls back to local SAQT)
+    const guruQuery = async (query) => {
+      try {
+        const r = await fetch('https://guru.webmind.sh/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'guru', messages: [{ role: 'user', content: query }], max_tokens: 50 })
+        });
+        const d = await r.json();
+        return d.choices?.[0]?.message?.content || null;
+      } catch (e) { return null; }
+    };
+    guruQuery(q).then(guruAnswer => {
+      if (guruAnswer) return guruAnswer;
+      return saqtQuery(q, chatId, responseMessageId);
+    }).then((answer) => {
       // Send answer via socket event
       queueSocketEvent('events', {
         chat_id: chatId,
